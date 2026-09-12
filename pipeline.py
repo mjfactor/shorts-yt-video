@@ -25,6 +25,11 @@ NICHE = "scary true horror stories with cliffhanger"
 VOICE = "en-US-AvaNeural"
 VISIBILITY = os.getenv("VISIBILITY", "private")  # private = safe for unverified OAuth apps
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+# Tried in order; first working model wins. Override via GEMINI_MODELS="model-a,model-b".
+GEMINI_MODELS = [m.strip() for m in
+                 os.getenv("GEMINI_MODELS",
+                           "gemini-3.6-flash,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
+                 if m.strip()]
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
 MIN_AUDIO_SEC = float(os.getenv("MIN_AUDIO_SEC", "10"))
 MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
@@ -167,17 +172,21 @@ def gen_script() -> dict:
         "visual_queries (array of 4 short dark stock-video search terms like 'dark forest night', 'abandoned hallway')."
     )
     if GEMINI_KEY:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
-            raw = _fetch_gemini(url, {"contents": [{"parts": [{"text": prompt}]}]})
-            text = raw["candidates"][0]["content"]["parts"][0]["text"]
-            # strip markdown fences
-            text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            data = _validate_script(json.loads(text))
-            log(f"Gemini script OK: {data.get('title')}")
-            return data
-        except Exception as e:
-            log(f"Gemini failed ({e}), using fallback.")
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        for model in GEMINI_MODELS:
+            try:
+                url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                       f"{model}:generateContent?key={GEMINI_KEY}")
+                raw = _fetch_gemini(url, payload)
+                text = raw["candidates"][0]["content"]["parts"][0]["text"]
+                # strip markdown fences
+                text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                data = _validate_script(json.loads(text))
+                log(f"Gemini script OK ({model}): {data.get('title')}")
+                return data
+            except Exception as e:
+                log(f"Gemini model {model} unusable ({e}), trying next...")
+        log("All Gemini models failed, using fallback.")
     return _fallback_script()
 
 
