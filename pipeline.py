@@ -287,6 +287,18 @@ def cleanup_intermediates():
 
 
 # ---------- 4. Render with FFmpeg (CPU only) ----------
+def _run_ffmpeg(cmd, step: str):
+    """Run ffmpeg quietly, but log stderr tail on failure (else it stays hidden)."""
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        tail = (e.stderr or "").strip().splitlines()[-20:]
+        log(f"ffmpeg failed at {step} (exit {e.returncode}):")
+        for line in tail:
+            log(f"  {line}")
+        raise
+
+
 def render(clips: list[Path], audio: Path, srt: Path, target_dur: float, out_path: Path):
     """Normalize clips to 1080x1920, concat to match audio length, mux + burn subs."""
     # Build per-clip normalized segments (uniform fps/size/codec so concat is safe
@@ -296,26 +308,23 @@ def render(clips: list[Path], audio: Path, srt: Path, target_dur: float, out_pat
     for i, c in enumerate(clips):
         seg = ASSETS / f"seg_{i}.mp4"
         if c.suffix == ".png":
-            subprocess.run(["ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", str(c),
-                            "-t", str(per), "-vf", f"scale={W}:{H},fps=30",
-                            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
-                            str(seg)],
-                           check=True, capture_output=True)
+            _run_ffmpeg(["ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", str(c),
+                         "-t", str(per), "-vf", f"scale={W}:{H},fps=30",
+                         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+                         str(seg)], f"segment-{i}-slide")
         else:
-            subprocess.run(["ffmpeg", "-y", "-i", str(c),
-                            "-t", str(per),
-                            "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30",
-                            "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
-                            "-an", str(seg)],
-                           check=True, capture_output=True)
+            _run_ffmpeg(["ffmpeg", "-y", "-i", str(c),
+                         "-t", str(per),
+                         "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30",
+                         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+                         "-an", str(seg)], f"segment-{i}-clip")
         segs.append(seg)
     concat = ASSETS / "concat.txt"
     concat.write_text("".join(f"file '{s.resolve()}'\n" for s in segs))
     video_only = ASSETS / "video_only.mp4"
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                    "-i", str(concat), "-c:v", "libx264", "-preset", "veryfast",
-                    "-pix_fmt", "yuv420p", str(video_only)],
-                   check=True, capture_output=True)
+    _run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                 "-i", str(concat), "-c:v", "libx264", "-preset", "veryfast",
+                 "-pix_fmt", "yuv420p", str(video_only)], "concat")
     # Mux audio + burn subtitles (caption filter needs .srt path escaped).
     # Falls back to no subtitles if the ffmpeg build lacks libass.
     srt_esc = str(srt.resolve()).replace("\\", "/").replace(":", "\\:")
@@ -333,8 +342,12 @@ def render(clips: list[Path], audio: Path, srt: Path, target_dur: float, out_pat
             cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio),
                    "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                    "-shortest", str(out_path)]
-            subprocess.run(cmd, check=True)
+            _run_ffmpeg(cmd, "mux-no-subs")
         else:
+            tail = (e.stderr or "").strip().splitlines()[-20:]
+            log(f"ffmpeg failed at mux (exit {e.returncode}):")
+            for line in tail:
+                log(f"  {line}")
             raise
     log(f"Rendered {out_path} ({out_path.stat().st_size // 1024} KB)")
 
@@ -367,10 +380,16 @@ def upload(video: Path, meta: dict):
     req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
     # Resumable upload: next_chunk() resumes where it left off, so each
     # chunk is safely retried. Bad credentials fail fast (fatal, no retry).
-    resp = None
-    while resp is None:
-        _, resp = retry("YouTube upload", req.next_chunk, tries=5, backoff=10,
-                        fatal=RefreshError)
+    try:
+        resp = None
+        while resp is None:
+            _, resp = retry("YouTube upload", req.next_chunk, tries=5, backoff=10,
+                            fatal=RefreshError)
+    except RefreshError as e:
+        log("YouTube credentials rejected (bad/expired YT_REFRESH_TOKEN or wrong "
+            f"YT_CLIENT_ID/YT_CLIENT_SECRET): {e}")
+        log("Fix: re-run get_refresh_token.py locally and update GitHub Secrets.")
+        raise
     log(f"Uploaded -> videoId={resp['id']}")
     return resp["id"]
 
@@ -394,4 +413,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import traceback
+    try:
+        main()
+    except Exception as e:
+        log(f"PIPELINE FAILED: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        sys.exit(1)
