@@ -1,0 +1,6 @@
+# Generated output + caches. Never commit these.
+out/
+assets/
+__pycache__/
+*.pyc
+.env
