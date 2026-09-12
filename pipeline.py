@@ -141,7 +141,7 @@ def _fallback_script() -> dict:
     return {
         "title": f"{topic} #shorts",
         "narration": narration,
-        "description": f"A true scary horror short. Part 2 tomorrow! #shorts #horror #scarystory",
+        "description": f"A true story scary horror short. Part 2 tomorrow! #shorts #horror #scarystory",
         "tags": ["shorts", "horror", "scarystory", "creepy", "truestory"],
         "beats": beats,
     }
@@ -257,8 +257,13 @@ def _episode_prompt(state):
     """Build Gemini prompt. Returns (prompt, episode_number, is_continuation)."""
     base_rules = (
         "Return ONLY valid JSON with keys: title (<=60 chars, scary hook + episode marker like 'Ep 2'), "
-        "narration (120-150 words, spoken English, chilling hook in first 3 seconds, slow dread build, "
-        "cliffhanger ending unless this episode ends the story, no stage directions), "
+        "narration (120-150 words, written for a fifth-grade reading level and easy spoken English; "
+        "use short sentences, common words, one clear idea per sentence, and no fancy metaphors; "
+        "start with a shocking one-line hook in the first 3 seconds; create an unanswered question "
+        "right away; add a new clue, danger, or strange detail every 2-3 sentences; use concrete "
+        "sensory details; remove greetings, filler, backstory, and repeated ideas; keep the tension "
+        "rising; end on a strong unanswered cliffhanger unless this episode ends the story, "
+        "no stage directions), "
         "description (2 sentences + 3 hashtags, must name the series title and episode number), "
         "tags (array of 5 strings), "
         "beats (array of 3-4 objects in story order, each {text: that beat's exact narration chunk, "
@@ -819,9 +824,9 @@ def main():
     out_mp4 = stem.with_suffix(".mp4")
     try:
         render(clips, mp3, bed, srt, durations, out_mp4)
-        upload(out_mp4, meta)
-        # Advance the arc only if the video actually got made+uploaded.
-        if state_update is not None:
+        upload_id = upload(out_mp4, meta)
+        # A skipped upload returns None, so it must not advance continuity.
+        if state_update is not None and upload_id is not None:
             save_state(state_update)
     finally:
         cleanup_intermediates()
