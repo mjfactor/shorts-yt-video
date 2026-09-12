@@ -57,6 +57,53 @@ cron (08:00, 16:00, 23:00 UTC)
 - `get_refresh_token.py` — one-time OAuth helper (run locally, never in CI)
 - `.env.example` — list of secrets/vars to configure
 
+## Series continuity (connected episodes)
+
+Videos form story arcs of up to 5 episodes, not one-offs. `series_state.json`
+in the repo holds the current arc (title, episode number, recap, finale flag).
+Each run feeds it to Gemini ("continue Episode N, start with a one-line
+'previously' hook, end on a new cliffhanger"), then commits the updated state
+back so the next run continues the story.
+
+- Gemini may end an arc early by setting `finale: true` (proper ending at
+  Ep 3/4); Episode 5 is always the forced finale. Next run starts a new arc.
+- Titles always carry the episode marker and descriptions always name the
+  series/episode — the validator auto-fixes them if Gemini omits them.
+
+- Fallback runs (Gemini down) post standalone stories and do **not**
+  advance the arc — the commit step no-ops when the state is unchanged.
+- State advances only after successful render+upload, so a failed run never
+  skips an episode publicly.
+- Runs are serialized (`concurrency: series-state`) so two runs can't fork
+  the story; the job needs `contents: write` for the state commit.
+
+## Visuals (beat-aligned, literal AI stills)
+
+Gemini splits each narration into 3–4 beats, each with its own concrete
+query. Per beat, in story order: **Cloudflare Workers AI still**
+(SDXL-Lightning, listed at $0.00/step, native 1080x1920, no card — free-plan
+hard-stop at cap so billing is impossible) → **Pollinations FLUX still**
+(first beats only, pollen budget) → **Pexels clip** (real motion) →
+**title card** with the beat's text. Stills get a **Ken Burns slow zoom**
+(alternating in/out) so they feel like motion. Screen time is weighted by
+beat word count.
+
+Cloudflare setup: free account at dash.cloudflare.com (email only, no card)
+→ copy Account ID (dashboard sidebar) → My Profile → API Tokens → create
+token with the Workers AI template → secrets `CF_ACCOUNT_ID` + `CF_API_TOKEN`.
+
+Notes: anonymous Pollinations = 1 request/15s (built-in pacing) and free
+images may carry a small watermark. With an account key (secret
+`POLLINATIONS_API_KEY`, an `sk_...` key from enter.pollinations.ai/keys),
+stills are watermark-free with faster pacing. The key travels as an HTTP
+header and is never printed in logs.
+
+Pollen budget: only the first `AI_STILLS_PER_VIDEO` beats (default 2: the
+hook + follow-through) get AI stills; later beats use beat-matched stock.
+That's ~180 stills/month ≈ 0.36 pollen at schnell rates. If pollen runs dry
+(HTTP 402), runs automatically fall back to stock and log it — top up via
+quests or lower `AI_STILLS_PER_VIDEO`.
+
 ## Failure alerts (optional, free)
 
 If a run crashes, the pipeline pings you instead of failing silently.

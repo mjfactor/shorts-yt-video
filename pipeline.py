@@ -11,6 +11,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import base64
 from pathlib import Path
 
 import requests
@@ -19,10 +20,12 @@ OUT = Path("out")
 ASSETS = Path("assets")
 OUT.mkdir(exist_ok=True)
 ASSETS.mkdir(exist_ok=True)
+STATE_FILE = Path("series_state.json")
+MAX_EPISODES_PER_ARC = 5  # episodes per story arc, then a fresh arc starts
 
 # Hardcoded channel settings (change here, no env vars needed).
 NICHE = "scary true horror stories with cliffhanger"
-VOICE = "en-US-GuyNeural"
+VOICE = "en-US-ChristopherNeural"  # deep male narrator (News/Novel, Authority)
 VISIBILITY = os.getenv("VISIBILITY", "private")  # private = safe for unverified OAuth apps
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 # Tried in order; first working model wins. Override via GEMINI_MODELS="model-a,model-b".
@@ -31,6 +34,9 @@ GEMINI_MODELS = [m.strip() for m in
                            "gemini-3.6-flash,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
                  if m.strip()]
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
+# Optional: Pollinations account key (sk_...) for watermark-free stills +
+# higher rate limits. Without it, stills are anonymous (free, may watermark).
+POLLINATIONS_KEY = os.getenv("POLLINATIONS_API_KEY", "")
 MIN_AUDIO_SEC = float(os.getenv("MIN_AUDIO_SEC", "10"))
 MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
@@ -112,12 +118,20 @@ def _fallback_script() -> dict:
         f"She ran to the front door, and it was locked from the outside. "
         f"Part 2 tomorrow. Follow so you don't miss what knocked back."
     )
+    words = narration.split()
+    beat_queries = ["dark bedroom night", "abandoned hallway night",
+                    "creepy door dark", "foggy forest night"]
+    beats = []
+    for i in range(4):
+        chunk = " ".join(words[i * 30:(i + 1) * 30])
+        if chunk:
+            beats.append({"text": chunk, "query": beat_queries[i]})
     return {
         "title": f"{topic} #shorts",
         "narration": narration,
         "description": f"A true scary horror short. Part 2 tomorrow! #shorts #horror #scarystory",
         "tags": ["shorts", "horror", "scarystory", "creepy", "truestory"],
-        "visual_queries": ["dark forest night", "abandoned hallway", "creepy door", "foggy night"],
+        "beats": beats,
     }
 
 
@@ -129,7 +143,7 @@ def _validate_script(data) -> dict:
     narration = data.get("narration")
     description = data.get("description")
     tags = data.get("tags")
-    queries = data.get("visual_queries")
+    beats = data.get("beats")
     if not isinstance(title, str) or not title.strip():
         raise ValueError("missing/invalid 'title' (must be non-empty string)")
     if not isinstance(narration, str) or len(narration.split()) < 20:
@@ -139,17 +153,127 @@ def _validate_script(data) -> dict:
     if (not isinstance(tags, list) or not tags
             or not all(isinstance(t, str) and t.strip() for t in tags)):
         raise ValueError("'tags' must be a non-empty list of strings")
-    if (not isinstance(queries, list) or not queries
-            or not all(isinstance(q, str) and q.strip() for q in queries)):
-        raise ValueError("'visual_queries' must be a non-empty list of strings")
+    if not isinstance(beats, list) or not beats:
+        raise ValueError("'beats' must be a non-empty list")
+    norm_beats = []
+    for b in beats[:6]:
+        if not isinstance(b, dict):
+            raise ValueError("each beat must be an object with text+query")
+        t, q = b.get("text"), b.get("query")
+        if not isinstance(t, str) or not t.strip():
+            raise ValueError("beat 'text' must be a non-empty string")
+        if not isinstance(q, str) or not q.strip():
+            raise ValueError("beat 'query' must be a non-empty string")
+        norm_beats.append({"text": t.strip(), "query": q.strip()})
+    if sum(len(b["text"].split()) for b in norm_beats) < 20:
+        raise ValueError("'beats' cover too little text (<20 words total)")
     # Normalize so downstream steps never choke on oversized input.
     return {
         "title": title.strip()[:100],
         "narration": narration.strip(),
         "description": description.strip(),
         "tags": [t.strip() for t in tags if t.strip()][:10],
-        "visual_queries": [q.strip() for q in queries if q.strip()][:6],
+        "beats": norm_beats,
     }
+
+
+def _validate_episode(data, expected_ep: int) -> dict:
+    """Base validation + arc continuity fields. Raises ValueError if unusable.
+
+    Also guarantees title/description relate to the arc: auto-appends the
+    episode marker / series reference when Gemini omits them (logged).
+    """
+    base = _validate_script(data)
+    arc = data.get("arc_title")
+    ep = data.get("episode")
+    recap = data.get("recap")
+    if not isinstance(arc, str) or not arc.strip():
+        raise ValueError("missing/invalid 'arc_title' (must be non-empty string)")
+    if isinstance(ep, bool) or not isinstance(ep, int) or ep < 1:
+        raise ValueError("'episode' must be a positive int")
+    if not isinstance(recap, str) or not recap.strip():
+        raise ValueError("missing/invalid 'recap' (must be non-empty string)")
+    arc = arc.strip()
+    if ep != expected_ep:
+        log(f"Gemini returned episode {ep}, correcting to {expected_ep}.")
+        ep = expected_ep
+    finale = data.get("finale", False)
+    if not isinstance(finale, bool):
+        log(f"'finale' not a bool ({finale!r}), coercing to {bool(finale)}.")
+        finale = bool(finale)
+    title = base["title"][:90].rstrip()
+    if str(ep) not in title:
+        title = f"{title} Ep {ep}"
+        log(f"Title lacked episode marker, fixed: {title}")
+    base["title"] = title
+    desc = base["description"]
+    if arc.lower() not in desc.lower():
+        desc = f"{desc} Episode {ep} of '{arc}'."
+        log("Description lacked series reference, fixed.")
+    base["description"] = desc
+    base["arc_title"] = arc
+    base["episode"] = ep
+    base["recap"] = recap.strip()
+    base["finale"] = finale
+    return base
+
+
+def load_state():
+    """Read series continuity state. Returns None (fresh arc) if missing/invalid."""
+    try:
+        data = json.loads(STATE_FILE.read_text())
+        if (isinstance(data, dict) and isinstance(data.get("arc_title"), str)
+                and isinstance(data.get("episode"), int)
+                and isinstance(data.get("recap"), str)):
+            log(f"Continuing series '{data['arc_title']}' after episode {data['episode']}")
+            return data
+        log("series_state.json invalid, starting fresh arc.")
+    except FileNotFoundError:
+        log("No series state, starting fresh arc.")
+    except Exception as e:
+        log(f"series_state.json unreadable ({e}), starting fresh arc.")
+    return None
+
+
+def save_state(update: dict):
+    STATE_FILE.write_text(json.dumps(update, indent=2))
+    tag = " (FINALE - next run starts a new arc)" if update.get("finale") else ""
+    log(f"Series state saved: '{update['arc_title']}' Ep {update['episode']}{tag}")
+
+
+def _episode_prompt(state):
+    """Build Gemini prompt. Returns (prompt, episode_number, is_continuation)."""
+    base_rules = (
+        "Return ONLY valid JSON with keys: title (<=60 chars, scary hook + episode marker like 'Ep 2'), "
+        "narration (120-150 words, spoken English, chilling hook in first 3 seconds, slow dread build, "
+        "cliffhanger ending unless this episode ends the story, no stage directions), "
+        "description (2 sentences + 3 hashtags, must name the series title and episode number), "
+        "tags (array of 5 strings), "
+        "beats (array of 3-4 objects in story order, each {text: that beat's exact narration chunk, "
+        "query: concrete dark stock-video search for that beat like 'woman opening door dark hallway'}; "
+        "beat texts joined must equal the full narration), "
+        "arc_title (series name, 3-6 words), episode (int), "
+        "recap (3-4 sentences summarizing the whole arc so far, for continuity), "
+        "finale (bool: true ONLY if this episode properly ends the story, else false)."
+    )
+    if state and not state.get("finale") and state.get("episode", 0) < MAX_EPISODES_PER_ARC:
+        ep = state["episode"] + 1
+        prompt = (
+            f"Continue the scary YouTube Shorts horror series '{state['arc_title']}'. "
+            f"Write Episode {ep}. Story so far: {state['recap']} "
+            f"Start the narration with a one-line 'previously' hook, resolve the previous "
+            f"cliffhanger and build new dread. If the story reaches its natural end in this "
+            f"episode, write a proper ENDING and set finale:true instead of a cliffhanger; "
+            f"otherwise end on a NEW cliffhanger "
+            f"(the forced finale is Episode {MAX_EPISODES_PER_ARC}). " + base_rules
+        )
+        return prompt, ep, True
+    prompt = (
+        f"Start a NEW scary YouTube Shorts horror series about {NICHE}. "
+        "Write Episode 1: chilling hook in first 3 seconds, slow dread build, "
+        "end on a cliffhanger (set finale:false). " + base_rules
+    )
+    return prompt, 1, False
 
 
 def _fetch_gemini(url: str, payload: dict):
@@ -161,16 +285,14 @@ def _fetch_gemini(url: str, payload: dict):
     return retry("Gemini", _do, tries=3, backoff=5)
 
 
-def gen_script() -> dict:
-    """Call Gemini free API, fall back to template if no key / failure / bad output."""
-    prompt = (
-        f"Write a scary YouTube Short script about {NICHE}. "
-        "Return ONLY valid JSON with keys: title (<=60 chars, scary hook + #shorts), narration "
-        "(120-150 words, spoken English, chilling hook in first 3 seconds, slow dread build, "
-        "cliffhanger ending with 'Part 2 tomorrow', no stage directions), "
-        "description (2 sentences + 3 hashtags), tags (array of 5 strings), "
-        "visual_queries (array of 4 short dark stock-video search terms like 'dark forest night', 'abandoned hallway')."
-    )
+def gen_script(state=None):
+    """Call Gemini free API. Returns (meta, state_update_or_None).
+
+    state_update advances the series arc and is saved only after a
+    successful render+upload. Fallback returns a standalone story with
+    no state change.
+    """
+    prompt, expected_ep, _ = _episode_prompt(state)
     if GEMINI_KEY:
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
         for model in GEMINI_MODELS:
@@ -181,13 +303,17 @@ def gen_script() -> dict:
                 text = raw["candidates"][0]["content"]["parts"][0]["text"]
                 # strip markdown fences
                 text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-                data = _validate_script(json.loads(text))
+                data = _validate_episode(json.loads(text), expected_ep)
                 log(f"Gemini script OK ({model}): {data.get('title')}")
-                return data
+                if data["finale"]:
+                    log("Gemini marked this episode as the FINALE.")
+                update = {"arc_title": data["arc_title"], "episode": data["episode"],
+                          "recap": data["recap"], "finale": data["finale"]}
+                return data, update
             except Exception as e:
                 log(f"Gemini model {model} unusable ({e}), trying next...")
         log("All Gemini models failed, using fallback.")
-    return _fallback_script()
+    return _fallback_script(), None
 
 
 # ---------- 2. Audio (edge-tts, free, no key) ----------
@@ -254,77 +380,217 @@ def audio_duration(path: Path) -> float:
     return float(r.stdout.strip())
 
 
-# ---------- 3. Visuals ----------
-def pexels_download(queries: list[str], need: int = 4) -> list[Path]:
-    """Download vertical-ish stock clips. Returns [] on failure so caller falls back."""
+# ---------- 3. Visuals (one clip per story beat, in order) ----------
+MOOD_WORDS = ("dark", "night", "creepy", "scary", "abandoned", "haunted",
+              "fog", "eerie", "gloom", "shadow", "spooky", "terror", "ghost")
+
+
+def _mood_query(q: str) -> str:
+    """Force a horror mood so generic queries can't return daylight clips."""
+    if any(w in q.lower() for w in MOOD_WORDS):
+        return q
+    return f"{q} dark"
+
+
+def pexels_clip(query: str):
+    """First usable stock clip for one query. Returns None (no key/fail/empty)."""
     if not PEXELS_KEY:
-        return []
-    clips: list[Path] = []
+        return None
     try:
-        for q in queries:
-            if len(clips) >= need:
-                break
-            def _search(q=q):
-                r = requests.get(
-                    "https://api.pexels.com/videos/search",
-                    headers={"Authorization": PEXELS_KEY},
-                    params={"query": q, "per_page": 3,
-                            "orientation": "portrait", "size": "medium"},
-                    timeout=30,
-                )
-                r.raise_for_status()
-                return r
-            r = retry("Pexels search", _search, tries=3, backoff=5)
-            for v in r.json().get("videos", []):
-                # Prefer the smallest file >=720p wide: keeps CI downloads fast.
-                cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
-                               key=lambda f: f.get("width", 0))
-                big_enough = [f for f in cands if f.get("width", 0) >= 720]
-                pick = (big_enough or cands)
-                if not pick:
-                    continue
-                url = pick[0]["link"]
-                dest = ASSETS / f"pexels_{v['id']}.mp4"
-                if not dest.exists():
-                    def _download(url=url, dest=dest):
-                        with requests.get(url, stream=True, timeout=120) as d:
-                            d.raise_for_status()
-                            with open(dest, "wb") as f:
-                                shutil.copyfileobj(d.raw, f)
-                    try:
-                        retry("Pexels download", _download, tries=2, backoff=5)
-                    except Exception:
-                        if dest.exists():
-                            dest.unlink()  # never keep a partial file
-                        raise
-                clips.append(dest)
-                if len(clips) >= need:
-                    break
+        def _search():
+            r = requests.get(
+                "https://api.pexels.com/videos/search",
+                headers={"Authorization": PEXELS_KEY},
+                params={"query": _mood_query(query), "per_page": 4,
+                        "orientation": "portrait", "size": "medium"},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r
+        r = retry("Pexels search", _search, tries=3, backoff=5)
+        for v in r.json().get("videos", []):
+            # Prefer the smallest file >=720p wide: keeps CI downloads fast.
+            cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
+                           key=lambda f: f.get("width", 0))
+            big_enough = [f for f in cands if f.get("width", 0) >= 720]
+            pick = (big_enough or cands)
+            if not pick:
+                continue
+            dest = ASSETS / f"pexels_{v['id']}.mp4"
+            if not dest.exists():
+                def _download(url=pick[0]["link"], dest=dest):
+                    with requests.get(url, stream=True, timeout=120) as d:
+                        d.raise_for_status()
+                        with open(dest, "wb") as f:
+                            shutil.copyfileobj(d.raw, f)
+                try:
+                    retry("Pexels download", _download, tries=2, backoff=5)
+                except Exception:
+                    if dest.exists():
+                        dest.unlink()  # never keep a partial file
+                    raise
+            return dest
     except Exception as e:
-        log(f"Pexels failed ({e}), will use fallback slides.")
-    return clips[:need]
+        log(f"Pexels failed for '{query}' ({e}).")
+    return None
 
 
-def pillow_slides(narration: str, n: int = 4) -> list[Path]:
+def beat_card(i: int, text: str) -> Path:
+    """Title card carrying the beat's story text (gap filler, always matches)."""
     from PIL import Image, ImageDraw
-    words = narration.split()
-    paths = []
     colors = [(18, 18, 40), (40, 18, 30), (18, 40, 35), (35, 35, 18)]
-    for i in range(n):
-        img = Image.new("RGB", (W, H), colors[i % len(colors)])
-        d = ImageDraw.Draw(img)
-        chunk = " ".join(words[i * 30:(i + 1) * 30])[:220]
-        wrapped = textwrap.fill(chunk, width=28)
-        d.multiline_text((80, 800), wrapped, fill=(255, 255, 255), spacing=8)
-        p = ASSETS / f"slide_{i}.png"
-        img.save(p)
-        paths.append(p)
-    return paths
+    img = Image.new("RGB", (W, H), colors[i % len(colors)])
+    d = ImageDraw.Draw(img)
+    d.multiline_text((80, 800), textwrap.fill(text[:220], width=28),
+                     fill=(255, 255, 255), spacing=8)
+    p = ASSETS / f"slide_beat_{i}.png"
+    img.save(p)
+    return p
+
+
+POLLINATIONS_BASE = "https://image.pollinations.ai/prompt"
+# Optional: Cloudflare Workers AI (free 10k neurons/day, no card) for
+# watermark-free FLUX stills. Account ID + API token with Workers AI
+# permission. Without them, this step is skipped silently.
+CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
+CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
+# SDXL-Lightning: listed at $0.00/step (Beta) + native portrait size, so it
+# beats FLUX on cost. Override back to FLUX if you ever want it:
+# "@cf/black-forest-labs/flux-1-schnell".
+CF_IMAGE_MODEL = os.getenv(
+    "CF_IMAGE_MODEL", "@cf/bytedance/stable-diffusion-xl-lightning")
+# Pollen budget: 0.25 pollen ≈ 125 schnell stills ≈ 0.36 pollen/month at
+# 2 stills/video × 3/day. Only the first beats (hook + follow-through) get
+# AI stills; later beats use beat-matched stock. Raise once pollen allows.
+AI_STILLS_PER_VIDEO = 2
+
+
+def _pollinations_target(beat_text: str, seed: int):
+    """Build (url, params) for one FLUX still. Pure function, no network."""
+    import urllib.parse
+    prompt = (f"{beat_text}, dark horror cinematic film still, eerie night "
+              f"atmosphere, photorealistic, highly detailed")[:600]
+    url = f"{POLLINATIONS_BASE}/{urllib.parse.quote(prompt)}"
+    params = {"model": "flux", "width": W, "height": H, "seed": seed,
+              "safe": "true"}
+    return url, params
+
+
+def _pollinations_headers():
+    """Bearer auth when an account key is set, else anonymous (free)."""
+    if POLLINATIONS_KEY:
+        return {"Authorization": f"Bearer {POLLINATIONS_KEY}"}
+    return {}
+
+
+def pollinations_image(beat_text: str, i: int) -> Path:
+    """Generate a literal horror still for one beat (FLUX).
+
+    Authenticated (POLLINATIONS_API_KEY set): watermark-free + faster pacing.
+    Anonymous: free, 1 req/15s pacing, may carry a small watermark.
+    Raises on failure so the caller falls back to Pexels, then title cards.
+    The key is sent as a header and never logged.
+    """
+    seed = random.randint(1, 999999)
+    url, params = _pollinations_target(beat_text, seed)
+    headers = _pollinations_headers()
+    dest = ASSETS / f"poll_beat_{i}_{seed}.jpg"
+    if i > 0:
+        time.sleep(6 if POLLINATIONS_KEY else 16)  # tier rate limit
+    def _do():
+        r = requests.get(url, params=params, headers=headers, timeout=300)
+        r.raise_for_status()
+        ct = r.headers.get("content-type", "")
+        if not ct.startswith("image/") or len(r.content) < 10_000:
+            raise ValueError(f"Pollinations returned non-image ({ct}, {len(r.content)}b)")
+        dest.write_bytes(r.content)
+    retry("Pollinations", _do, tries=2, backoff=20)
+    tier = "account (no watermark)" if POLLINATIONS_KEY else "anonymous"
+    log(f"Beat {i + 1}: AI still generated ({dest.stat().st_size // 1024} KB, {tier}).")
+    return dest
+
+
+def cloudflare_image(beat_text: str, i: int):
+    """Literal still via Workers AI free allowance (no card, no watermark).
+
+    Default model SDXL-Lightning is listed at $0.00/step and takes native
+    1080x1920, so cost is ~zero and no crop is needed. Free plan hard-stops
+    at the 10k neuron cap (no overage billing possible). Returns None when
+    creds are unset; raises on failure for the next fallback.
+    """
+    if not (CF_ACCOUNT_ID and CF_API_TOKEN):
+        return None
+    prompt = (f"{beat_text}, dark horror cinematic film still, eerie night "
+              f"atmosphere, photorealistic, highly detailed")[:1500]
+    seed = random.randint(1, 999999)
+    dest = ASSETS / f"cf_beat_{i}_{seed}.jpg"
+
+    def _do():
+        r = requests.post(
+            f"https://api.cloudflare.com/client/v4/accounts/"
+            f"{CF_ACCOUNT_ID}/ai/run/{CF_IMAGE_MODEL}",
+            headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
+            json={"prompt": prompt, "seed": seed, "width": W, "height": H,
+                  "num_steps": 8,
+                  "negative_prompt": "blurry, watermark, text, daytime, cheerful"},
+            timeout=180)
+        r.raise_for_status()
+        ct = r.headers.get("content-type", "")
+        if ct.startswith("image/"):
+            raw = r.content  # SDXL models return raw PNG bytes
+        else:  # FLUX-style JSON envelope with base64
+            try:
+                body = r.json()
+            except Exception:
+                raise ValueError(f"Cloudflare returned undecodable body ({ct})")
+            if not isinstance(body, dict):
+                raise ValueError(f"Cloudflare returned unexpected JSON ({ct})")
+            if not body.get("success", False):
+                raise ValueError(f"Cloudflare error: {body.get('errors')}")
+            b64 = (body.get("result") or {}).get("image", "")
+            if not b64:
+                raise ValueError("Cloudflare returned no image")
+            raw = base64.b64decode(b64)
+        if len(raw) < 10_000:
+            raise ValueError(f"Cloudflare image too small ({len(raw)}b)")
+        dest.write_bytes(raw)
+        return dest
+    dest = retry("Cloudflare image", _do, tries=2, backoff=10)
+    log(f"Beat {i + 1}: CF still generated ({dest.stat().st_size // 1024} KB).")
+    return dest
+
+
+def visuals_for_beats(beats: list[dict]) -> list[Path]:
+    """Per beat: Cloudflare still -> Pollinations -> Pexels -> card."""
+    clips = []
+    for i, b in enumerate(beats):
+        clip = None
+        try:
+            clip = cloudflare_image(b["text"], i)
+        except Exception as e:
+            log(f"Beat {i + 1} Cloudflare image failed ({e}), trying Pollinations.")
+        if clip is None and i < AI_STILLS_PER_VIDEO:
+            try:
+                clip = pollinations_image(b["text"], i)
+            except Exception as e:
+                if _http_status(e) == 402:
+                    log("Pollen exhausted (HTTP 402): AI stills off for this run, "
+                        "using stock. Top up via quests or lower AI_STILLS_PER_VIDEO.")
+                else:
+                    log(f"Beat {i + 1} AI still failed ({e}), trying Pexels.")
+        if clip is None:
+            clip = pexels_clip(b["query"])
+        if clip is None:
+            log(f"Beat {i + 1} ('{b['query']}'): no stock, using title card.")
+            clip = beat_card(i, b["text"])
+        clips.append(clip)
+    return clips
 
 
 # Glob patterns for per-run FFmpeg intermediates. The pexels_*.mp4 cache
 # is intentionally NOT listed: re-downloads waste time/bandwidth on re-runs.
-INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png", "concat.txt", "video_only.mp4")
+INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png", "poll_*.jpg",
+                         "cf_*.jpg", "concat.txt", "video_only.mp4")
 
 
 def cleanup_intermediates():
@@ -351,22 +617,37 @@ def _run_ffmpeg(cmd, step: str):
         raise
 
 
-def render(clips: list[Path], audio: Path, srt: Path, target_dur: float, out_path: Path):
-    """Normalize clips to 1080x1920, concat to match audio length, mux + burn subs."""
+def render(clips: list[Path], audio: Path, srt: Path, durations: list[float], out_path: Path):
+    """Normalize clips to 1080x1920, one segment per beat duration, mux + burn subs."""
     # Build per-clip normalized segments (uniform fps/size/codec so concat is safe
     # even when Pexels clips have mixed frame rates).
     segs = []
-    per = max(2.0, target_dur / max(1, len(clips)))
     for i, c in enumerate(clips):
+        seg_dur = max(2.0, durations[i] if i < len(durations) else 2.0)
         seg = ASSETS / f"seg_{i}.mp4"
-        if c.suffix == ".png":
+        if c.suffix == ".jpg":
+            # Ken Burns: slow zoom over the AI still (alternate in/out per beat).
+            frames = max(60, int(seg_dur * 30))
+            if i % 2 == 0:
+                zb = (f"zoompan=z='min(zoom+0.0015,1.3)':d={frames}:"
+                      f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H}")
+            else:
+                zb = (f"zoompan=z='if(eq(in,1),1.3,max(zoom-0.0015,1.0))':d={frames}:"
+                      f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H}")
             _run_ffmpeg(["ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", str(c),
-                         "-t", str(per), "-vf", f"scale={W}:{H},fps=30",
+                         # cover-crop: any input aspect fills 1080x1920 undistorted
+                         "-vf", f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,"
+                                f"crop={W * 2}:{H * 2},{zb},fps=30",
+                         "-t", str(seg_dur), "-pix_fmt", "yuv420p", "-c:v", "libx264",
+                         "-preset", "veryfast", str(seg)], f"segment-{i}-kenburns")
+        elif c.suffix == ".png":
+            _run_ffmpeg(["ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", str(c),
+                         "-t", str(seg_dur), "-vf", f"scale={W}:{H},fps=30",
                          "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
                          str(seg)], f"segment-{i}-slide")
         else:
             _run_ffmpeg(["ffmpeg", "-y", "-i", str(c),
-                         "-t", str(per),
+                         "-t", str(seg_dur),
                          "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30",
                          "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
                          "-an", str(seg)], f"segment-{i}-clip")
@@ -449,16 +730,25 @@ def upload(video: Path, meta: dict):
 def main():
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem = OUT / f"{stamp}_short"
-    meta = gen_script()
+    state = load_state()
+    meta, state_update = gen_script(state)
     (stem.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
     mp3, srt = gen_audio(meta["narration"], stem)
     dur = audio_duration(mp3)
     check_audio_duration(dur, len(meta["narration"].split()))
-    clips = pexels_download(meta.get("visual_queries", [])) or pillow_slides(meta["narration"])
+    beats = meta["beats"]
+    clips = visuals_for_beats(beats)
+    # Weight each beat's screen time by its share of words (speech rate is
+    # roughly constant, so each clip covers its own story moment).
+    total_words = sum(len(b["text"].split()) for b in beats) or 1
+    durations = [dur * len(b["text"].split()) / total_words for b in beats]
     out_mp4 = stem.with_suffix(".mp4")
     try:
-        render(clips, mp3, srt, dur, out_mp4)
+        render(clips, mp3, srt, durations, out_mp4)
         upload(out_mp4, meta)
+        # Advance the arc only if the video actually got made+uploaded.
+        if state_update is not None:
+            save_state(state_update)
     finally:
         cleanup_intermediates()
     log("Done.")

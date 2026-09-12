@@ -23,4 +23,12 @@ YouTube Shorts automation. $0 budget, no credit card, CPU-only.
 - Keep runs CPU-only and under 30 min (job `timeout-minutes: 30`).
 - Artifacts: metadata JSON always 90d; mp4 only on failure 3d (500 MB free cap).
 - Niche default: scary true horror stories with cliffhanger, vertical 1080x1920.
+- Visuals are beat-aligned: meta["beats"] = [{text,query}], per beat:
+  Cloudflare Workers AI SDXL-Lightning still ($0/step, native 1080x1920,
+  CF_ACCOUNT_ID + CF_API_TOKEN secrets) -> Pollinations FLUX backup
+  (pollen, first beats only) -> Pexels clip -> title card. Ken Burns zoom
+  on stills (cover-crop, any input aspect). Screen time weighted by
+  beat word count.
+- Series continuity: series_state.json (arc_title/episode/recap), 5 eps per arc.
+  Workflow needs contents:write + concurrency group to commit state back.
 - Never commit secrets, `out/`, or `assets/` binaries.
