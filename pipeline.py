@@ -398,23 +398,79 @@ def notify_failure(error: Exception):
             log(f"Telegram notify failed (non-fatal): {e}")
 
 
-# Caption style for vertical Shorts: mid-size bold white w/ opaque outline,
-# bottom-center lifted above the Shorts UI overlay (~320px). FontSize is
-# absolute libass px on 1080x1920 — 56 overflows long cues off-screen.
+# Caption style for vertical Shorts: bold white w/ opaque outline,
+# middle-center so phone Shorts UI never covers it. FontSize is absolute
+# libass px on 1080x1920 — 64 confirmed readable on phones; long cues wrap
+# instead of overflowing. Alignment 5 = middle-center.
 # DejaVu Sans ships with the Ubuntu runner (libass falls back if missing).
-SUB_STYLE = ("FontName=DejaVu Sans,FontSize=32,Bold=-1,"
+# NOTE: applied via generated .ass file, NOT force_style (comma-bearing
+# force_style silently yields zero pixels on some FFmpeg/libass builds).
+SUB_STYLE = ("FontName=DejaVu Sans,FontSize=64,Bold=-1,"
              "PrimaryColour=&H00FFFFFF,OutlineColour=&HCC000000,"
              "BorderStyle=1,Outline=2,Shadow=0,"
-             "Alignment=2,MarginV=320,WrapStyle=0")
+             "Alignment=5,MarginV=80,WrapStyle=0")
+
+
+def _srt_to_ass(srt: Path) -> Path:
+    """Convert edge-tts SRT to a styled ASS (middle-center, smaller text).
+
+    Avoids force_style entirely: style lives in the file header, so the
+    subtitles filter stays a plain path with no commas to misparse.
+    """
+    import re
+    ass = srt.with_suffix(".ass")
+    raw = srt.read_text(encoding="utf-8-sig")
+
+    def _ts(ts: str) -> str:
+        m = re.match(r"(\d+):(\d+):(\d+)[,.](\d+)", ts.strip())
+        h, mi, s, ms = map(int, m.groups())
+        return f"{h}:{mi:02d}:{s:02d}.{ms // 10:02d}"
+
+    events = []
+    for block in re.split(r"\r?\n\r?\n", raw.strip()):
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip() != ""]
+        if len(lines) < 3 or "-->" not in lines[1]:
+            continue
+        start, _, end = lines[1].partition("-->")
+        text = "\\N".join(lines[2:])
+        events.append(
+            f"Dialogue: 0,{_ts(start)}, {_ts(end).strip()},Default,,0,0,0,,{text}")
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {W}\n"
+        f"PlayResY: {H}\n"
+        "WrapStyle: 0\n"
+        "ScaledBorderAndShadow: yes\n"
+        "YCbCr Matrix: TV.709\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,DejaVu Sans,64,&H00FFFFFF,&H000019FF,&HCC000000,"
+        "&H00000000,-1,0,0,0,100,100,0,0,1,2,0,5,10,10,80,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    ass.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
+    return ass
 
 
 def _subtitles_vf(srt: Path):
     """Burn-in video filter with styled captions, or None if no subs."""
     if not srt.exists():
         return None
-    esc = (str(srt.resolve()).replace("\\", "/").replace("'", "\\'").replace(":", "\\:").replace(",", "\\,"))
-    # Keep the filter conservative: some Windows FFmpeg/libass builds silently
-    # drop captions when force_style contains ASS options with commas.
+    try:
+        target = _srt_to_ass(srt)
+    except Exception as e:
+        warn(f"ASS conversion failed ({e}), burning raw SRT.")
+        target = srt
+    esc = (str(target.resolve()).replace("\\", "/").replace("'", "\\'").replace(":", "\\:").replace(",", "\\,"))
+    # Plain path, no force_style: commas in force_style break some builds.
     return f"subtitles='{esc}'"
 
 
