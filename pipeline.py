@@ -21,7 +21,7 @@ ASSETS = Path("assets")
 OUT.mkdir(exist_ok=True)
 ASSETS.mkdir(exist_ok=True)
 STATE_FILE = Path("series_state.json")
-MAX_EPISODES_PER_ARC = 5  # episodes per story arc, then a fresh arc starts
+MAX_EPISODES_PER_ARC = 3  # episodes per story arc, then a fresh arc starts
 
 # Hardcoded channel settings (change here, no env vars needed).
 NICHE = "scary true horror stories with cliffhanger"

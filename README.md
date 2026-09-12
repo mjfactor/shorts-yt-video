@@ -59,14 +59,14 @@ cron (08:00, 16:00, 23:00 UTC)
 
 ## Series continuity (connected episodes)
 
-Videos form story arcs of up to 5 episodes, not one-offs. `series_state.json`
+Videos form story arcs of up to 3 episodes, not one-offs. `series_state.json`
 in the repo holds the current arc (title, episode number, recap, finale flag).
 Each run feeds it to Gemini ("continue Episode N, start with a one-line
 'previously' hook, end on a new cliffhanger"), then commits the updated state
 back so the next run continues the story.
 
 - Gemini may end an arc early by setting `finale: true` (proper ending at
-  Ep 3/4); Episode 5 is always the forced finale. Next run starts a new arc.
+  Ep 2); Episode 3 is always the forced finale. Next run starts a new arc.
 - Titles always carry the episode marker and descriptions always name the
   series/episode — the validator auto-fixes them if Gemini omits them.
 
