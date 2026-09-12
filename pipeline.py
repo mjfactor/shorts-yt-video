@@ -586,7 +586,25 @@ def pollinations_image(beat_text: str, i: int) -> Path:
     return dest
 
 
-def cloudflare_image(beat_text: str, i: int):
+def _cloudflare_prompt(beat_text: str, query: str) -> str:
+    """Turn one narration beat into one concrete, story-matched image."""
+    return (
+        "Create one single vertical 9:16 cinematic horror film still for this exact story beat. "
+        "Show one clear moment only: the main subject, the visible action, and the location. "
+        "Use the visual search cue as the scene anchor. Keep the same protagonist and time of night "
+        "throughout the story. Make the action obvious at a glance, with realistic anatomy, natural "
+        "lighting, strong foreground subject, and a readable silhouette. Do not illustrate abstract "
+        "words literally; convert fear, silence, or danger into a visible detail in the scene. "
+        "No collage, no split screen, no multiple scenes, no text, no subtitles, no watermark, "
+        "no logo, no daytime, no cheerful colors. "
+        f"Narration beat: {beat_text[:700]} "
+        f"Visual search cue: {query[:180]}. "
+        "Dark blue-black shadows, muted red accent, cinematic low-key lighting, photorealistic, "
+        "vertical composition, subject centered for a YouTube Short."
+    )
+
+
+def cloudflare_image(beat_text: str, query: str, i: int):
     """Literal still via Workers AI free allowance (no card, no watermark).
 
     Default model SDXL-Lightning is listed at $0.00/step and takes native
@@ -596,8 +614,7 @@ def cloudflare_image(beat_text: str, i: int):
     """
     if not (CF_ACCOUNT_ID and CF_API_TOKEN):
         return None
-    prompt = (f"{beat_text}, dark horror cinematic film still, eerie night "
-              f"atmosphere, photorealistic, highly detailed")[:1500]
+    prompt = _cloudflare_prompt(beat_text, query)
     seed = random.randint(1, 999999)
     dest = ASSETS / f"cf_beat_{i}_{seed}.jpg"
 
@@ -608,7 +625,10 @@ def cloudflare_image(beat_text: str, i: int):
             headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
             json={"prompt": prompt, "seed": seed, "width": W, "height": H,
                   "num_steps": 8,
-                  "negative_prompt": "blurry, watermark, text, daytime, cheerful"},
+                  "negative_prompt": (
+                      "blurry, low quality, bad anatomy, extra limbs, duplicate person, "
+                      "collage, split screen, multiple scenes, text, subtitles, watermark, "
+                      "logo, daytime, sunlight, cheerful colors")},
             timeout=180)
         r.raise_for_status()
         ct = r.headers.get("content-type", "")
@@ -642,7 +662,7 @@ def visuals_for_beats(beats: list[dict]) -> list[Path]:
     for i, b in enumerate(beats):
         clip = None
         try:
-            clip = cloudflare_image(b["text"], i)
+            clip = cloudflare_image(b["text"], b["query"], i)
         except Exception as e:
             warn(f"Beat {i + 1} Cloudflare image failed ({e}), trying Pollinations.")
         if clip is None and i < AI_STILLS_PER_VIDEO:
