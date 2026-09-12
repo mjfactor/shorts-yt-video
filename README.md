@@ -77,32 +77,21 @@ back so the next run continues the story.
 - Runs are serialized (`concurrency: series-state`) so two runs can't fork
   the story; the job needs `contents: write` for the state commit.
 
-## Visuals (beat-aligned, literal AI stills)
+## Visuals (ambient horror B-roll)
 
-Gemini splits each narration into 3–4 beats, each with its own concrete
-query. Per beat, in story order: **Cloudflare Workers AI still**
-(SDXL-Lightning, listed at $0.00/step, native 1080x1920, no card — free-plan
-hard-stop at cap so billing is impossible) → **Pollinations FLUX still**
-(first beats only, pollen budget) → **Pexels clip** (real motion) →
-**title card** with the beat's text. Stills get a **Ken Burns slow zoom**
-(alternating in/out) so they feel like motion. Screen time is weighted by
-beat word count.
+Gemini splits each narration into 3–4 beats for timing only. Per beat, in
+story order: **Pexels clip** (random ambient horror B-roll from
+`RANDOM_HORROR_QUERIES` — foggy forest, dark hallway, etc., deliberately not
+story-matched, just eye-pleasing) → **Cloudflare Workers AI still** fallback
+(SDXL-Lightning, listed at $0.00/step, native 1080x1920 — free-plan
+hard-stop at cap so billing is impossible) → **title card** with the beat's
+text. Stills get a **Ken Burns slow zoom** (alternating in/out) so they feel
+like motion. Screen time is weighted by beat word count.
 
-Cloudflare setup: free account at dash.cloudflare.com (email only, no card)
-→ copy Account ID (dashboard sidebar) → My Profile → API Tokens → create
-token with the Workers AI template → secrets `CF_ACCOUNT_ID` + `CF_API_TOKEN`.
-
-Notes: anonymous Pollinations = 1 request/15s (built-in pacing) and free
-images may carry a small watermark. With an account key (secret
-`POLLINATIONS_API_KEY`, an `sk_...` key from enter.pollinations.ai/keys),
-stills are watermark-free with faster pacing. The key travels as an HTTP
-header and is never printed in logs.
-
-Pollen budget: only the first `AI_STILLS_PER_VIDEO` beats (default 2: the
-hook + follow-through) get AI stills; later beats use beat-matched stock.
-That's ~180 stills/month ≈ 0.36 pollen at schnell rates. If pollen runs dry
-(HTTP 402), runs automatically fall back to stock and log it — top up via
-quests or lower `AI_STILLS_PER_VIDEO`.
+Cloudflare setup (fallback only): free account at dash.cloudflare.com
+(email only, no card) → copy Account ID (dashboard sidebar) → My Profile →
+API Tokens → create token with the Workers AI template → secrets
+`CF_ACCOUNT_ID` + `CF_API_TOKEN`.
 
 ## Captions + music
 

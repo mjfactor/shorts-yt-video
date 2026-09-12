@@ -34,9 +34,6 @@ GEMINI_MODELS = [m.strip() for m in
                            "gemini-3.6-flash,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
                  if m.strip()]
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
-# Optional: Pollinations account key (sk_...) for watermark-free stills +
-# higher rate limits. Without it, stills are anonymous (free, may watermark).
-POLLINATIONS_KEY = os.getenv("POLLINATIONS_API_KEY", "")
 MIN_AUDIO_SEC = float(os.getenv("MIN_AUDIO_SEC", "10"))
 MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
 # TTS prosody: slightly slower + lower reads more dramatic for horror.
@@ -468,8 +465,12 @@ def _mood_query(q: str) -> str:
     return f"{q} dark"
 
 
-def pexels_clip(query: str):
-    """First usable stock clip for one query. Returns None (no key/fail/empty)."""
+def pexels_clip(query: str, used: set | None = None):
+    """First unused stock clip for one query. Returns None (no key/fail/empty).
+
+    `used` holds Pexels video ids already shown in this run, so similar
+    queries can't repeat the same clip twice in one story.
+    """
     if not PEXELS_KEY:
         return None
     try:
@@ -485,6 +486,8 @@ def pexels_clip(query: str):
             return r
         r = retry("Pexels search", _search, tries=3, backoff=5)
         for v in r.json().get("videos", []):
+            if used is not None and v.get("id") in used:
+                continue  # same story must not show the same clip twice
             # Prefer the smallest file >=720p wide: keeps CI downloads fast.
             cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
                            key=lambda f: f.get("width", 0))
@@ -505,6 +508,8 @@ def pexels_clip(query: str):
                     if dest.exists():
                         dest.unlink()  # never keep a partial file
                     raise
+            if used is not None:
+                used.add(v["id"])
             return dest
     except Exception as e:
         warn(f"Pexels failed for '{query}' ({e}).")
@@ -524,9 +529,8 @@ def beat_card(i: int, text: str) -> Path:
     return p
 
 
-POLLINATIONS_BASE = "https://image.pollinations.ai/prompt"
-# Optional: Cloudflare Workers AI (free 10k neurons/day, no card) for
-# watermark-free FLUX stills. Account ID + API token with Workers AI
+# Optional: Cloudflare Workers AI (free 10k neurons/day, no card) fallback
+# when Pexels has no stock. Account ID + API token with Workers AI
 # permission. Without them, this step is skipped silently.
 CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
 CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
@@ -535,76 +539,104 @@ CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
 # "@cf/black-forest-labs/flux-1-schnell".
 CF_IMAGE_MODEL = os.getenv(
     "CF_IMAGE_MODEL", "@cf/bytedance/stable-diffusion-xl-lightning")
-# Pollen budget: 0.25 pollen ≈ 125 schnell stills ≈ 0.36 pollen/month at
-# 2 stills/video × 3/day. Only the first beats (hook + follow-through) get
-# AI stills; later beats use beat-matched stock. Raise once pollen allows.
-AI_STILLS_PER_VIDEO = 2
+# More steps = better prompt adherence (exact moment/action), but each step
+# burns Workers AI neurons out of the 10k/day free allowance. Lightning is a
+# distilled few-step model: below ~8 steps it ignores prompt detail and falls
+# back to generic horror frames; FLUX-schnell adheres better at the same cost
+# in neurons, so prefer switching models over cranking steps past ~20.
+CF_NUM_STEPS = int(os.getenv("CF_NUM_STEPS", "8"))
+# Cuts per beat: 2 stills per beat ≈ 6-8 images/video, cutting mid-beat like
+# real Shorts pacing (~4-7s per still) instead of one static slideshow frame
+# per beat. 1 = old behavior (one still per beat). Costs 2x Cloudflare calls
+# per run — inside the free allowance, which hard-stops instead of billing.
+STILLS_PER_BEAT = int(os.getenv("STILLS_PER_BEAT", "2"))
 
 
-def _pollinations_target(beat_text: str, seed: int):
-    """Build (url, params) for one FLUX still. Pure function, no network."""
-    import urllib.parse
-    prompt = (f"{beat_text}, dark horror cinematic film still, eerie night "
-              f"atmosphere, photorealistic, highly detailed")[:600]
-    url = f"{POLLINATIONS_BASE}/{urllib.parse.quote(prompt)}"
-    params = {"model": "flux", "width": W, "height": H, "seed": seed,
-              "safe": "true"}
-    return url, params
+def _split_beat(text: str, n: int) -> list[str]:
+    """Split beat narration into n word-even halves so mid-beat cuts each get
+    their own image prompt (different moment, not the same frame twice)."""
+    words = text.split()
+    if n <= 1 or len(words) <= n:
+        return [text]
+    size = len(words) / n
+    parts = [" ".join(words[int(i * size):int((i + 1) * size)]).strip()
+             for i in range(n)]
+    return [p for p in parts if p] or [text]
 
 
-def _pollinations_headers():
-    """Bearer auth when an account key is set, else anonymous (free)."""
-    if POLLINATIONS_KEY:
-        return {"Authorization": f"Bearer {POLLINATIONS_KEY}"}
-    return {}
+def _stock_offset(stock: Path, part_idx: int, parts: int):
+    """Seek offset so mid-beat cuts show different stock footage. None = start."""
+    if part_idx == 0 or parts <= 1:
+        return None
+    try:
+        dur = audio_duration(stock)  # ffprobe reads video duration too
+    except Exception:
+        return None
+    return max(0.0, dur * part_idx / parts)
 
 
-def pollinations_image(beat_text: str, i: int) -> Path:
-    """Generate a literal horror still for one beat (FLUX).
+# CTA filler that pollutes image prompts when fed to the model literally
+# ("follow...", "part 2 tomorrow") — the model draws marketing, not story.
+CTA_MARKERS = ("follow", "subscribe", "part 2", "part two", "tomorrow",
+               "don't miss", "dont miss", "comment", "like and")
 
-    Authenticated (POLLINATIONS_API_KEY set): watermark-free + faster pacing.
-    Anonymous: free, 1 req/15s pacing, may carry a small watermark.
-    Raises on failure so the caller falls back to Pexels, then title cards.
-    The key is sent as a header and never logged.
+
+def _clean_beat_text(beat_text: str, limit: int = 350) -> str:
+    """Strip CTA/filler sentences so the image model draws the story beat."""
+    kept = []
+    for sent in beat_text.replace("!", ".").replace("?", ".").split("."):
+        s = sent.strip()
+        if not s:
+            continue
+        if any(m in s.lower() for m in CTA_MARKERS):
+            continue
+        kept.append(s)
+    text = ". ".join(kept).strip()
+    return text[:limit].rstrip() or beat_text[:limit].rstrip()
+
+
+def _image_prompt(beat_text: str, query: str, anchor: str = "") -> str:
+    """Visual prompt for the Cloudflare fallback still.
+
+    Single depicted moment, scene anchored on the concrete `query` (not the
+    abstract narration), with a continuity anchor so beats share one
+    protagonist/setting instead of each still inventing its own.
     """
-    seed = random.randint(1, 999999)
-    url, params = _pollinations_target(beat_text, seed)
-    headers = _pollinations_headers()
-    dest = ASSETS / f"poll_beat_{i}_{seed}.jpg"
-    if i > 0:
-        time.sleep(6 if POLLINATIONS_KEY else 16)  # tier rate limit
-    def _do():
-        r = requests.get(url, params=params, headers=headers, timeout=300)
-        r.raise_for_status()
-        ct = r.headers.get("content-type", "")
-        if not ct.startswith("image/") or len(r.content) < 10_000:
-            raise ValueError(f"Pollinations returned non-image ({ct}, {len(r.content)}b)")
-        dest.write_bytes(r.content)
-    retry("Pollinations", _do, tries=2, backoff=20)
-    tier = "account (no watermark)" if POLLINATIONS_KEY else "anonymous"
-    log(f"Beat {i + 1}: AI still generated ({dest.stat().st_size // 1024} KB, {tier}).")
-    return dest
+    core = _clean_beat_text(beat_text)
+    same = f"Same protagonist and night setting as: {anchor}. " if anchor else ""
+    return (
+        f"{same}One single vertical 9:16 cinematic horror film still, "
+        f"one clear moment only: {core}. "
+        f"Scene anchor: {query}. Photorealistic, dark blue-black shadows, "
+        f"muted red accent, cinematic low-key lighting, strong foreground "
+        f"subject, readable silhouette. No collage, no split screen, "
+        f"no text, no watermark, no daytime."
+    )
 
 
-def _cloudflare_prompt(beat_text: str, query: str) -> str:
+def _cloudflare_prompt(beat_text: str, query: str, anchor: str = "") -> str:
     """Turn one narration beat into one concrete, story-matched image."""
+    core = _clean_beat_text(beat_text, limit=700)
+    same = (f"Keep the same protagonist and time of night as: {anchor}. "
+            if anchor else
+            "Keep the same protagonist and time of night throughout the story. ")
     return (
         "Create one single vertical 9:16 cinematic horror film still for this exact story beat. "
         "Show one clear moment only: the main subject, the visible action, and the location. "
-        "Use the visual search cue as the scene anchor. Keep the same protagonist and time of night "
-        "throughout the story. Make the action obvious at a glance, with realistic anatomy, natural "
+        "Use the visual search cue as the scene anchor. " + same +
+        "Make the action obvious at a glance, with realistic anatomy, natural "
         "lighting, strong foreground subject, and a readable silhouette. Do not illustrate abstract "
         "words literally; convert fear, silence, or danger into a visible detail in the scene. "
         "No collage, no split screen, no multiple scenes, no text, no subtitles, no watermark, "
         "no logo, no daytime, no cheerful colors. "
-        f"Narration beat: {beat_text[:700]} "
+        f"Narration beat: {core} "
         f"Visual search cue: {query[:180]}. "
         "Dark blue-black shadows, muted red accent, cinematic low-key lighting, photorealistic, "
         "vertical composition, subject centered for a YouTube Short."
     )
 
 
-def cloudflare_image(beat_text: str, query: str, i: int):
+def cloudflare_image(beat_text: str, query: str, i: int, anchor: str = ""):
     """Literal still via Workers AI free allowance (no card, no watermark).
 
     Default model SDXL-Lightning is listed at $0.00/step and takes native
@@ -614,7 +646,7 @@ def cloudflare_image(beat_text: str, query: str, i: int):
     """
     if not (CF_ACCOUNT_ID and CF_API_TOKEN):
         return None
-    prompt = _cloudflare_prompt(beat_text, query)
+    prompt = _cloudflare_prompt(beat_text, query, anchor)
     seed = random.randint(1, 999999)
     dest = ASSETS / f"cf_beat_{i}_{seed}.jpg"
 
@@ -624,7 +656,7 @@ def cloudflare_image(beat_text: str, query: str, i: int):
             f"{CF_ACCOUNT_ID}/ai/run/{CF_IMAGE_MODEL}",
             headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
             json={"prompt": prompt, "seed": seed, "width": W, "height": H,
-                  "num_steps": 8,
+                  "num_steps": CF_NUM_STEPS,
                   "negative_prompt": (
                       "blurry, low quality, bad anatomy, extra limbs, duplicate person, "
                       "collage, split screen, multiple scenes, text, subtitles, watermark, "
@@ -656,36 +688,68 @@ def cloudflare_image(beat_text: str, query: str, i: int):
     return dest
 
 
-def visuals_for_beats(beats: list[dict]) -> list[Path]:
-    """Per beat: Cloudflare still -> Pollinations -> Pexels -> card."""
+# Ambient horror B-roll pool: eye-pleasing moody stock, deliberately NOT
+# story-matched. Beats cut every ~4-7s, so variety matters more than literal
+# accuracy. _mood_query() still forces a dark mood on each pick.
+RANDOM_HORROR_QUERIES = (
+    "foggy forest night",
+    "abandoned hallway dark",
+    "haunted house night fog",
+    "dark misty graveyard",
+    "thunderstorm clouds night",
+    "abandoned corridor dark",
+    "creepy old door dark",
+    "full moon clouds night",
+    "dark forest mist",
+    "candle flicker dark",
+    "rainy window night dark",
+    "old lantern night dark",
+    "misty lake night",
+    "abandoned church dark",
+    "spooky stairs dark",
+    "dark castle night fog",
+)
+
+
+def visuals_for_beats(beats: list[dict]) -> list[tuple]:
+    """Per beat: STILLS_PER_BEAT cuts (Pexels stock -> CF still -> card).
+
+    Stock is ambient horror B-roll (random from RANDOM_HORROR_QUERIES, not
+    story-matched). Returns [(clip, seek_or_None, beat_idx)]: stock
+    fallbacks seek into different footage per half; durations stay per-beat
+    and are split evenly at render time.
+    """
     clips = []
+    used_pexels: set = set()
+    # Continuity anchor from the opening beat so CF fallback stills share one
+    # protagonist/setting instead of each inventing its own.
+    anchor = beats[0].get("query", "") if beats else ""
+    still_n = 0
     for i, b in enumerate(beats):
-        clip = None
-        try:
-            clip = cloudflare_image(b["text"], b["query"], i)
-        except Exception as e:
-            warn(f"Beat {i + 1} Cloudflare image failed ({e}), trying Pollinations.")
-        if clip is None and i < AI_STILLS_PER_VIDEO:
-            try:
-                clip = pollinations_image(b["text"], i)
-            except Exception as e:
-                if _http_status(e) == 402:
-                    warn("Pollen exhausted (HTTP 402): AI stills off for this run, "
-                         "using stock. Top up via quests or lower AI_STILLS_PER_VIDEO.")
-                else:
-                    warn(f"Beat {i + 1} AI still failed ({e}), trying Pexels.")
-        if clip is None:
-            clip = pexels_clip(b["query"])
-        if clip is None:
-            warn(f"Beat {i + 1} ('{b['query']}'): no stock, using title card.")
-            clip = beat_card(i, b["text"])
-        clips.append(clip)
+        parts = _split_beat(b["text"], STILLS_PER_BEAT)
+        for j, part in enumerate(parts):
+            clip, seek = None, None
+            query = random.choice(RANDOM_HORROR_QUERIES)
+            stock = pexels_clip(query, used_pexels)
+            if stock is not None:
+                clip, seek = stock, _stock_offset(stock, j, len(parts))
+            if clip is None:
+                try:
+                    clip = cloudflare_image(part, query, still_n, anchor)
+                except Exception as e:
+                    warn(f"Beat {i + 1}.{j + 1} Cloudflare fallback failed ({e}).")
+            if clip is None:
+                warn(f"Beat {i + 1}.{j + 1} ('{query}'): no stock, using title card.")
+                clip = beat_card(still_n, part)
+            clips.append((clip, seek, i))
+            still_n += 1
+    log(f"Visuals: {len(clips)} cuts for {len(beats)} beats.")
     return clips
 
 
 # Glob patterns for per-run FFmpeg intermediates. The pexels_*.mp4 cache
 # is intentionally NOT listed: re-downloads waste time/bandwidth on re-runs.
-INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png", "poll_*.jpg",
+INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png",
                          "cf_*.jpg", "bed.mp3", "concat.txt", "video_only.mp4")
 
 
@@ -713,15 +777,19 @@ def _run_ffmpeg(cmd, step: str):
         raise
 
 
-def render(clips: list[Path], audio: Path, bed: Path, srt: Path,
+def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
            durations: list[float], out_path: Path):
-    """Normalize clips to 1080x1920, one segment per beat duration, mux
-    narration + bed + styled subs."""
+    """Normalize clips to 1080x1920, splitting each beat's duration evenly
+    across its cuts, mux narration + bed + styled subs."""
     # Build per-clip normalized segments (uniform fps/size/codec so concat is safe
     # even when Pexels clips have mixed frame rates).
     segs = []
-    for i, c in enumerate(clips):
-        seg_dur = max(2.0, durations[i] if i < len(durations) else 2.0)
+    cuts_in_beat: dict = {}
+    for c, _, beat_idx in clips:
+        cuts_in_beat[beat_idx] = cuts_in_beat.get(beat_idx, 0) + 1
+    for i, (c, seek, beat_idx) in enumerate(clips):
+        beat_dur = durations[beat_idx] if beat_idx < len(durations) else 2.0
+        seg_dur = max(2.0, beat_dur / max(1, cuts_in_beat.get(beat_idx, 1)))
         seg = ASSETS / f"seg_{i}.mp4"
         if c.suffix == ".jpg":
             # Ken Burns: slow zoom over the AI still (alternate in/out per beat).
@@ -744,11 +812,17 @@ def render(clips: list[Path], audio: Path, bed: Path, srt: Path,
                          "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
                          str(seg)], f"segment-{i}-slide")
         else:
-            _run_ffmpeg(["ffmpeg", "-y", "-i", str(c),
-                         "-t", str(seg_dur),
-                         "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30",
-                         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
-                         "-an", str(seg)], f"segment-{i}-clip")
+            # Stock halves seek into different footage; loop guards short stock
+            # so a segment can never run dry and truncate the narration.
+            cmd = ["ffmpeg", "-y"]
+            if seek:
+                cmd += ["-ss", str(seek)]
+            cmd += ["-stream_loop", "-1", "-i", str(c),
+                    "-t", str(seg_dur),
+                    "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30",
+                    "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+                    "-an", str(seg)]
+            _run_ffmpeg(cmd, f"segment-{i}-clip")
         segs.append(seg)
     concat = ASSETS / "concat.txt"
     concat.write_text("".join(f"file '{s.resolve()}'\n" for s in segs))
@@ -834,9 +908,9 @@ def main():
     # Non-secret effective config so Actions logs show what actually ran.
     log(f"Config: voice={VOICE} rate={TTS_RATE} pitch={TTS_PITCH} niche='{NICHE}' visibility={VISIBILITY} "
         f"min/max={MIN_AUDIO_SEC:g}/{MAX_AUDIO_SEC:g}s models={GEMINI_MODELS} "
-        f"cf_model={CF_IMAGE_MODEL} ai_stills={AI_STILLS_PER_VIDEO} "
+        f"cf_model={CF_IMAGE_MODEL} "
         f"keys: gemini={bool(GEMINI_KEY)} pexels={bool(PEXELS_KEY)} "
-        f"cf={bool(CF_ACCOUNT_ID and CF_API_TOKEN)} poll_key={bool(POLLINATIONS_KEY)} "
+        f"cf={bool(CF_ACCOUNT_ID and CF_API_TOKEN)} "
         f"yt={(bool(os.getenv('YT_CLIENT_ID')) and bool(os.getenv('YT_CLIENT_SECRET')) and bool(os.getenv('YT_REFRESH_TOKEN')))}")
     state = load_state()
     meta, state_update = gen_script(state)
