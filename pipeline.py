@@ -344,14 +344,17 @@ def gen_script(state=None):
 def gen_audio(narration: str, stem: Path) -> tuple[Path, Path]:
     mp3 = stem.with_suffix(".mp3")
     srt = stem.with_suffix(".srt")
-    # edge-tts CLI writes media + subtitles in one call
+    # edge-tts CLI writes media + subtitles in one call.
+    # NOTE: rate/pitch/volume/text use --flag=value form because values like
+    # -10% start with a dash, which some edge-tts builds parse as a new flag
+    # ("argument --rate: expected one argument") when passed as separate args.
     cmd = [
         sys.executable, "-m", "edge_tts",
         "--voice", VOICE,
-        "--rate", TTS_RATE,
-        "--pitch", TTS_PITCH,
-        "--volume", TTS_VOLUME,
-        "--text", narration,
+        f"--rate={TTS_RATE}",
+        f"--pitch={TTS_PITCH}",
+        f"--volume={TTS_VOLUME}",
+        f"--text={narration}",
         "--write-media", str(mp3),
         "--write-subtitles", str(srt),
     ]
