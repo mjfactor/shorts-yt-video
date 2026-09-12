@@ -20,11 +20,9 @@ OUT = Path("out")
 ASSETS = Path("assets")
 OUT.mkdir(exist_ok=True)
 ASSETS.mkdir(exist_ok=True)
-STATE_FILE = Path("series_state.json")
-MAX_EPISODES_PER_ARC = 3  # episodes per story arc, then a fresh arc starts
 
 # Hardcoded channel settings (change here, no env vars needed).
-NICHE = "scary true horror stories with cliffhanger"
+NICHE = "scary true horror stories with a twist ending"
 VOICE = "en-US-ChristopherNeural"  # deep male narrator (News/Novel, Authority)
 VISIBILITY = os.getenv("VISIBILITY", "private")  # private = safe for unverified OAuth apps
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -122,28 +120,34 @@ FALLBACK_TOPICS = [
 def _fallback_script() -> dict:
     topic = random.choice(FALLBACK_TOPICS)
     narration = (
-        f"Do not watch this alone. {topic}. "
-        f"It was 3am when she heard it again. Three slow knocks from inside the walls. "
-        f"She told herself it was the pipes, just the old house settling. "
-        f"But then it whispered her name, and her blood ran cold, because nobody else was home. "
-        f"The knocking moved. From the walls to the ceiling to right behind her bedroom door. "
-        f"She grabbed her phone with shaking hands, but there was no signal. "
-        f"Then silence. The kind of silence that screams. "
-        f"She ran to the front door, and it was locked from the outside. "
-        f"Part 2 tomorrow. Follow so you don't miss what knocked back."
+        f"Do not watch this alone. Mara, 24, works the night shift alone, and tonight is her last one. "
+        f"Her only rule is simple. Never open the storage room after midnight. "
+        f"At 1am she hears it. Three slow knocks from inside the storage room. "
+        f"She tells herself it is the pipes. Just the old building settling. "
+        f"Then the knocks answer her thoughts. Two knocks for yes. She never spoke out loud. "
+        f"Her hands shake as she checks the security monitor. The hallway is empty. "
+        f"But the storage room door stands open on the screen, black beyond it. "
+        f"In person the hallway shows the same door. Closed. Locked from the outside. "
+        f"She looks back at the monitor. Now a pale face fills the frame, staring straight at her. "
+        f"The lights flicker once, twice, then hold. On the screen the face smiles with her mouth, wrong and wide. "
+        f"The hallway lights die completely, and she hears her own footsteps coming closer, though she has not moved. "
+        f"The speaker crackles, and the voice is her own. It says, do not turn around. "
+        f"She turns anyway. The hallway is empty. The knocking has stopped. "
+        f"Because now it stands right behind her chair, breathing on her neck."
     )
     words = narration.split()
     beat_queries = ["dark bedroom night", "abandoned hallway night",
-                    "creepy door dark", "foggy forest night"]
+                    "creepy door dark", "security monitor dark room",
+                    "foggy forest night"]
     beats = []
-    for i in range(4):
-        chunk = " ".join(words[i * 30:(i + 1) * 30])
+    for i in range(5):
+        chunk = " ".join(words[i * 40:(i + 1) * 40])
         if chunk:
             beats.append({"text": chunk, "query": beat_queries[i]})
     return {
         "title": f"{topic} #shorts",
         "narration": narration,
-        "description": f"A true story scary horror short. Part 2 tomorrow! #shorts #horror #scarystory",
+        "description": f"A standalone scary horror short with a twist ending. #shorts #horror #scarystory",
         "tags": ["shorts", "horror", "scarystory", "creepy", "truestory"],
         "beats": beats,
     }
@@ -191,107 +195,27 @@ def _validate_script(data) -> dict:
     }
 
 
-def _validate_episode(data, expected_ep: int) -> dict:
-    """Base validation + arc continuity fields. Raises ValueError if unusable.
-
-    Also guarantees title/description relate to the arc: auto-appends the
-    episode marker / series reference when Gemini omits them (logged).
-    """
-    base = _validate_script(data)
-    arc = data.get("arc_title")
-    ep = data.get("episode")
-    recap = data.get("recap")
-    if not isinstance(arc, str) or not arc.strip():
-        raise ValueError("missing/invalid 'arc_title' (must be non-empty string)")
-    if isinstance(ep, bool) or not isinstance(ep, int) or ep < 1:
-        raise ValueError("'episode' must be a positive int")
-    if not isinstance(recap, str) or not recap.strip():
-        raise ValueError("missing/invalid 'recap' (must be non-empty string)")
-    arc = arc.strip()
-    if ep != expected_ep:
-        log(f"Gemini returned episode {ep}, correcting to {expected_ep}.")
-        ep = expected_ep
-    finale = data.get("finale", False)
-    if not isinstance(finale, bool):
-        log(f"'finale' not a bool ({finale!r}), coercing to {bool(finale)}.")
-        finale = bool(finale)
-    title = base["title"][:90].rstrip()
-    if str(ep) not in title:
-        title = f"{title} Ep {ep}"
-        log(f"Title lacked episode marker, fixed: {title}")
-    base["title"] = title
-    desc = base["description"]
-    if arc.lower() not in desc.lower():
-        desc = f"{desc} Episode {ep} of '{arc}'."
-        log("Description lacked series reference, fixed.")
-    base["description"] = desc
-    base["arc_title"] = arc
-    base["episode"] = ep
-    base["recap"] = recap.strip()
-    base["finale"] = finale
-    return base
-
-
-def load_state():
-    """Read series continuity state. Returns None (fresh arc) if missing/invalid."""
-    try:
-        data = json.loads(STATE_FILE.read_text())
-        if (isinstance(data, dict) and isinstance(data.get("arc_title"), str)
-                and isinstance(data.get("episode"), int)
-                and isinstance(data.get("recap"), str)):
-            log(f"Continuing series '{data['arc_title']}' after episode {data['episode']}")
-            return data
-        log("series_state.json invalid, starting fresh arc.")
-    except FileNotFoundError:
-        log("No series state, starting fresh arc.")
-    except Exception as e:
-        log(f"series_state.json unreadable ({e}), starting fresh arc.")
-    return None
-
-
-def save_state(update: dict):
-    STATE_FILE.write_text(json.dumps(update, indent=2))
-    tag = " (FINALE - next run starts a new arc)" if update.get("finale") else ""
-    log(f"Series state saved: '{update['arc_title']}' Ep {update['episode']}{tag}")
-
-
-def _episode_prompt(state):
-    """Build Gemini prompt. Returns (prompt, episode_number, is_continuation)."""
-    base_rules = (
-        "Return ONLY valid JSON with keys: title (<=60 chars, scary hook + episode marker like 'Ep 2'), "
-        "narration (120-150 words, written for a fifth-grade reading level and easy spoken English; "
-        "use short sentences, common words, one clear idea per sentence, and no fancy metaphors; "
-        "start with a shocking one-line hook in the first 3 seconds; create an unanswered question "
-        "right away; add a new clue, danger, or strange detail every 2-3 sentences; use concrete "
-        "sensory details; remove greetings, filler, backstory, and repeated ideas; keep the tension "
-        "rising; use commas and ellipses to force dramatic pauses before reveals; "
-        "end on a strong unanswered cliffhanger unless this episode ends the story, "
-        "no stage directions), "
-        "description (2 sentences + 3 hashtags, must name the series title and episode number), "
-        "tags (array of 5 strings), "
-        "beats (array of 3-4 objects in story order, each {text: that beat's exact narration chunk, "
-        "query: concrete dark stock-video search for that beat like 'woman opening door dark hallway'}; "
-        "beat texts joined must equal the full narration), "
-        "arc_title (series name, 3-6 words), episode (int), "
-        "recap (3-4 sentences summarizing the whole arc so far, for continuity), "
-        "finale (bool: true ONLY if this episode properly ends the story, else false)."
-    )
-    if state and not state.get("finale") and state.get("episode", 0) < MAX_EPISODES_PER_ARC:
-        ep = state["episode"] + 1
-        prompt = (
-            f"Continue the scary YouTube Shorts horror series '{state['arc_title']}'. "
-            f"Write Episode {ep}. Story so far: {state['recap']} "
-            f"Start the narration with a one-line 'previously' hook, resolve the previous "
-            f"cliffhanger and build new dread. If the story reaches its natural end in this "
-            f"episode, write a proper ENDING and set finale:true instead of a cliffhanger; "
-            f"otherwise end on a NEW cliffhanger "
-            f"(the forced finale is Episode {MAX_EPISODES_PER_ARC}). " + base_rules
-        )
-        return prompt, ep, True
+def _episode_prompt():
+    """Build Gemini prompt for a standalone ~90s story. Returns (prompt, 1, False)."""
     prompt = (
-        f"Start a NEW scary YouTube Shorts horror series about {NICHE}. "
-        "Write Episode 1: chilling hook in first 3 seconds, slow dread build, "
-        "end on a cliffhanger (set finale:false). " + base_rules
+        f"Write a standalone scary YouTube Shorts horror story about {NICHE}. "
+        "It must be complete in this one video: no part 1/2, no episode markers, no cliffhanger-for-next-time. "
+        "Return ONLY valid JSON with keys: title (<=60 chars, scary hook), "
+        "narration (200-230 words so the video runs ~90 seconds, present tense, single POV, fifth-grade "
+        "reading level and easy spoken English; short sentences, common words, one clear idea per sentence, "
+        "no fancy metaphors, no stage directions; name the protagonist (name, age, job) and ONE location "
+        "in the first 2 sentences — never a nameless 'she' in a generic house; deliver escalating concrete "
+        "scares in order: 1) a wrong sound, 2) an object moves or changes, 3) it responds or touches, "
+        "4) a final reversal; each scare must be filmable in one sentence with a concrete sensory detail "
+        "(what is seen/heard/felt, not abstract dread); give the story ONE clear rule that gets broken "
+        "(don't open it, don't answer it, don't look) and let the broken rule drive the scares; "
+        "no greetings, filler, backstory, repeated ideas, or moralizing; use commas and ellipses to force "
+        "dramatic pauses before reveals; end with a complete chilling twist contained in this video), "
+        "description (2 sentences + 3 hashtags), "
+        "tags (array of 5 strings), "
+        "beats (array of 5-6 objects in story order, each {text: that beat's exact narration chunk, "
+        "query: concrete dark stock-video search for that beat like 'woman opening door dark hallway'}; "
+        "beat texts joined must equal the full narration)."
     )
     return prompt, 1, False
 
@@ -305,14 +229,13 @@ def _fetch_gemini(url: str, payload: dict):
     return retry("Gemini", _do, tries=3, backoff=5)
 
 
-def gen_script(state=None):
-    """Call Gemini free API. Returns (meta, state_update_or_None).
+def gen_script():
+    """Call Gemini free API. Returns (meta, None).
 
-    state_update advances the series arc and is saved only after a
-    successful render+upload. Fallback returns a standalone story with
-    no state change.
+    Every run is a standalone story: no arcs, no continuity. Fallback
+    returns a standalone story too.
     """
-    prompt, expected_ep, _ = _episode_prompt(state)
+    prompt, _, _ = _episode_prompt()
     if GEMINI_KEY:
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
         for model in GEMINI_MODELS:
@@ -323,17 +246,13 @@ def gen_script(state=None):
                 text = raw["candidates"][0]["content"]["parts"][0]["text"]
                 # strip markdown fences
                 text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-                data = _validate_episode(json.loads(text), expected_ep)
+                data = _validate_script(json.loads(text))
                 log(f"Gemini script OK ({model}): {data.get('title')}")
-                if data["finale"]:
-                    log("Gemini marked this episode as the FINALE.")
-                update = {"arc_title": data["arc_title"], "episode": data["episode"],
-                          "recap": data["recap"], "finale": data["finale"]}
-                return data, update
+                return data, None
             except Exception as e:
                 log(f"Gemini model {model} unusable ({e}), trying next...")
         log("All Gemini models failed, using fallback.")
-    warn("Gemini unavailable: using standalone fallback script, arc NOT advanced.")
+    warn("Gemini unavailable: using standalone fallback script.")
     return _fallback_script(), None
 
 
@@ -968,8 +887,7 @@ def main():
         f"keys: gemini={bool(GEMINI_KEY)} pexels={bool(PEXELS_KEY)} "
         f"cf={bool(CF_ACCOUNT_ID and CF_API_TOKEN)} "
         f"yt={(bool(os.getenv('YT_CLIENT_ID')) and bool(os.getenv('YT_CLIENT_SECRET')) and bool(os.getenv('YT_REFRESH_TOKEN')))}")
-    state = load_state()
-    meta, state_update = gen_script(state)
+    meta, _ = gen_script()
     (stem.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
     mp3, srt = gen_audio(meta["narration"], stem)
     log(f"Audio: mp3={mp3.stat().st_size // 1024} KB srt_exists={srt.exists()} "
@@ -986,10 +904,7 @@ def main():
     out_mp4 = stem.with_suffix(".mp4")
     try:
         render(clips, mp3, bed, srt, durations, out_mp4)
-        upload_id = upload(out_mp4, meta)
-        # A skipped upload returns None, so it must not advance continuity.
-        if state_update is not None and upload_id is not None:
-            save_state(state_update)
+        upload(out_mp4, meta)
     finally:
         cleanup_intermediates()
     log("Done.")

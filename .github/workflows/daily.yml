@@ -5,10 +5,10 @@ on:
     - cron: "0 8,16,23 * * *"  # 3x daily: 08:00, 16:00, 23:00 UTC
   workflow_dispatch: {}  # manual Run button
 
-# Serialize runs: each run reads+advances series_state.json, so two
-# overlapping runs could fork the story. Queue instead of overlap.
+# Standalone videos: no shared state, but keep runs serial to avoid
+# YouTube upload-quota spikes and artifact name clashes.
 concurrency:
-  group: series-state
+  group: shorts-single
   cancel-in-progress: false
 
 jobs:
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write  # needed to commit series_state.json back
+      contents: read
     env:
       VISIBILITY: ${{ vars.VISIBILITY || 'private' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -40,17 +40,6 @@ jobs:
         run: pip install -r requirements.txt
       - name: Run pipeline
         run: python pipeline.py
-      - name: Save series state (next episode continuity)
-        if: success()
-        # Only on success: pipeline saves state only after render+upload.
-        # The diff guard makes this a no-op when the fallback ran (no state change).
-        run: |
-          git config user.name "shorts-bot"
-          git config user.email "shorts-bot@users.noreply.github.com"
-          git add series_state.json
-          git diff --staged --quiet || git commit -m "series state Ep advance [skip ci]"
-          git pull --rebase --autostash || true
-          git push || echo "::warning::state push failed (non-fatal, next run re-reads repo state)"
       - name: Keep metadata (always, 90 days, tiny text)
         if: always()
         uses: actions/upload-artifact@v4

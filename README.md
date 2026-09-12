@@ -47,7 +47,7 @@ cron (08:00, 16:00, 23:00 UTC)
 | Actions minutes | 2,000 min/mo | ~1,200–1,800 min/mo |
 | Artifact storage | 500 MB | ~180 MB rolling |
 | YouTube uploads | 100/day | 4/day |
-| Pexels API | 200 req/day | ~12/day |
+| Pexels API | 200 req/hour + 20k/mo | ~36/day |
 | Gemini Flash | free tier | 3 calls/day |
 
 ## Files
@@ -57,25 +57,17 @@ cron (08:00, 16:00, 23:00 UTC)
 - `get_refresh_token.py` — one-time OAuth helper (run locally, never in CI)
 - `.env.example` — list of secrets/vars to configure
 
-## Series continuity (connected episodes)
+## Standalone stories (~90s each)
 
-Videos form story arcs of up to 3 episodes, not one-offs. `series_state.json`
-in the repo holds the current arc (title, episode number, recap, finale flag).
-Each run feeds it to Gemini ("continue Episode N, start with a one-line
-'previously' hook, end on a new cliffhanger"), then commits the updated state
-back so the next run continues the story.
+Every run is one complete horror story with its own twist ending — no arcs,
+no episode markers, no "part 2". Each video is evergreen: a stranger can
+watch any upload with zero context. Gemini is prompted for 200–230 words
+(~90s of narration, 5–6 beats → 10–12 Pexels cuts), one named protagonist in
+one location, escalating scares, one broken rule. Fallback runs (Gemini down)
+use a built-in ~200-word standalone story.
 
-- Gemini may end an arc early by setting `finale: true` (proper ending at
-  Ep 2); Episode 3 is always the forced finale. Next run starts a new arc.
-- Titles always carry the episode marker and descriptions always name the
-  series/episode — the validator auto-fixes them if Gemini omits them.
-
-- Fallback runs (Gemini down) post standalone stories and do **not**
-  advance the arc — the commit step no-ops when the state is unchanged.
-- State advances only after successful render+upload, so a failed run never
-  skips an episode publicly.
-- Runs are serialized (`concurrency: series-state`) so two runs can't fork
-  the story; the job needs `contents: write` for the state commit.
+- Runs are serialized (`concurrency: shorts-single`) to avoid upload-quota
+  spikes; there is no shared state and no state commit.
 
 ## Visuals (ambient horror B-roll)
 

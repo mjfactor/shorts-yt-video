@@ -16,8 +16,8 @@ Gemini script (with beats) → edge-tts mp3+srt → visuals → FFmpeg
 
 - `ubuntu-latest`, Python `3.11`, `timeout-minutes: 30`
 - Schedule `0 8,16,23 * * *` (3x daily) + `workflow_dispatch`
-- `concurrency.group: series-state`, `cancel-in-progress: false` — never parallelize state advances
-- `permissions.contents: write` + commit step (`if: success()`, `git add series_state.json`, diff-guard no-op, `[skip ci]`, `pull --rebase --autostash`, push fail → `::warning::`) required for continuity
+- `concurrency.group: shorts-single`, `cancel-in-progress: false` (no shared state; serial only to avoid quota spikes)
+- `permissions.contents: read` — no state commit; every run is standalone
 - Artifacts: `out/*.json` on `always()` 90d; `out/*.mp4`+`*.mp3`+`*.srt` on `failure()` only 3d (YouTube is permanent storage)
 - New env vars must be wired through the workflow `env:` block — secrets do not flow automatically. `GEMINI_MODELS`, `TTS_*`, `MIN/MAX_AUDIO_SEC`, `CF_IMAGE_MODEL`, `CF_NUM_STEPS`, `STILLS_PER_BEAT` are currently unset there, so CI uses code defaults.
 
@@ -30,7 +30,7 @@ Gemini script (with beats) → edge-tts mp3+srt → visuals → FFmpeg
 
 ## Graceful degradation (do not break)
 
-- No Gemini key/fail → template standalone script, `state_update=None` (must NOT advance arc)
+- No Gemini key/fail → template standalone script (~200 words, complete twist ending)
 - No CF creds → skip with `warn()`; `pexels_clip` returns `None` on no key/fail (warn); partial Pexels downloads are deleted
 - No YouTube creds → skip upload, keep video in `out/`
 - `make_bed()` and `notify_failure()` must never fail the run
@@ -40,8 +40,8 @@ Gemini script (with beats) → edge-tts mp3+srt → visuals → FFmpeg
 ## Pipeline gotchas
 
 - edge-tts must use `--flag=value` form (e.g. `f"--rate={TTS_RATE}"`): values like `-10%` start with a dash and are misparsed as new flags when passed as separate args.
-- Beats: `meta["beats"]=[{text,query}]` (3–4 beats, joined texts == full narration). Per beat in order (`STILLS_PER_BEAT`=2 cuts/beat, ~6–8 clips/video): Pexels stock (`RANDOM_HORROR_QUERIES` ambient B-roll, deliberately not story-matched; `portrait`, `_mood_query` forces horror mood, smallest file ≥720p wide, cached as `assets/pexels_*.mp4`, per-run `used` set skips repeats, 2nd-half cuts `_stock_offset`-seek into different footage with `-stream_loop` guard) → Cloudflare still fallback → Pillow `beat_card`.
-- CF fallback uses `_image_prompt` (query-anchored single moment + beat-0 continuity anchor, half-beat text per cut via `_split_beat`); `_clean_beat_text` strips CTA filler before prompting. Stills get Ken Burns zoom with cover-crop; screen time is word-count weighted per beat, split evenly across its cuts. Strict `_validate_script`/`_validate_episode` raise `ValueError` on bad Gemini output; `_validate_episode` auto-appends missing `Ep N` / series ref (not a bug).
+- Beats: `meta["beats"]=[{text,query}]` (5–6 beats, joined texts == full narration, ~200 words for ~90s). Per beat in order (`STILLS_PER_BEAT`=2 cuts/beat, ~10–12 clips/video): Pexels stock (`RANDOM_HORROR_QUERIES` ambient B-roll, deliberately not story-matched; `portrait`, `_mood_query` forces horror mood, smallest file ≥720p wide, cached as `assets/pexels_*.mp4`, per-run `used` set skips repeats, 2nd-half cuts `_stock_offset`-seek into different footage with `-stream_loop` guard) → Cloudflare still fallback → Pillow `beat_card`.
+- CF fallback uses `_image_prompt` (query-anchored single moment + beat-0 continuity anchor, half-beat text per cut via `_split_beat`); `_clean_beat_text` strips CTA filler before prompting. Stills get Ken Burns zoom with cover-crop; screen time is word-count weighted per beat, split evenly across its cuts. Strict `_validate_script` raises `ValueError` on bad Gemini output.
 - Audio guard `check_audio_duration()` aborts before render if outside MIN–MAX; bed = looped `bgm.mp3` (repo root or `assets/bgm.mp3`) at volume 0.20, else generated brown-noise drone at 0.22 (lowpass 400Hz so phones reproduce it).
 - Captions: `_srt_to_ass` converts edge-tts SRT to styled ASS (middle-center `Alignment=5`, `FontSize=64`, `MarginV=80` so Shorts UI never covers text); `_subtitles_vf` burns the ASS with plain `subtitles='...'` and NO `force_style` (comma-bearing `force_style` silently yields zero pixels on some FFmpeg/libass builds); returns `None` if no SRT, falls back to raw SRT if ASS conversion fails; mux falls back to no-subs render with `::warning::` if the filter errors.
-- Series: `series_state.json` `{arc_title,episode,recap,finale}`, `MAX_EPISODES_PER_ARC=3` (Ep 3 forced finale, Gemini may set `finale:true` earlier); `save_state()` only after successful render+upload inside `main()` `try` (gated on `upload()` returning non-`None` — skipped upload must NOT advance arc); `cleanup_intermediates()` runs in `finally`, deletes `INTERMEDIATE_PATTERNS` only, keeps Pexels cache. Upload uses `categoryId=22`, resumable `next_chunk()` with retry.
+- Standalone: every run is one complete story (no arcs, no `series_state.json`); `gen_script()` returns `(meta, None)`. `cleanup_intermediates()` runs in `finally`, deletes `INTERMEDIATE_PATTERNS` only, keeps Pexels cache. Upload uses `categoryId=22`, resumable `next_chunk()` with retry.
