@@ -399,7 +399,9 @@ def _subtitles_vf(srt: Path):
     if not srt.exists():
         return None
     esc = (str(srt.resolve()).replace("\\", "/").replace("'", "\\'").replace(":", "\\:").replace(",", "\\,"))
-    return f"subtitles='{esc}':force_style='{SUB_STYLE}'"
+    # Keep the filter conservative: some Windows FFmpeg/libass builds silently
+    # drop captions when force_style contains ASS options with commas.
+    return f"subtitles='{esc}'"
 
 
 # Optional override: put your own loopable track at bgm.mp3 (repo root, e.g.

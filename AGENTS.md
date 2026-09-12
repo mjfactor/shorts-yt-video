@@ -17,8 +17,8 @@ Gemini script (with beats) → edge-tts mp3+srt → visuals → FFmpeg
 - `ubuntu-latest`, Python `3.11`, `apt install ffmpeg`, `timeout-minutes: 30`
 - Schedule `0 8,16,23 * * *` (3x daily) + `workflow_dispatch`
 - `concurrency.group: series-state`, `cancel-in-progress: false` — never parallelize state advances
-- `permissions.contents: write` + commit step (`git add series_state.json`, diff-guard no-op, `[skip ci]`, `pull --rebase --autostash`) required for continuity
-- Artifacts: `out/*.json` on `always()` 90d; `out/*.mp4` on `failure()` only 3d (500 MB cap; YouTube is permanent storage)
+- `permissions.contents: write` + commit step (`if: success()`, `git add series_state.json`, diff-guard no-op, `[skip ci]`, `pull --rebase --autostash`, push fail → `::warning::`) required for continuity
+- Artifacts: `out/*.json` on `always()` 90d; `out/*.mp4`+`*.mp3`+`*.srt` on `failure()` only 3d (500 MB cap; YouTube is permanent storage)
 
 ## Config (all env, see `.env.example`; never hardcode/commit)
 
@@ -30,14 +30,15 @@ Gemini script (with beats) → edge-tts mp3+srt → visuals → FFmpeg
 ## Graceful degradation (do not break)
 
 - No Gemini key/fail → template standalone script, `state_update=None` (must NOT advance arc)
-- No CF creds → skip silently; Pollinations HTTP 402 → log + fall back to stock; `pexels_clip` returns `None` on no key/fail; partial Pexels downloads are deleted
+- No CF creds → skip with `warn()`; Pollinations HTTP 402 → warn + fall back to stock; `pexels_clip` returns `None` on no key/fail (warn); partial Pexels downloads are deleted
 - No YouTube creds → skip upload, keep video in `out/`
 - `make_bed()` and `notify_failure()` must never fail the run
 - `retry()` retries 429/5xx only; other 4xx fail fast
+- Observability: `warn()`/`err()` emit `::warning::`/`::error::` annotations (visible in Actions UI) — use them for degraded/fatal paths, `log()` for normal flow; `main()` dumps non-secret config + mp3/srt sizes first, check there when debugging
 
 ## Pipeline gotchas
 
 - Beats: `meta["beats"]=[{text,query}]`; per beat in order: Cloudflare still → Pollinations still (first `AI_STILLS_PER_VIDEO=2` beats only; anon = 1 req/15s pacing, may watermark) → Pexels clip (`portrait`, `_mood_query` forces horror mood, smallest file ≥720p wide, cached as `assets/pexels_*.mp4`) → Pillow `beat_card`. Stills get Ken Burns zoom with cover-crop; clip durations weighted by beat word count.
 - Audio guard `check_audio_duration()` aborts before render if outside MIN–MAX; bed = looped `bgm.mp3` (repo root or `assets/bgm.mp3`) at volume 0.20, else generated brown-noise drone at 0.22 (lowpass 400Hz so phones can reproduce it).
-- Captions: burned via `SUB_STYLE` (`DejaVu Sans 32 bold, MarginV=320` to clear Shorts UI); `_subtitles_vf` returns `None` if no SRT.
+- Captions: `_subtitles_vf` burns SRT with plain `subtitles='...'` and NO `force_style` (dropped: comma-bearing `force_style` silently yields zero rendered pixels on some FFmpeg/libass builds; `SUB_STYLE` const is currently unused); returns `None` if no SRT; mux falls back to a no-subs render with `::warning::` if the filter errors.
 - Series: `series_state.json` `{arc_title,episode,recap,finale}`, `MAX_EPISODES_PER_ARC=5` (Ep 5 forced finale, Gemini may set `finale:true` earlier); `save_state()` only after successful render+upload inside `main()` `try`; `cleanup_intermediates()` runs in `finally` but keeps Pexels cache.
