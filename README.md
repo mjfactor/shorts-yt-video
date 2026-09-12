@@ -23,9 +23,9 @@ cron (08:00, 16:00, 23:00 UTC)
    - Create **OAuth Desktop Client**, set `YT_CLIENT_ID` / `YT_CLIENT_SECRET`
    - Locally: `set YT_CLIENT_ID=... & set YT_CLIENT_SECRET=... & python get_refresh_token.py`
    - Log in with your channel account, copy the printed token into `YT_REFRESH_TOKEN`
-4. Optional Variables: `NICHE` (default: scary true horror stories with
-   cliffhanger), `VOICE` (default: `en-US-AvaNeural`), `VISIBILITY`
-   (default: `private` — keep until your OAuth app passes YouTube audit).
+4. Optional: set `VISIBILITY` repo Variable (default `private` — keep until
+   your OAuth app passes YouTube audit). Niche and voice are hardcoded at
+   the top of `pipeline.py`.
 5. Actions tab → `daily-short` → **Run workflow** to test one Short.
 
 ## Storage model (why retention is split)
@@ -56,6 +56,28 @@ cron (08:00, 16:00, 23:00 UTC)
 - `.github/workflows/daily.yml` — schedule + split artifacts
 - `get_refresh_token.py` — one-time OAuth helper (run locally, never in CI)
 - `.env.example` — list of secrets/vars to configure
+
+## Failure alerts (optional, free)
+
+If a run crashes, the pipeline pings you instead of failing silently.
+Set either or both as repo Secrets (both unset = no alerts, runs still work):
+
+- **Discord:** your server → Server Settings → Integrations → Webhooks →
+  New Webhook → Copy Webhook URL → secret `DISCORD_WEBHOOK_URL`
+- **Telegram:** chat with `@BotFather` → `/newbot` → copy token to secret
+  `TELEGRAM_BOT_TOKEN`; get your numeric id from `@userinfobot` → secret
+  `TELEGRAM_CHAT_ID`
+
+The message includes the error and a link to the failed run. Alert delivery
+never breaks the run — if the webhook itself fails, it's logged as non-fatal.
+
+## Safety gates
+
+- **Duration guard:** narration audio outside `MIN_AUDIO_SEC`–`MAX_AUDIO_SEC`
+  (defaults 10–180s) aborts the run before rendering, so a broken TTS
+  output can never become an uploaded video.
+- **Intermediates cleanup:** `assets/` working files are deleted after every
+  run (`finally` block); the Pexels clip cache is kept to save re-downloads.
 
 ## Troubleshooting
 

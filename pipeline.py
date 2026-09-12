@@ -20,11 +20,17 @@ ASSETS = Path("assets")
 OUT.mkdir(exist_ok=True)
 ASSETS.mkdir(exist_ok=True)
 
-NICHE = os.getenv("NICHE", "scary true horror stories with cliffhanger")
-VOICE = os.getenv("VOICE", "en-US-AvaNeural")
+# Hardcoded channel settings (change here, no env vars needed).
+NICHE = "scary true horror stories with cliffhanger"
+VOICE = "en-US-AvaNeural"
 VISIBILITY = os.getenv("VISIBILITY", "private")  # private = safe for unverified OAuth apps
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
+MIN_AUDIO_SEC = float(os.getenv("MIN_AUDIO_SEC", "10"))
+MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 W, H = 1080, 1920  # vertical Shorts
 
@@ -191,6 +197,43 @@ def gen_audio(narration: str, stem: Path) -> tuple[Path, Path]:
     retry("edge-tts", lambda: subprocess.run(cmd, check=True),
           tries=3, backoff=10)
     return mp3, srt
+
+
+def check_audio_duration(dur: float, words: int):
+    """Sanity gate: refuse to render/upload a broken-length narration."""
+    log(f"Narration {dur:.1f}s, {words} words")
+    if not (MIN_AUDIO_SEC <= dur <= MAX_AUDIO_SEC):
+        raise ValueError(
+            f"narration audio {dur:.1f}s outside sane range "
+            f"[{MIN_AUDIO_SEC:g}-{MAX_AUDIO_SEC:g}s] for {words} words; "
+            "refusing to render a broken video."
+        )
+
+
+def notify_failure(error: Exception):
+    """Best-effort failure ping via Discord and/or Telegram. Never raises."""
+    if not (DISCORD_WEBHOOK_URL or (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)):
+        return
+    repo = os.getenv("GITHUB_REPOSITORY", "local")
+    run_id = os.getenv("GITHUB_RUN_ID", "")
+    server = os.getenv("GITHUB_SERVER_URL", "https://github.com")
+    link = f"{server}/{repo}/actions/runs/{run_id}" if run_id else "local run"
+    text = (f"youtube-story FAILED\n{type(error).__name__}: {error}\nRun: {link}")
+    if DISCORD_WEBHOOK_URL:
+        try:
+            requests.post(DISCORD_WEBHOOK_URL, json={"content": text[:1900]},
+                          timeout=15).raise_for_status()
+            log("Failure notified via Discord.")
+        except Exception as e:
+            log(f"Discord notify failed (non-fatal): {e}")
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                          json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
+                          timeout=15).raise_for_status()
+            log("Failure notified via Telegram.")
+        except Exception as e:
+            log(f"Telegram notify failed (non-fatal): {e}")
 
 
 def audio_duration(path: Path) -> float:
@@ -401,7 +444,7 @@ def main():
     (stem.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
     mp3, srt = gen_audio(meta["narration"], stem)
     dur = audio_duration(mp3)
-    log(f"Narration {dur:.1f}s")
+    check_audio_duration(dur, len(meta["narration"].split()))
     clips = pexels_download(meta.get("visual_queries", [])) or pillow_slides(meta["narration"])
     out_mp4 = stem.with_suffix(".mp4")
     try:
@@ -419,4 +462,5 @@ if __name__ == "__main__":
     except Exception as e:
         log(f"PIPELINE FAILED: {type(e).__name__}: {e}")
         traceback.print_exc()
+        notify_failure(e)
         sys.exit(1)
