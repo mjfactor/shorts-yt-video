@@ -50,6 +50,18 @@ def log(msg: str):
     print(f"[pipeline] {msg}", flush=True)
 
 
+def warn(msg: str):
+    """Degraded-but-continuing path. Surfaces as an annotated warning in Actions."""
+    print(f"::warning::{msg}", flush=True)
+    log(f"WARNING: {msg}")
+
+
+def err(msg: str):
+    """Fatal path. Surfaces as an annotated error in Actions."""
+    print(f"::error::{msg}", flush=True)
+    log(f"ERROR: {msg}")
+
+
 def _http_status(e: Exception):
     """Best-effort HTTP status extraction across requests / googleapiclient errors."""
     direct = getattr(e, "status_code", None)
@@ -88,7 +100,7 @@ def retry(name: str, func, tries: int = 3, backoff: int = 5, fatal=()):
         except Exception as e:
             status = _http_status(e)
             if status is not None and 400 <= status < 500 and status not in (408, 429):
-                log(f"{name} permanent failure (HTTP {status}): {e}")
+                err(f"{name} permanent failure (HTTP {status}): {e}")
                 raise
             if attempt == tries:
                 raise
@@ -313,6 +325,7 @@ def gen_script(state=None):
             except Exception as e:
                 log(f"Gemini model {model} unusable ({e}), trying next...")
         log("All Gemini models failed, using fallback.")
+    warn("Gemini unavailable: using standalone fallback script, arc NOT advanced.")
     return _fallback_script(), None
 
 
@@ -371,20 +384,21 @@ def notify_failure(error: Exception):
             log(f"Telegram notify failed (non-fatal): {e}")
 
 
-# Caption style for vertical Shorts: big bold white w/ black outline,
-# bottom-center but lifted above the Shorts UI overlay (~bottom 220px).
+# Caption style for vertical Shorts: mid-size bold white w/ opaque outline,
+# bottom-center lifted above the Shorts UI overlay (~320px). FontSize is
+# absolute libass px on 1080x1920 — 56 overflows long cues off-screen.
 # DejaVu Sans ships with the Ubuntu runner (libass falls back if missing).
-SUB_STYLE = ("FontName=DejaVu Sans,FontSize=56,Bold=-1,"
-             "PrimaryColour=&H00FFFFFF,OutlineColour=&H90000000,"
-             "BorderStyle=1,Outline=3,Shadow=1,"
-             "Alignment=2,MarginV=220")
+SUB_STYLE = ("FontName=DejaVu Sans,FontSize=32,Bold=-1,"
+             "PrimaryColour=&H00FFFFFF,OutlineColour=&HCC000000,"
+             "BorderStyle=1,Outline=2,Shadow=0,"
+             "Alignment=2,MarginV=320,WrapStyle=0")
 
 
 def _subtitles_vf(srt: Path):
     """Burn-in video filter with styled captions, or None if no subs."""
     if not srt.exists():
         return None
-    esc = str(srt.resolve()).replace("\\", "/").replace(":", "\\:")
+    esc = (str(srt.resolve()).replace("\\", "/").replace("'", "\\'").replace(":", "\\:").replace(",", "\\,"))
     return f"subtitles='{esc}':force_style='{SUB_STYLE}'"
 
 
@@ -400,15 +414,16 @@ def make_bed(duration: float) -> Path:
     if custom is not None:
         log(f"Bed: looping custom track {custom}")
         _run_ffmpeg(["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(custom),
-                     "-t", str(duration), "-af", "volume=0.12",
+                     "-t", str(duration), "-af", "volume=0.20",
                      "-c:a", "libmp3lame", str(bed)], "bed-loop")
     else:
-        # Dark drone: brown noise -> deep lowpass -> slow uneasy swell.
-        # Generated = zero copyright-strike risk. Kept ~-20dB under voice.
+        # Dark drone: brown noise -> lowpass -> slow uneasy swell.
+        # Generated = zero copyright-strike risk. ~-14dB under voice so it
+        # stays audible on phone speakers (180Hz cutoff was inaudible).
         log("Bed: generating copyright-safe drone")
         _run_ffmpeg(["ffmpeg", "-y", "-f", "lavfi", "-i",
                      f"anoisesrc=color=brown:duration={duration}:seed=7",
-                     "-af", "lowpass=f=180,volume=0.10,tremolo=f=0.3:d=0.8",
+                     "-af", "lowpass=f=400,volume=0.22,tremolo=f=0.3:d=0.8",
                      "-c:a", "libmp3lame", str(bed)], "bed-drone")
     return bed
 
@@ -473,7 +488,7 @@ def pexels_clip(query: str):
                     raise
             return dest
     except Exception as e:
-        log(f"Pexels failed for '{query}' ({e}).")
+        warn(f"Pexels failed for '{query}' ({e}).")
     return None
 
 
@@ -610,20 +625,20 @@ def visuals_for_beats(beats: list[dict]) -> list[Path]:
         try:
             clip = cloudflare_image(b["text"], i)
         except Exception as e:
-            log(f"Beat {i + 1} Cloudflare image failed ({e}), trying Pollinations.")
+            warn(f"Beat {i + 1} Cloudflare image failed ({e}), trying Pollinations.")
         if clip is None and i < AI_STILLS_PER_VIDEO:
             try:
                 clip = pollinations_image(b["text"], i)
             except Exception as e:
                 if _http_status(e) == 402:
-                    log("Pollen exhausted (HTTP 402): AI stills off for this run, "
-                        "using stock. Top up via quests or lower AI_STILLS_PER_VIDEO.")
+                    warn("Pollen exhausted (HTTP 402): AI stills off for this run, "
+                         "using stock. Top up via quests or lower AI_STILLS_PER_VIDEO.")
                 else:
-                    log(f"Beat {i + 1} AI still failed ({e}), trying Pexels.")
+                    warn(f"Beat {i + 1} AI still failed ({e}), trying Pexels.")
         if clip is None:
             clip = pexels_clip(b["query"])
         if clip is None:
-            log(f"Beat {i + 1} ('{b['query']}'): no stock, using title card.")
+            warn(f"Beat {i + 1} ('{b['query']}'): no stock, using title card.")
             clip = beat_card(i, b["text"])
         clips.append(clip)
     return clips
@@ -716,7 +731,7 @@ def render(clips: list[Path], audio: Path, bed: Path, srt: Path,
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         if vf_subs and "subtitles" in (e.stderr or ""):
-            log("subtitles filter unavailable, rendering without burned captions.")
+            warn("subtitles filter failed, rendering without burned captions.")
             cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
                    "-filter_complex", f"[0:v]format=yuv420p[vout];{achain}",
                    "-map", "[vout]", "-map", "[aout]",
@@ -737,7 +752,7 @@ def upload(video: Path, meta: dict):
     cid, sec, ref = (os.getenv("YT_CLIENT_ID", ""), os.getenv("YT_CLIENT_SECRET", ""),
                      os.getenv("YT_REFRESH_TOKEN", ""))
     if not (cid and sec and ref):
-        log("YouTube creds missing -> skipping upload (video kept in out/).")
+        warn("YouTube creds missing -> skipping upload (video kept in out/).")
         return None
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
@@ -777,10 +792,19 @@ def upload(video: Path, meta: dict):
 def main():
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem = OUT / f"{stamp}_short"
+    # Non-secret effective config so Actions logs show what actually ran.
+    log(f"Config: voice={VOICE} niche='{NICHE}' visibility={VISIBILITY} "
+        f"min/max={MIN_AUDIO_SEC:g}/{MAX_AUDIO_SEC:g}s models={GEMINI_MODELS} "
+        f"cf_model={CF_IMAGE_MODEL} ai_stills={AI_STILLS_PER_VIDEO} "
+        f"keys: gemini={bool(GEMINI_KEY)} pexels={bool(PEXELS_KEY)} "
+        f"cf={bool(CF_ACCOUNT_ID and CF_API_TOKEN)} poll_key={bool(POLLINATIONS_KEY)} "
+        f"yt={(bool(os.getenv('YT_CLIENT_ID')) and bool(os.getenv('YT_CLIENT_SECRET')) and bool(os.getenv('YT_REFRESH_TOKEN')))}")
     state = load_state()
     meta, state_update = gen_script(state)
     (stem.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
     mp3, srt = gen_audio(meta["narration"], stem)
+    log(f"Audio: mp3={mp3.stat().st_size // 1024} KB srt_exists={srt.exists()} "
+        f"srt_bytes={srt.stat().st_size if srt.exists() else 0}")
     dur = audio_duration(mp3)
     check_audio_duration(dur, len(meta["narration"].split()))
     beats = meta["beats"]
@@ -807,7 +831,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        log(f"PIPELINE FAILED: {type(e).__name__}: {e}")
+        err(f"PIPELINE FAILED: {type(e).__name__}: {e}")
         traceback.print_exc()
         notify_failure(e)
         sys.exit(1)

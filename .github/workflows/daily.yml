@@ -42,6 +42,7 @@ jobs:
       - name: Run pipeline
         run: python pipeline.py
       - name: Save series state (next episode continuity)
+        if: success()
         # Only on success: pipeline saves state only after render+upload.
         # The diff guard makes this a no-op when the fallback ran (no state change).
         run: |
@@ -50,7 +51,7 @@ jobs:
           git add series_state.json
           git diff --staged --quiet || git commit -m "series state Ep advance [skip ci]"
           git pull --rebase --autostash || true
-          git push || echo "state push failed (non-fatal, next run re-reads repo state)"
+          git push || echo "::warning::state push failed (non-fatal, next run re-reads repo state)"
       - name: Keep metadata (always, 90 days, tiny text)
         if: always()
         uses: actions/upload-artifact@v4
@@ -64,6 +65,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: short-video-debug
-          path: out/*.mp4
+          path: |
+            out/*.mp4
+            out/*.mp3
+            out/*.srt
           retention-days: 3
           if-no-files-found: warn
