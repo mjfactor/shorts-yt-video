@@ -39,6 +39,11 @@ PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
 POLLINATIONS_KEY = os.getenv("POLLINATIONS_API_KEY", "")
 MIN_AUDIO_SEC = float(os.getenv("MIN_AUDIO_SEC", "10"))
 MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
+# TTS prosody: slightly slower + lower reads more dramatic for horror.
+# edge-tts takes relative rate (-100%..+200%) and pitch (e.g. -10Hz..+10Hz).
+TTS_RATE = os.getenv("TTS_RATE", "-10%")
+TTS_PITCH = os.getenv("TTS_PITCH", "-8Hz")
+TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -262,7 +267,8 @@ def _episode_prompt(state):
         "start with a shocking one-line hook in the first 3 seconds; create an unanswered question "
         "right away; add a new clue, danger, or strange detail every 2-3 sentences; use concrete "
         "sensory details; remove greetings, filler, backstory, and repeated ideas; keep the tension "
-        "rising; end on a strong unanswered cliffhanger unless this episode ends the story, "
+        "rising; use commas and ellipses to force dramatic pauses before reveals; "
+        "end on a strong unanswered cliffhanger unless this episode ends the story, "
         "no stage directions), "
         "description (2 sentences + 3 hashtags, must name the series title and episode number), "
         "tags (array of 5 strings), "
@@ -342,11 +348,14 @@ def gen_audio(narration: str, stem: Path) -> tuple[Path, Path]:
     cmd = [
         sys.executable, "-m", "edge_tts",
         "--voice", VOICE,
+        "--rate", TTS_RATE,
+        "--pitch", TTS_PITCH,
+        "--volume", TTS_VOLUME,
         "--text", narration,
         "--write-media", str(mp3),
         "--write-subtitles", str(srt),
     ]
-    log(f"TTS voice={VOICE}")
+    log(f"TTS voice={VOICE} rate={TTS_RATE} pitch={TTS_PITCH} volume={TTS_VOLUME}")
     retry("edge-tts", lambda: subprocess.run(cmd, check=True),
           tries=3, backoff=10)
     return mp3, srt
@@ -800,7 +809,7 @@ def main():
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem = OUT / f"{stamp}_short"
     # Non-secret effective config so Actions logs show what actually ran.
-    log(f"Config: voice={VOICE} niche='{NICHE}' visibility={VISIBILITY} "
+    log(f"Config: voice={VOICE} rate={TTS_RATE} pitch={TTS_PITCH} niche='{NICHE}' visibility={VISIBILITY} "
         f"min/max={MIN_AUDIO_SEC:g}/{MAX_AUDIO_SEC:g}s models={GEMINI_MODELS} "
         f"cf_model={CF_IMAGE_MODEL} ai_stills={AI_STILLS_PER_VIDEO} "
         f"keys: gemini={bool(GEMINI_KEY)} pexels={bool(PEXELS_KEY)} "

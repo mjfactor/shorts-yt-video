@@ -24,7 +24,7 @@ Gemini script (with beats) → edge-tts mp3+srt → visuals → FFmpeg
 
 - Required: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `YT_CLIENT_ID`/`YT_CLIENT_SECRET`/`YT_REFRESH_TOKEN`
 - Optional: `VISIBILITY` (default `private`), `CF_ACCOUNT_ID`/`CF_API_TOKEN`, `POLLINATIONS_API_KEY` (`sk_...` header, never log), `GEMINI_MODELS` (tried in order), `CF_IMAGE_MODEL` (default `@cf/bytedance/stable-diffusion-xl-lightning`), `MIN_AUDIO_SEC=10`/`MAX_AUDIO_SEC=180`, `DISCORD_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`
-- `NICHE` / `VOICE` (`en-US-ChristopherNeural`) are hardcoded at top of `pipeline.py` — change code, not env
+- `NICHE` / `VOICE` (`en-US-ChristopherNeural`) are hardcoded at top of `pipeline.py` — change code, not env; TTS prosody is env-tunable via `TTS_RATE` (default `-10%`) / `TTS_PITCH` (default `-8Hz`) / `TTS_VOLUME`
 - `.gitignore`: never commit `out/`, `assets/`, `.env`, secrets
 
 ## Graceful degradation (do not break)
