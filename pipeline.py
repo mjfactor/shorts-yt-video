@@ -22,7 +22,7 @@ ASSETS.mkdir(exist_ok=True)
 
 # Hardcoded channel settings (change here, no env vars needed).
 NICHE = "scary true horror stories with cliffhanger"
-VOICE = "en-US-AvaNeural"
+VOICE = "en-US-GuyNeural"
 VISIBILITY = os.getenv("VISIBILITY", "private")  # private = safe for unverified OAuth apps
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 # Tried in order; first working model wins. Override via GEMINI_MODELS="model-a,model-b".
