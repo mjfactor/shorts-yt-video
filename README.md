@@ -104,6 +104,17 @@ That's ~180 stills/month ≈ 0.36 pollen at schnell rates. If pollen runs dry
 (HTTP 402), runs automatically fall back to stock and log it — top up via
 quests or lower `AI_STILLS_PER_VIDEO`.
 
+## Captions + music
+
+- **Captions:** burned in with libass `force_style` — big bold white with
+  black outline, bottom-center lifted 220px above the Shorts UI overlay.
+  Tweak `SUB_STYLE` at the top of `pipeline.py`.
+- **Music:** a dark drone bed is generated per run (brown noise → lowpass →
+  slow swell at ~−20dB under the voice). Generated = zero copyright-strike
+  risk and nothing to download. To use your own track instead, commit a
+  loopable `bgm.mp3` to the repo root (YouTube Audio Library is a safe
+  source) — the pipeline loops it under the narration automatically.
+
 ## Failure alerts (optional, free)
 
 If a run crashes, the pipeline pings you instead of failing silently.

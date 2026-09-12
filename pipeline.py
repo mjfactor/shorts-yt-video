@@ -371,6 +371,48 @@ def notify_failure(error: Exception):
             log(f"Telegram notify failed (non-fatal): {e}")
 
 
+# Caption style for vertical Shorts: big bold white w/ black outline,
+# bottom-center but lifted above the Shorts UI overlay (~bottom 220px).
+# DejaVu Sans ships with the Ubuntu runner (libass falls back if missing).
+SUB_STYLE = ("FontName=DejaVu Sans,FontSize=56,Bold=-1,"
+             "PrimaryColour=&H00FFFFFF,OutlineColour=&H90000000,"
+             "BorderStyle=1,Outline=3,Shadow=1,"
+             "Alignment=2,MarginV=220")
+
+
+def _subtitles_vf(srt: Path):
+    """Burn-in video filter with styled captions, or None if no subs."""
+    if not srt.exists():
+        return None
+    esc = str(srt.resolve()).replace("\\", "/").replace(":", "\\:")
+    return f"subtitles='{esc}':force_style='{SUB_STYLE}'"
+
+
+# Optional override: put your own loopable track at bgm.mp3 (repo root, e.g.
+# from the YouTube Audio Library) or assets/bgm.mp3 (local only).
+BGM_CANDIDATES = (Path("bgm.mp3"), ASSETS / "bgm.mp3")
+
+
+def make_bed(duration: float) -> Path:
+    """Background audio matching narration length. Never fails the run."""
+    bed = ASSETS / "bed.mp3"
+    custom = next((p for p in BGM_CANDIDATES if p.exists()), None)
+    if custom is not None:
+        log(f"Bed: looping custom track {custom}")
+        _run_ffmpeg(["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(custom),
+                     "-t", str(duration), "-af", "volume=0.12",
+                     "-c:a", "libmp3lame", str(bed)], "bed-loop")
+    else:
+        # Dark drone: brown noise -> deep lowpass -> slow uneasy swell.
+        # Generated = zero copyright-strike risk. Kept ~-20dB under voice.
+        log("Bed: generating copyright-safe drone")
+        _run_ffmpeg(["ffmpeg", "-y", "-f", "lavfi", "-i",
+                     f"anoisesrc=color=brown:duration={duration}:seed=7",
+                     "-af", "lowpass=f=180,volume=0.10,tremolo=f=0.3:d=0.8",
+                     "-c:a", "libmp3lame", str(bed)], "bed-drone")
+    return bed
+
+
 def audio_duration(path: Path) -> float:
     r = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -590,7 +632,7 @@ def visuals_for_beats(beats: list[dict]) -> list[Path]:
 # Glob patterns for per-run FFmpeg intermediates. The pexels_*.mp4 cache
 # is intentionally NOT listed: re-downloads waste time/bandwidth on re-runs.
 INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png", "poll_*.jpg",
-                         "cf_*.jpg", "concat.txt", "video_only.mp4")
+                         "cf_*.jpg", "bed.mp3", "concat.txt", "video_only.mp4")
 
 
 def cleanup_intermediates():
@@ -617,8 +659,10 @@ def _run_ffmpeg(cmd, step: str):
         raise
 
 
-def render(clips: list[Path], audio: Path, srt: Path, durations: list[float], out_path: Path):
-    """Normalize clips to 1080x1920, one segment per beat duration, mux + burn subs."""
+def render(clips: list[Path], audio: Path, bed: Path, srt: Path,
+           durations: list[float], out_path: Path):
+    """Normalize clips to 1080x1920, one segment per beat duration, mux
+    narration + bed + styled subs."""
     # Build per-clip normalized segments (uniform fps/size/codec so concat is safe
     # even when Pexels clips have mixed frame rates).
     segs = []
@@ -658,21 +702,24 @@ def render(clips: list[Path], audio: Path, srt: Path, durations: list[float], ou
     _run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
                  "-i", str(concat), "-c:v", "libx264", "-preset", "veryfast",
                  "-pix_fmt", "yuv420p", str(video_only)], "concat")
-    # Mux audio + burn subtitles (caption filter needs .srt path escaped).
-    # Falls back to no subtitles if the ffmpeg build lacks libass.
-    srt_esc = str(srt.resolve()).replace("\\", "/").replace(":", "\\:")
-    vf_subs = f"subtitles='{srt_esc}'" if srt.exists() else None
-    cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio)]
-    if vf_subs:
-        cmd += ["-vf", vf_subs]
-    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-            "-shortest", str(out_path)]
+    # Mux narration + bed + styled burned subtitles. Bed is mixed quietly
+    # under the voice (normalize=0 keeps narration at full volume).
+    vf_subs = _subtitles_vf(srt)
+    vchain = f"[0:v]{vf_subs},format=yuv420p[vout]" if vf_subs else "[0:v]format=yuv420p[vout]"
+    achain = "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+    cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
+           "-filter_complex", f"{vchain};{achain}",
+           "-map", "[vout]", "-map", "[aout]",
+           "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+           "-shortest", str(out_path)]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         if vf_subs and "subtitles" in (e.stderr or ""):
             log("subtitles filter unavailable, rendering without burned captions.")
-            cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio),
+            cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
+                   "-filter_complex", f"[0:v]format=yuv420p[vout];{achain}",
+                   "-map", "[vout]", "-map", "[aout]",
                    "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                    "-shortest", str(out_path)]
             _run_ffmpeg(cmd, "mux-no-subs")
@@ -742,9 +789,10 @@ def main():
     # roughly constant, so each clip covers its own story moment).
     total_words = sum(len(b["text"].split()) for b in beats) or 1
     durations = [dur * len(b["text"].split()) / total_words for b in beats]
+    bed = make_bed(dur)
     out_mp4 = stem.with_suffix(".mp4")
     try:
-        render(clips, mp3, srt, durations, out_mp4)
+        render(clips, mp3, bed, srt, durations, out_mp4)
         upload(out_mp4, meta)
         # Advance the arc only if the video actually got made+uploaded.
         if state_update is not None:

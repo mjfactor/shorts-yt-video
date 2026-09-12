@@ -29,6 +29,8 @@ YouTube Shorts automation. $0 budget, no credit card, CPU-only.
   (pollen, first beats only) -> Pexels clip -> title card. Ken Burns zoom
   on stills (cover-crop, any input aspect). Screen time weighted by
   beat word count.
+- Captions burned via force_style (SUB_STYLE); bed = generated drone
+  (or repo-root bgm.mp3 override), mixed quietly under narration.
 - Series continuity: series_state.json (arc_title/episode/recap), 5 eps per arc.
   Workflow needs contents:write + concurrency group to commit state back.
 - Never commit secrets, `out/`, or `assets/` binaries.
