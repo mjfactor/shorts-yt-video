@@ -44,9 +44,9 @@ cron (08:00, 16:00, 23:00 UTC)
 
 | Item | Free allowance | Our usage (3x/day) |
 |---|---|---|
-| Actions minutes | 2,000 min/mo | ~450–900 min/mo |
+| Actions minutes | 2,000 min/mo | ~1,200–1,800 min/mo |
 | Artifact storage | 500 MB | ~180 MB rolling |
-| YouTube uploads | 100/day | 3/day |
+| YouTube uploads | 100/day | 4/day |
 | Pexels API | 200 req/day | ~12/day |
 | Gemini Flash | free tier | 3 calls/day |
 

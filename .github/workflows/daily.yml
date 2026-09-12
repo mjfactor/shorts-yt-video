@@ -2,7 +2,7 @@ name: daily-short
 
 on:
   schedule:
-    - cron: "0 8,16,23 * * *"  # 3x daily: 08:00, 16:00, 23:00 UTC
+    - cron: "0 2,8,14,20 * * *"  # 4x daily: 02:00, 08:00, 14:00, 20:00 UTC
   workflow_dispatch: {}  # manual Run button
 
 # Serialize runs: each run reads+advances series_state.json, so two
