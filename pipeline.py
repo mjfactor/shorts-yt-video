@@ -317,17 +317,20 @@ def notify_failure(error: Exception):
             log(f"Telegram notify failed (non-fatal): {e}")
 
 
-# Caption style for vertical Shorts: bold white w/ opaque outline,
-# middle-center so phone Shorts UI never covers it. FontSize is absolute
+# Caption style for vertical Shorts: bold white w/ opaque outline, anchored
+# top-center so every cue starts at the same height. FontSize is absolute
 # libass px on 1080x1920 — 64 confirmed readable on phones; long cues wrap
-# instead of overflowing. Alignment 5 = middle-center.
+# downward instead of overflowing. Alignment 8 = top-center (NOT 5:
+# middle-center re-centers each cue's block, so 1-line vs 3-line cues visibly
+# jump up/down between cuts). MarginV=720 puts the first line just above
+# true middle, clear of the Shorts UI.
 # DejaVu Sans ships with the Ubuntu runner (libass falls back if missing).
 # NOTE: applied via generated .ass file, NOT force_style (comma-bearing
 # force_style silently yields zero pixels on some FFmpeg/libass builds).
 SUB_STYLE = ("FontName=DejaVu Sans,FontSize=64,Bold=-1,"
              "PrimaryColour=&H00FFFFFF,OutlineColour=&HCC000000,"
              "BorderStyle=1,Outline=2,Shadow=0,"
-             "Alignment=5,MarginV=80,WrapStyle=0")
+             "Alignment=8,MarginV=720,WrapStyle=0")
 
 
 def _srt_to_ass(srt: Path) -> Path:
@@ -370,7 +373,7 @@ def _srt_to_ass(srt: Path) -> Path:
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         "Style: Default,DejaVu Sans,64,&H00FFFFFF,&H000019FF,&HCC000000,"
-        "&H00000000,-1,0,0,0,100,100,0,0,1,2,0,5,10,10,80,1\n"
+        "&H00000000,-1,0,0,0,100,100,0,0,1,2,0,8,10,10,720,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
