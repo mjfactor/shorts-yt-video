@@ -15,7 +15,7 @@ Gemini script (with beats) → edge-tts mp3+srt → visuals → FFmpeg
 ## CI (`.github/workflows/daily.yml` is source of truth)
 
 - `ubuntu-latest`, Python `3.11`, `apt install ffmpeg`, `timeout-minutes: 30`
-- Schedule `0 2,8,14,20 * * *` (4x daily) + `workflow_dispatch`
+- Schedule `0 8,16,23 * * *` (3x daily) + `workflow_dispatch`
 - `concurrency.group: series-state`, `cancel-in-progress: false` — never parallelize state advances
 - `permissions.contents: write` + commit step (`git add series_state.json`, diff-guard no-op, `[skip ci]`, `pull --rebase --autostash`) required for continuity
 - Artifacts: `out/*.json` on `always()` 90d; `out/*.mp4` on `failure()` only 3d (500 MB cap; YouTube is permanent storage)
