@@ -36,8 +36,8 @@ MIN_AUDIO_SEC = float(os.getenv("MIN_AUDIO_SEC", "10"))
 MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
 # TTS prosody: slightly slower + lower reads more dramatic for horror.
 # edge-tts takes relative rate (-100%..+200%) and pitch (e.g. -10Hz..+10Hz).
-TTS_RATE = os.getenv("TTS_RATE", "-10%")
-TTS_PITCH = os.getenv("TTS_PITCH", "-8Hz")
+TTS_RATE = os.getenv("TTS_RATE", "-5%")
+TTS_PITCH = os.getenv("TTS_PITCH", "-10Hz")
 TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -396,28 +396,52 @@ def _subtitles_vf(srt: Path):
     return f"subtitles='{esc}'"
 
 
-# Optional override: put your own loopable track at bgm.mp3 (repo root, e.g.
-# from the YouTube Audio Library) or assets/bgm.mp3 (local only).
-BGM_CANDIDATES = (Path("bgm.mp3"), ASSETS / "bgm.mp3")
+# Optional override: put your own loopable track(s) at bgm.mp3 (repo root,
+# e.g. from the YouTube Audio Library) or assets/bgm.mp3 (local only).
+# Numbered tracks (bgm1.mp3, bgm2.mp3, bgm3.mp3) are picked at random each
+# run so videos don't all sound identical. Random, not strict rotation:
+# runs are stateless by design (no shared state file), so exact alternation
+# is impossible — but with 3 tracks repeats are rare and harmless.
+def _bgm_pool() -> list:
+    """Available custom bed tracks. Repo-root bgm*.mp3 wins (CI-visible);
+    assets/bgm*.mp3 is the local-only fallback. Sorted for stable logs."""
+    pool = sorted(Path(".").glob("bgm*.mp3"))
+    if not pool:
+        pool = sorted(ASSETS.glob("bgm*.mp3"))
+    return [p for p in pool if p.is_file()]
 
 
 def make_bed(duration: float) -> Path:
     """Background audio matching narration length. Never fails the run."""
     bed = ASSETS / "bed.mp3"
-    custom = next((p for p in BGM_CANDIDATES if p.exists()), None)
+    pool = _bgm_pool()
+    custom = random.choice(pool) if pool else None
     if custom is not None:
-        log(f"Bed: looping custom track {custom}")
+        log(f"Bed: looping custom track {custom} (1 of {len(pool)} in pool)")
         _run_ffmpeg(["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(custom),
                      "-t", str(duration), "-af", "volume=0.20",
                      "-c:a", "libmp3lame", str(bed)], "bed-loop")
     else:
-        # Dark drone: brown noise -> lowpass -> slow uneasy swell.
-        # Generated = zero copyright-strike risk. ~-14dB under voice so it
-        # stays audible on phone speakers (180Hz cutoff was inaudible).
-        log("Bed: generating copyright-safe drone")
-        _run_ffmpeg(["ffmpeg", "-y", "-f", "lavfi", "-i",
-                     f"anoisesrc=color=brown:duration={duration}:seed=7",
-                     "-af", "lowpass=f=400,volume=0.22,tremolo=f=0.3:d=0.8",
+        # Layered dark drone: brown-noise texture (the phone-audible part,
+        # lowpassed so it stays warm) + 55Hz sub root (A1, felt on earbuds)
+        # + 58.27Hz dissonant second voice (A#1). The ~3.3Hz beating between
+        # the two sines is what reads as dread; slow tremolo swell + a short
+        # echo tail give it cavern space. Generated = zero copyright risk.
+        log("Bed: generating layered copyright-safe drone")
+        fc = ("[0:a]lowpass=f=300,volume=0.6[ns];"
+              "[1:a]volume=0.25[s1];[2:a]volume=0.25[s2];"
+              "[ns][s1][s2]amix=inputs=3:normalize=1,"
+              "tremolo=f=0.2:d=0.7,volume=0.5,"
+              "aecho=0.8:0.5:50:0.3[aout]")
+        _run_ffmpeg(["ffmpeg", "-y",
+                     "-f", "lavfi", "-i",
+                     f"anoisesrc=color=brown:sample_rate=44100:duration={duration}:seed=7",
+                     "-f", "lavfi", "-i",
+                     f"sine=frequency=55:sample_rate=44100:duration={duration}",
+                     "-f", "lavfi", "-i",
+                     f"sine=frequency=58.27:sample_rate=44100:duration={duration}",
+                     "-filter_complex", fc, "-map", "[aout]",
+                     "-t", str(duration),
                      "-c:a", "libmp3lame", str(bed)], "bed-drone")
     return bed
 

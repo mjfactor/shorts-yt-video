@@ -95,7 +95,8 @@ API Tokens → create token with the Workers AI template → secrets
 - **Music:** a dark drone bed is generated per run (brown noise → lowpass →
   slow swell at ~−20dB under the voice). Generated = zero copyright-strike
   risk and nothing to download. To use your own track instead, commit a
-  loopable `bgm.mp3` to the repo root (YouTube Audio Library is a safe
+  loopable `bgm.mp3` (or `bgm1.mp3`, `bgm2.mp3`, ... for a randomly rotated
+  pool) to the repo root (YouTube Audio Library is a safe
   source) — the pipeline loops it under the narration automatically.
 
 ## Failure alerts (optional, free)

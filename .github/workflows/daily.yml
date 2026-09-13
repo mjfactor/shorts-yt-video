@@ -19,6 +19,9 @@ jobs:
       contents: read
     env:
       VISIBILITY: ${{ vars.VISIBILITY || 'private' }}
+      TTS_RATE: ${{ vars.TTS_RATE || '-5%' }}
+      TTS_PITCH: ${{ vars.TTS_PITCH || '-10Hz' }}
+      TTS_VOLUME: ${{ vars.TTS_VOLUME || '+0%' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
