@@ -249,6 +249,24 @@ def _board_font_size(text: str, font_path: str) -> int:
     return _BOARD_MIN_FONT_SIZE
 
 
+def _fit_board_label(display_name: str, font_path: str) -> tuple[int, str]:
+    """(size, text) guaranteed to fit the safe width: shrink first, then
+    word-truncate only the pathological remainder (real item names are
+    1-3 words and never reach this). Keeps the "N. " prefix."""
+    size = _board_font_size(display_name, font_path)
+    text = display_name
+    try:
+        from PIL import ImageFont
+        font = ImageFont.truetype(font_path, size)
+        get = (font.getlength if hasattr(font, "getlength")
+               else lambda t: font.getbbox(t)[2])
+        while get(text) > _BOARD_MAX_WIDTH and " " in text.strip():
+            text = text.strip().rsplit(" ", 1)[0].rstrip()
+    except Exception:
+        pass
+    return size, text
+
+
 def board_filter(beats, items, durations, get_font, has_drawtext,
                  title: str = "") -> str:
     """Persistent leaderboard overlay (trailing comma) or "" when N/A.
@@ -316,7 +334,7 @@ def board_filter(beats, items, durations, get_font, has_drawtext,
         reveal = starts[beat_idx]
         end = starts[beat_idx + 1] if beat_idx + 1 < len(starts) else total
         display_name = f"{r}. {name}"
-        name_font_size = _board_font_size(display_name, font)
+        name_font_size, display_name = _fit_board_label(display_name, font)
         esc_name = _escape_drawtext(display_name)
         fill = (f"drawtext=fontfile='{esc_font}':text='{esc_name}':"
             f"fontsize={name_font_size}:fontcolor=white:"
