@@ -2,10 +2,11 @@ name: daily-short
 
 on:
   schedule:
-    - cron: "0 8,16,23 * * *"  # 3x daily: 08:00, 16:00, 23:00 UTC
+    - cron: "0 8 * * *"  # 1x daily: 08:00 UTC (~2-min Short, still a YouTube Short)
   workflow_dispatch: {}  # manual Run button
 
-# Standalone videos: no shared state, but keep runs serial to avoid
+# Runs stay serial: history.json is committed back each run, so overlapping
+# runs could repeat a story or clash on push. Serial also avoids
 # YouTube upload-quota spikes and artifact name clashes.
 concurrency:
   group: shorts-single
@@ -16,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
+      contents: write  # write = commit history.json back so next run avoids repeats
     env:
       VISIBILITY: ${{ vars.VISIBILITY || 'private' }}
       TTS_RATE: ${{ vars.TTS_RATE || '-5%' }}
@@ -43,6 +44,14 @@ jobs:
         run: pip install -r requirements.txt
       - name: Run pipeline
         run: python pipeline.py
+      - name: Commit history (dedup memory for next run)
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add history.json
+          git diff --cached --quiet || git commit -m "chore: record short history [skip ci]"
+          git push || echo "history push skipped (nothing to push or no write access)"
       - name: Keep metadata (always, 90 days, tiny text)
         if: always()
         uses: actions/upload-artifact@v4

@@ -109,48 +109,170 @@ def retry(name: str, func, tries: int = 3, backoff: int = 5, fatal=()):
             time.sleep(wait)
 
 
-# ---------- 1. Script ----------
-FALLBACK_TOPICS = [
-    "The camper who heard knocking at 3am",
-    "The nurse who worked the night shift alone",
-    "The house that whispered at midnight",
-]
+# Cross-run dedup memory. CI runners are ephemeral, so the run history lives
+# in a committed file (history.json) instead of memory. Every successful run
+# appends one entry; the next run feeds recent entries into the Gemini prompt
+# and forces fresh protagonist/location/rule slots, plus a similarity gate
+# retries when Gemini repeats a recent story anyway. Never fails the run.
+HISTORY_PATH = Path("history.json")
+HISTORY_KEEP = 50  # entries stored on disk
+HISTORY_PROMPT_N = 20  # recent entries quoted in the prompt
+SIMILARITY_RETRIES = 2  # extra script attempts after a too-similar draft
 
 
-def _fallback_script() -> dict:
-    topic = random.choice(FALLBACK_TOPICS)
+def load_history(path: Path = HISTORY_PATH) -> list[dict]:
+    """Recent runs, newest last. Empty on first run or corrupt file (warn)."""
+    try:
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            warn(f"{path} has unexpected shape, ignoring.")
+            return []
+        return [h for h in data if isinstance(h, dict)][-HISTORY_KEEP:]
+    except Exception as e:
+        warn(f"Could not read {path} ({e}), continuing without dedup memory.")
+        return []
+
+
+def save_history(entry: dict, path: Path = HISTORY_PATH):
+    """Append one run entry, trim to HISTORY_KEEP. Never raises."""
+    try:
+        history = load_history(path)
+        history.append(entry)
+        path.write_text(json.dumps(history[-HISTORY_KEEP:], indent=2),
+                        encoding="utf-8")
+        log(f"History: recorded '{entry.get('title', '?')}' "
+            f"({len(history[-HISTORY_KEEP:])} entries in {path}).")
+    except Exception as e:
+        warn(f"Could not write {path} ({e}).")
+
+
+def _history_block(history: list[dict]) -> str:
+    """Prompt section listing recent stories Gemini must not repeat."""
+    if not history:
+        return ""
+    lines = []
+    for h in history[-HISTORY_PROMPT_N:]:
+        lines.append(
+            f"- \"{h.get('title', '?')}\" "
+            f"(protagonist={h.get('name', '?')}, job={h.get('job', '?')}, "
+            f"setting={h.get('location', '?')}, rule={h.get('rule', '?')})"
+        )
+    return (
+        "Already-used stories — do NOT reuse any of these titles, twists, "
+        "protagonist names, jobs, settings, or rules, and do NOT write a "
+        "story with the same scare sequence:\n"
+        + "\n".join(lines)
+        + "\nYour story must use a DIFFERENT protagonist name, job, setting, "
+        "rule, and twist from every entry above. "
+    )
+
+
+def _pick_avoiding(pool: tuple, recent: set):
+    """Random pool pick excluding recently used values (falls back to random)."""
+    fresh = [v for v in pool if v not in recent]
+    return random.choice(fresh) if fresh else random.choice(pool)
+
+
+def _story_signature(text: str) -> set:
+    """Significant lowercase words, for overlap comparison."""
+    stop = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "at",
+            "it", "its", "is", "was", "are", "be", "i", "you", "he", "she",
+            "they", "we", "my", "his", "her", "with", "for", "as", "that",
+            "this", "but", "not", "so", "if", "then", "there", "here"}
+    return {w.strip(".,!?;:\"'").lower() for w in text.split()
+            if len(w) > 3} - stop
+
+
+def _similar_to_history(data: dict, slots: dict, history: list[dict]):
+    """Return a repeat reason if the draft is too close to history, else None."""
+    if not history:
+        return None
+    recent = history[-HISTORY_PROMPT_N:]
+    recent_titles = {str(h.get("title", "")).strip().casefold() for h in recent}
+    if str(data.get("title", "")).strip().casefold() in recent_titles:
+        return "title already used"
+    recent_names = {str(h.get("name", "")).casefold() for h in recent}
+    if str(slots.get("name", "")).casefold() in recent_names:
+        return f"protagonist name '{slots.get('name')}' already used"
+    new_sig = _story_signature(
+        f"{data.get('title', '')} {data.get('narration', '')}")
+    for h in recent:
+        old_sig = _story_signature(
+            f"{h.get('title', '')} {h.get('narration', '')}")
+        if not old_sig or not new_sig:
+            continue
+        overlap = len(new_sig & old_sig) / len(new_sig | old_sig)
+        if overlap > 0.35:
+            return (f"story overlaps '{h.get('title', '?')}' "
+                    f"(word overlap {overlap:.0%})")
+    # Same setting + same rule in one recent entry = same story skeleton.
+    for h in recent:
+        if (str(h.get("location", "")).casefold()
+                == str(slots.get("location", "")).casefold()
+                and str(h.get("rule", "")).casefold()
+                == str(slots.get("rule", "")).casefold()):
+            return (f"setting+rule combo already used "
+                    f"('{slots.get('location')}' / '{slots.get('rule')}')")
+    return None
+
+
+# ---------- 1. Script (target ~2:00: 280-300 words, 7-8 beats) ----------
+
+
+def _fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
+    """Offline standalone story (~2 min). Slots avoid recent history."""
+    history = history or []
+    recent_names = {str(h.get("name", "")).casefold() for h in history[-HISTORY_PROMPT_N:]}
+    recent_locations = {str(h.get("location", "")).casefold() for h in history[-HISTORY_PROMPT_N:]}
+    recent_rules = {str(h.get("rule", "")).casefold() for h in history[-HISTORY_PROMPT_N:]}
+    name = _pick_avoiding(PROTAGONIST_NAMES, recent_names)
+    job = random.choice(PROTAGONIST_JOBS)
+    age = random.randint(22, 45)
+    location = _pick_avoiding(STORY_LOCATIONS, recent_locations)
+    rule = _pick_avoiding(BROKEN_RULES, recent_rules)
     narration = (
-        f"Do not watch this alone. Mara, 24, works the night shift alone, and tonight is her last one. "
-        f"Her only rule is simple. Never open the storage room after midnight. "
-        f"At 1am she hears it. Three slow knocks from inside the storage room. "
-        f"She tells herself it is the pipes. Just the old building settling. "
-        f"Then the knocks answer her thoughts. Two knocks for yes. She never spoke out loud. "
-        f"Her hands shake as she checks the security monitor. The hallway is empty. "
-        f"But the storage room door stands open on the screen, black beyond it. "
-        f"In person the hallway shows the same door. Closed. Locked from the outside. "
-        f"She looks back at the monitor. Now a pale face fills the frame, staring straight at her. "
-        f"The lights flicker once, twice, then hold. On the screen the face smiles with her mouth, wrong and wide. "
-        f"The hallway lights die completely, and she hears her own footsteps coming closer, though she has not moved. "
-        f"The speaker crackles, and the voice is her own. It says, do not turn around. "
-        f"She turns anyway. The hallway is empty. The knocking has stopped. "
-        f"Because now it stands right behind her chair, breathing on her neck."
+        f"Do not watch this alone. {name}, {age}, works as a {job}, and tonight is the last shift in the {location}. "
+        f"The only rule is simple. {rule[0].upper() + rule[1:]}. "
+        f"At 1am {name} hears it. Three slow knocks from the far end of the {location}. "
+        f"The sound is wrong. Too patient. Too even. Like something counting. "
+        f"{name} tells herself it is the pipes. Just the old building settling in the cold. "
+        f"Then the knocks answer the thought. Two knocks for yes. {name} never spoke out loud. "
+        f"The air turns colder near the floor, and the breath fogs even indoors. "
+        f"Hands shaking, {name} checks the small monitor on the desk. The corridor is empty. "
+        f"But the far door stands open on the screen, black beyond it, deeper than dark should be. "
+        f"In person the corridor shows the same door. Closed. Locked from the outside. "
+        f"{name} looks back at the monitor. Now a pale face fills the frame, staring straight out. "
+        f"It wears a smile that does not fit its mouth, stretched a little too wide. "
+        f"The lights flicker once, twice, then hold, humming louder than before. "
+        f"On the screen the face tilts, as if it heard {name} breathing. "
+        f"The corridor lights die completely, and {name} hears slow footsteps coming closer, though nothing has moved. "
+        f"A speaker crackles, and the voice sounds almost like {name}. It says, do not turn around. "
+        f"{name} turns anyway. The corridor is empty. The knocking has stopped. "
+        f"Because now it stands right behind the chair, breathing on the back of the neck. "
+        f"And on the monitor, the chair is empty, because {name} is already gone."
     )
     words = narration.split()
     beat_queries = ["dark bedroom night", "abandoned hallway night",
                     "creepy door dark", "security monitor dark room",
-                    "foggy forest night"]
+                    "foggy forest night", "dark corridor footsteps",
+                    "pale face dark screen"]
     beats = []
-    for i in range(5):
-        chunk = " ".join(words[i * 40:(i + 1) * 40])
+    per = max(1, -(-len(words) // 7))  # ~7 even chunks for a ~2-min story
+    for i in range(7):
+        chunk = " ".join(words[i * per:(i + 1) * per])
         if chunk:
             beats.append({"text": chunk, "query": beat_queries[i]})
+    slots = {"name": name, "job": job, "age": age,
+             "location": location, "rule": rule}
     return {
-        "title": f"{topic} #shorts",
+        "title": f"The {location} rule {name} broke #shorts",
         "narration": narration,
         "description": f"A standalone scary horror short with a twist ending. #shorts #horror #scarystory",
         "tags": ["shorts", "horror", "scarystory", "creepy", "truestory"],
         "beats": beats,
-    }
+    }, slots
 
 
 def _validate_script(data) -> dict:
@@ -174,7 +296,7 @@ def _validate_script(data) -> dict:
     if not isinstance(beats, list) or not beats:
         raise ValueError("'beats' must be a non-empty list")
     norm_beats = []
-    for b in beats[:6]:
+    for b in beats[:8]:
         if not isinstance(b, dict):
             raise ValueError("each beat must be an object with text+query")
         t, q = b.get("text"), b.get("query")
@@ -196,10 +318,9 @@ def _validate_script(data) -> dict:
 
 
 # Variety pools: one slot is drawn per run and forced into the prompt, so
-# consecutive stateless runs can't all default to "Mark in a morgue".
-# Pools are sized so a repeat within any 5-6 video window is unlikely.
-# (Stateless by design: CI never commits state, so true cross-run memory
-# is impossible — random forced slots are the substitute.)
+# consecutive runs can't all default to "Mark in a morgue". Fresh slots also
+# avoid recent history.json entries (see _pick_avoiding), and the prompt
+# quotes recent titles so Gemini can't repeat a story skeleton.
 PROTAGONIST_NAMES = (
     "Mara", "Elena", "Jonas", "Priya", "Tomas", "Nadia", "Victor", "Lena",
     "Marcus", "Aisha", "Dario", "Sofia", "Kenji", "Rosa", "Felix", "Amara",
@@ -236,40 +357,48 @@ BROKEN_RULES = (
 BANNED_DEFAULTS = ("Mark", "morgue", "hospital")
 
 
-def _episode_prompt():
-    """Build Gemini prompt for a standalone ~90s story. Returns (prompt, 1, False)."""
-    name = random.choice(PROTAGONIST_NAMES)
-    job = random.choice(PROTAGONIST_JOBS)
+def _episode_prompt(history: list[dict] | None = None):
+    """Build Gemini prompt for a standalone ~2-min story. Returns (prompt, slots)."""
+    history = history or []
+    recent_names = {str(h.get("name", "")).casefold() for h in history[-HISTORY_PROMPT_N:]}
+    recent_jobs = {str(h.get("job", "")).casefold() for h in history[-HISTORY_PROMPT_N:]}
+    recent_locations = {str(h.get("location", "")).casefold() for h in history[-HISTORY_PROMPT_N:]}
+    recent_rules = {str(h.get("rule", "")).casefold() for h in history[-HISTORY_PROMPT_N:]}
+    name = _pick_avoiding(PROTAGONIST_NAMES, recent_names)
+    job = _pick_avoiding(PROTAGONIST_JOBS, recent_jobs)
     age = random.randint(22, 45)
-    location = random.choice(STORY_LOCATIONS)
-    rule = random.choice(BROKEN_RULES)
+    location = _pick_avoiding(STORY_LOCATIONS, recent_locations)
+    rule = _pick_avoiding(BROKEN_RULES, recent_rules)
+    slots = {"name": name, "job": job, "age": age,
+             "location": location, "rule": rule}
     banned = ", ".join(BANNED_DEFAULTS)
     log(f"Story slots: {name}, {age}, {job} @ {location} | rule: {rule}")
     prompt = (
         f"Write a standalone scary YouTube Shorts horror story about {NICHE}. "
         "It must be complete in this one video: no part 1/2, no episode markers, no cliffhanger-for-next-time. "
         f"Never use these overused defaults anywhere (name, job, setting, or title words): {banned}. "
+        f"{_history_block(history)}"
         "Return ONLY valid JSON with keys: title (<=60 chars, scary hook; "
         "vary the title shape every run — never reuse patterns like "
         "'The X Rule You Must Never Break' or 'Never ...'), "
-        "narration (200-230 words so the video runs ~90 seconds, present tense, single POV, fifth-grade "
+        "narration (280-300 words so the video runs about 2 minutes / ~120 seconds, present tense, single POV, fifth-grade "
         "reading level and easy spoken English; short sentences, common words, one clear idea per sentence, "
         f"no fancy metaphors, no stage directions; the protagonist is {name}, {age}, {job}, and the story "
         f"happens ONLY in {location} — state both in the first 2 sentences, "
         "never a nameless 'she' in a generic house; deliver escalating concrete "
         "scares in order: 1) a wrong sound, 2) an object moves or changes, 3) it responds or touches, "
-        "4) a final reversal; each scare must be filmable in one sentence with a concrete sensory detail "
+        "4) a false calm, 5) a final reversal; each scare must be filmable in one sentence with a concrete sensory detail "
         f"(what is seen/heard/felt, not abstract dread); the story's ONE broken rule is '{rule}' "
         "and it must drive the scares; "
         "no greetings, filler, backstory, repeated ideas, or moralizing; use commas and ellipses to force "
         "dramatic pauses before reveals; end with a complete chilling twist contained in this video), "
         "description (2 sentences + 3 hashtags), "
         "tags (array of 5 strings), "
-        "beats (array of 5-6 objects in story order, each {text: that beat's exact narration chunk, "
+        "beats (array of 7-8 objects in story order, each {text: that beat's exact narration chunk, "
         "query: concrete dark stock-video search for that beat like 'woman opening door dark hallway'}; "
         "beat texts joined must equal the full narration)."
     )
-    return prompt, 1, False
+    return prompt, slots
 
 
 def _fetch_gemini(url: str, payload: dict):
@@ -282,30 +411,46 @@ def _fetch_gemini(url: str, payload: dict):
 
 
 def gen_script():
-    """Call Gemini free API. Returns (meta, None).
+    """Call Gemini free API. Returns (meta, slots).
 
-    Every run is a standalone story: no arcs, no continuity. Fallback
-    returns a standalone story too.
+    Every run is a standalone story: no arcs, no continuity. Drafts that are
+    too similar to history.json are regenerated (up to SIMILARITY_RETRIES).
+    Fallback returns a standalone story too (slots avoid recent history).
     """
-    prompt, _, _ = _episode_prompt()
+    history = load_history()
     if GEMINI_KEY:
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        for model in GEMINI_MODELS:
-            try:
-                url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                       f"{model}:generateContent?key={GEMINI_KEY}")
-                raw = _fetch_gemini(url, payload)
-                text = raw["candidates"][0]["content"]["parts"][0]["text"]
-                # strip markdown fences
-                text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-                data = _validate_script(json.loads(text))
-                log(f"Gemini script OK ({model}): {data.get('title')}")
-                return data, None
-            except Exception as e:
-                log(f"Gemini model {model} unusable ({e}), trying next...")
-        log("All Gemini models failed, using fallback.")
+        for attempt in range(1 + SIMILARITY_RETRIES):
+            prompt, slots = _episode_prompt(history)
+            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            data = None
+            for model in GEMINI_MODELS:
+                try:
+                    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                           f"{model}:generateContent?key={GEMINI_KEY}")
+                    raw = _fetch_gemini(url, payload)
+                    text = raw["candidates"][0]["content"]["parts"][0]["text"]
+                    # strip markdown fences
+                    text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                    data = _validate_script(json.loads(text))
+                    break
+                except Exception as e:
+                    log(f"Gemini model {model} unusable ({e}), trying next...")
+            if data is None:
+                log("All Gemini models failed, using fallback.")
+                break
+            reason = _similar_to_history(data, slots, history)
+            if reason is None:
+                log(f"Gemini script OK: {data.get('title')}")
+                return data, slots
+            if attempt < SIMILARITY_RETRIES:
+                warn(f"Gemini draft too similar to history ({reason}), "
+                     f"regenerating (attempt {attempt + 1}/{SIMILARITY_RETRIES})...")
+                continue
+            warn(f"Gemini draft still similar ({reason}), accepting "
+                 f"to avoid failing the run.")
+            return data, slots
     warn("Gemini unavailable: using standalone fallback script.")
-    return _fallback_script(), None
+    return _fallback_script(history)
 
 
 # ---------- 2. Audio (edge-tts, free, no key) ----------
@@ -452,8 +597,8 @@ def _subtitles_vf(srt: Path):
 # e.g. from the YouTube Audio Library) or assets/bgm.mp3 (local only).
 # Numbered tracks (bgm1.mp3, bgm2.mp3, bgm3.mp3) are picked at random each
 # run so videos don't all sound identical. Random, not strict rotation:
-# runs are stateless by design (no shared state file), so exact alternation
-# is impossible — but with 3 tracks repeats are rare and harmless.
+# bed choice is intentionally stateless (history.json tracks stories, not
+# music) — but with 3 tracks repeats are rare and harmless.
 def _bgm_pool() -> list:
     """Available custom bed tracks. Repo-root bgm*.mp3 wins (CI-visible);
     assets/bgm*.mp3 is the local-only fallback. Sorted for stable logs."""
@@ -599,7 +744,7 @@ CF_IMAGE_MODEL = os.getenv(
 # back to generic horror frames; FLUX-schnell adheres better at the same cost
 # in neurons, so prefer switching models over cranking steps past ~20.
 CF_NUM_STEPS = int(os.getenv("CF_NUM_STEPS", "8"))
-# Cuts per beat: 2 stills per beat ≈ 6-8 images/video, cutting mid-beat like
+# Cuts per beat: 2 stills per beat ≈ 14-16 images/video, cutting mid-beat like
 # real Shorts pacing (~4-7s per still) instead of one static slideshow frame
 # per beat. 1 = old behavior (one still per beat). Costs 2x Cloudflare calls
 # per run — inside the free allowance, which hard-stops instead of billing.
@@ -966,7 +1111,7 @@ def main():
         f"keys: gemini={bool(GEMINI_KEY)} pexels={bool(PEXELS_KEY)} "
         f"cf={bool(CF_ACCOUNT_ID and CF_API_TOKEN)} "
         f"yt={(bool(os.getenv('YT_CLIENT_ID')) and bool(os.getenv('YT_CLIENT_SECRET')) and bool(os.getenv('YT_REFRESH_TOKEN')))}")
-    meta, _ = gen_script()
+    meta, slots = gen_script()
     (stem.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
     mp3, srt = gen_audio(meta["narration"], stem)
     log(f"Audio: mp3={mp3.stat().st_size // 1024} KB srt_exists={srt.exists()} "
@@ -983,9 +1128,21 @@ def main():
     out_mp4 = stem.with_suffix(".mp4")
     try:
         render(clips, mp3, bed, srt, durations, out_mp4)
-        upload(out_mp4, meta)
+        video_id = upload(out_mp4, meta)
     finally:
         cleanup_intermediates()
+    # Record this story so future runs can't repeat it. Runs before any
+    # video exists (render failure) are NOT recorded — nothing aired.
+    # save_history never raises, so dedup memory can't fail the run.
+    save_history({"date": stamp, "title": meta.get("title", ""),
+                  "name": slots.get("name", "") if isinstance(slots, dict) else "",
+                  "job": slots.get("job", "") if isinstance(slots, dict) else "",
+                  "age": slots.get("age", "") if isinstance(slots, dict) else "",
+                  "location": slots.get("location", "") if isinstance(slots, dict) else "",
+                  "rule": slots.get("rule", "") if isinstance(slots, dict) else "",
+                  "tags": meta.get("tags", [])[:10],
+                  "narration": meta.get("narration", ""),
+                  "videoId": video_id})
     log("Done.")
 
 

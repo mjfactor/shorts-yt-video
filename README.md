@@ -2,14 +2,15 @@
 
 Faceless horror Shorts pipeline. Gemini writes the script, edge-tts narrates,
 Pexels (or Pillow fallback) provides visuals, FFmpeg renders vertical video,
-GitHub Actions uploads to YouTube 3x/day. No server, no credit card.
+GitHub Actions uploads to YouTube 1x/day. No server, no credit card.
 
 ## How it works
 
 ```
-cron (08:00, 16:00, 23:00 UTC)
+cron (08:00 UTC daily)
  -> pipeline.py: Gemini script -> edge-tts mp3+srt -> Pexels clips
  -> FFmpeg 1080x1920 + burned subtitles -> YouTube Data API upload
+ -> history.json committed back (dedup memory so stories never repeat)
 ```
 
 ## Setup (one time)
@@ -42,36 +43,38 @@ cron (08:00, 16:00, 23:00 UTC)
 
 ## Limits ($0 budget)
 
-| Item | Free allowance | Our usage (3x/day) |
+| Item | Free allowance | Our usage (1x/day) |
 |---|---|---|
-| Actions minutes | 2,000 min/mo | ~1,200–1,800 min/mo |
-| Artifact storage | 500 MB | ~180 MB rolling |
-| YouTube uploads | 100/day | 4/day |
-| Pexels API | 200 req/hour + 20k/mo | ~36/day |
-| Gemini Flash | free tier | 3 calls/day |
+| Actions minutes | 2,000 min/mo | ~400–600 min/mo |
+| Artifact storage | 500 MB | ~60 MB rolling |
+| YouTube uploads | 100/day | 1/day |
+| Pexels API | 200 req/hour + 20k/mo | ~14/day |
+| Gemini Flash | free tier | 1 call/day |
 
 ## Files
 
 - `pipeline.py` — whole pipeline (script/audio/visuals/render/upload)
-- `.github/workflows/daily.yml` — schedule + split artifacts
+- `.github/workflows/daily.yml` — schedule + split artifacts + history commit-back
+- `history.json` — committed dedup memory (recent titles/names/settings/rules); the pipeline quotes it into the Gemini prompt so stories never repeat
 - `get_refresh_token.py` — one-time OAuth helper (run locally, never in CI)
 - `.env.example` — list of secrets/vars to configure
 
-## Standalone stories (~90s each)
+## Standalone stories (~2 min each)
 
 Every run is one complete horror story with its own twist ending — no arcs,
 no episode markers, no "part 2". Each video is evergreen: a stranger can
-watch any upload with zero context. Gemini is prompted for 200–230 words
-(~90s of narration, 5–6 beats → 10–12 Pexels cuts), one named protagonist in
+watch any upload with zero context. Gemini is prompted for 280–300 words
+(~2 min of narration, 7–8 beats → 14–16 Pexels cuts), one named protagonist in
 one location, escalating scares, one broken rule. Fallback runs (Gemini down)
-use a built-in ~200-word standalone story.
+use a built-in ~270-word standalone story.
 
-- Runs are serialized (`concurrency: shorts-single`) to avoid upload-quota
-  spikes; there is no shared state and no state commit.
+- Runs are serialized (`concurrency: shorts-single`) so the `history.json`
+  commit-back can't race; every run records its story (title, protagonist,
+  setting, rule, full narration) and the next run is forced onto fresh slots.
 
 ## Visuals (ambient horror B-roll)
 
-Gemini splits each narration into 3–4 beats for timing only. Per beat, in
+Gemini splits each narration into 7–8 beats for timing only. Per beat, in
 story order: **Pexels clip** (random ambient horror B-roll from
 `RANDOM_HORROR_QUERIES` — foggy forest, dark hallway, etc., deliberately not
 story-matched, just eye-pleasing) → **Cloudflare Workers AI still** fallback
