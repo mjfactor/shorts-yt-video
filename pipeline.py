@@ -195,20 +195,72 @@ def _validate_script(data) -> dict:
     }
 
 
+# Variety pools: one slot is drawn per run and forced into the prompt, so
+# consecutive stateless runs can't all default to "Mark in a morgue".
+# Pools are sized so a repeat within any 5-6 video window is unlikely.
+# (Stateless by design: CI never commits state, so true cross-run memory
+# is impossible — random forced slots are the substitute.)
+PROTAGONIST_NAMES = (
+    "Mara", "Elena", "Jonas", "Priya", "Tomas", "Nadia", "Victor", "Lena",
+    "Marcus", "Aisha", "Dario", "Sofia", "Kenji", "Rosa", "Felix", "Amara",
+    "Silas", "Noor", "Petra", "Owen", "Yuki", "Henrik", "Lucia", "Omar",
+    "Ingrid", "Caleb", "Mei", "Rafael", "Tara", "Dmitri",
+)
+PROTAGONIST_JOBS = (
+    "night-shift nurse", "overnight security guard", "late-night radio host",
+    "24-hour diner cook", "cemetery caretaker", "last-route bus driver",
+    "roadside motel clerk", "lighthouse keeper",
+    "graveyard-shift warehouse picker", "petrol station night attendant",
+    "empty-office cleaner", "night baker", "night-shift taxi driver",
+    "highway toll booth operator", "overnight ferry deckhand",
+    "24-hour gym receptionist", "sleeping-train conductor",
+    "cruise ship night steward",
+)
+STORY_LOCATIONS = (
+    "abandoned elementary school", "roadside motel", "overnight sleeper train",
+    "closed shopping mall", "forest ranger cabin", "subway maintenance tunnel",
+    "rural clinic", "lighthouse", "apartment stairwell", "lakeside campsite",
+    "24-hour laundromat", "empty church", "truck stop diner",
+    "night market alley", "defunct amusement park", "underground parking garage",
+    "remote fire lookout tower", "closed-down cinema", "foggy cliffside road",
+    "deserted oil rig", "mountain tunnel rest stop", "old sanatorium",
+    "riverside boathouse", "snowed-in ski lodge",
+)
+BROKEN_RULES = (
+    "don't open it after midnight", "don't answer it", "don't look back",
+    "don't follow the sound", "don't let it inside", "don't say its name",
+    "don't turn off the light", "don't go downstairs", "don't whistle back",
+    "don't pick up the coin", "don't knock twice", "don't sleep before 3am",
+)
+# Observed Gemini ruts — explicitly banned in the prompt each run.
+BANNED_DEFAULTS = ("Mark", "morgue", "hospital")
+
+
 def _episode_prompt():
     """Build Gemini prompt for a standalone ~90s story. Returns (prompt, 1, False)."""
+    name = random.choice(PROTAGONIST_NAMES)
+    job = random.choice(PROTAGONIST_JOBS)
+    age = random.randint(22, 45)
+    location = random.choice(STORY_LOCATIONS)
+    rule = random.choice(BROKEN_RULES)
+    banned = ", ".join(BANNED_DEFAULTS)
+    log(f"Story slots: {name}, {age}, {job} @ {location} | rule: {rule}")
     prompt = (
         f"Write a standalone scary YouTube Shorts horror story about {NICHE}. "
         "It must be complete in this one video: no part 1/2, no episode markers, no cliffhanger-for-next-time. "
-        "Return ONLY valid JSON with keys: title (<=60 chars, scary hook), "
+        f"Never use these overused defaults anywhere (name, job, setting, or title words): {banned}. "
+        "Return ONLY valid JSON with keys: title (<=60 chars, scary hook; "
+        "vary the title shape every run — never reuse patterns like "
+        "'The X Rule You Must Never Break' or 'Never ...'), "
         "narration (200-230 words so the video runs ~90 seconds, present tense, single POV, fifth-grade "
         "reading level and easy spoken English; short sentences, common words, one clear idea per sentence, "
-        "no fancy metaphors, no stage directions; name the protagonist (name, age, job) and ONE location "
-        "in the first 2 sentences — never a nameless 'she' in a generic house; deliver escalating concrete "
+        f"no fancy metaphors, no stage directions; the protagonist is {name}, {age}, {job}, and the story "
+        f"happens ONLY in {location} — state both in the first 2 sentences, "
+        "never a nameless 'she' in a generic house; deliver escalating concrete "
         "scares in order: 1) a wrong sound, 2) an object moves or changes, 3) it responds or touches, "
         "4) a final reversal; each scare must be filmable in one sentence with a concrete sensory detail "
-        "(what is seen/heard/felt, not abstract dread); give the story ONE clear rule that gets broken "
-        "(don't open it, don't answer it, don't look) and let the broken rule drive the scares; "
+        f"(what is seen/heard/felt, not abstract dread); the story's ONE broken rule is '{rule}' "
+        "and it must drive the scares; "
         "no greetings, filler, backstory, repeated ideas, or moralizing; use commas and ellipses to force "
         "dramatic pauses before reveals; end with a complete chilling twist contained in this video), "
         "description (2 sentences + 3 hashtags), "
