@@ -209,9 +209,9 @@ def image_prompt(beat_text: str, query: str, anchor: str = "") -> str:
 
 # Leaderboard geometry (1080x1920 canvas).
 _BOARD_X = 60
-_BOARD_Y = 520
+_BOARD_Y = 710
 _BOARD_ROW_H = 100
-_BOARD_FONT_SIZE = 56
+_BOARD_FONT_SIZE = 66
 _BOARD_NAME_LEN = 14
 
 
@@ -268,7 +268,7 @@ def board_filter(beats, items, durations, get_font, has_drawtext,
     if clean_title:
         parts.append(
             f"drawtext=fontfile='{esc_font}':text='{_escape_drawtext(clean_title)}':"
-            f"fontsize=64:fontcolor=white:borderw=3:bordercolor=black:"
+            f"fontsize=70:fontcolor=white:borderw=3:bordercolor=black:"
             f"x=(w-text_w)/2:y=140")
     for r in ranks:
         y = _BOARD_Y + row_of[r] * _BOARD_ROW_H
