@@ -260,16 +260,28 @@ def board_filter(beats, items, durations, get_font, has_drawtext,
     row_of = {r: idx for idx, r in enumerate(ranks)}
     esc_font = font.replace(":", "\\:")
     parts = []
-    # Banner cap: ~30 chars at fontsize 64 fills 1080px — longer titles
-    # would clip at both edges. Cut at a word boundary, not mid-word.
-    clean_title = _clean_board_text(title, 30)
-    if len(clean_title) == 30 and " " in clean_title:
-        clean_title = clean_title.rsplit(" ", 1)[0]
-    if clean_title:
-        parts.append(
-            f"drawtext=fontfile='{esc_font}':text='{_escape_drawtext(clean_title)}':"
-            f"fontsize=70:fontcolor=white:borderw=3:bordercolor=black:"
-            f"x=(w-text_w)/2:y=140")
+    # Keep a safe side margin. Longer titles wrap at word boundaries instead
+    # of being clipped or truncated.
+    clean_title = _clean_board_text(title, 100)
+    title_words = clean_title.split()
+    title_lines = []
+    line = ""
+    for word in title_words:
+        candidate = f"{line} {word}".strip()
+        if line and len(candidate) > 24:
+            title_lines.append(line)
+            line = word
+        else:
+            line = candidate
+    if line:
+        title_lines.append(line)
+    if title_lines:
+        title_y = 140 - (len(title_lines) - 1) * 36
+        for line_no, title_line in enumerate(title_lines):
+            parts.append(
+                f"drawtext=fontfile='{esc_font}':text='{_escape_drawtext(title_line)}':"
+                f"fontsize=70:fontcolor=white:borderw=3:bordercolor=black:"
+                f"x=(w-text_w)/2:y={title_y + line_no * 72}")
     for r in ranks:
         y = _BOARD_Y + row_of[r] * _BOARD_ROW_H
         base = (f"drawtext=fontfile='{esc_font}':text='{r}.':"

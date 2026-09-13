@@ -394,24 +394,19 @@ def notify_failure(error: Exception):
             log(f"Telegram notify failed (non-fatal): {e}")
 
 
-# Caption style for vertical Shorts: bold white w/ opaque outline, anchored
-# top-center so every cue starts at the same height. FontSize is absolute
-# libass px on 1080x1920 — 64 confirmed readable on phones; long cues wrap
-# downward instead of overflowing. Alignment 8 = top-center (NOT 5:
-# middle-center re-centers each cue's block, so 1-line vs 3-line cues visibly
-# jump up/down between cuts). MarginV=720 puts the first line just above
-# true middle, clear of the Shorts UI.
+# Caption style for vertical Shorts: tiny bold white text with a dark outline,
+# anchored near the bottom while staying above the Shorts UI.
 # DejaVu Sans ships with the Ubuntu runner (libass falls back if missing).
 # NOTE: applied via generated .ass file, NOT force_style (comma-bearing
 # force_style silently yields zero pixels on some FFmpeg/libass builds).
-SUB_STYLE = ("FontName=DejaVu Sans,FontSize=64,Bold=-1,"
+SUB_STYLE = ("FontName=DejaVu Sans,FontSize=34,Bold=-1,"
              "PrimaryColour=&H00FFFFFF,OutlineColour=&HCC000000,"
              "BorderStyle=1,Outline=2,Shadow=0,"
-             "Alignment=8,MarginV=720,WrapStyle=0")
+             "Alignment=2,MarginV=230,WrapStyle=0")
 
 
 def _srt_to_ass(srt: Path) -> Path:
-    """Convert edge-tts SRT to a styled ASS (middle-center, smaller text).
+    """Convert edge-tts SRT to a styled ASS (bottom-center, tiny text).
 
     Avoids force_style entirely: style lives in the file header, so the
     subtitles filter stays a plain path with no commas to misparse.
@@ -448,8 +443,8 @@ def _srt_to_ass(srt: Path) -> Path:
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        "Style: Default,DejaVu Sans,64,&H00FFFFFF,&H000019FF,&HCC000000,"
-        "&H00000000,-1,0,0,0,100,100,0,0,1,2,0,8,10,10,720,1\n"
+        "Style: Default,DejaVu Sans,34,&H00FFFFFF,&H000019FF,&HCC000000,"
+        "&H00000000,-1,0,0,0,100,100,0,0,1,2,0,2,10,10,230,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -844,8 +839,8 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
            beats: list[dict] | None = None, items: list[str] | None = None,
            title: str = ""):
     """Normalize clips to 1080x1920, splitting each beat's duration evenly
-    across its cuts, mux narration + bed + niche overlay. `beats`/`items` feed
-    the niche overlay (e.g. ranking leaderboard + title; "" when N/A)."""
+    across its cuts, mux narration + bed + tiny bottom captions + niche
+    overlay. `beats`/`items`/`title` feed the niche overlay ("" when N/A)."""
     # Build per-clip normalized segments (uniform fps/size/codec so concat is safe
     # even when Pexels clips have mixed frame rates).
     segs = []
@@ -895,14 +890,15 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
     _run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
                  "-i", str(concat), "-c:v", "libx264", "-preset", "veryfast",
                  "-pix_fmt", "yuv420p", str(video_only)], "concat")
-    # Mux narration + bed + niche overlay. Captions remain available as the
-    # sidecar SRT but are not burned into the video.
+    # Mux narration + bed + tiny bottom captions + niche overlay.
     # Bed is mixed quietly under the voice (normalize=0 keeps narration full).
     # The overlay lives here (not per-segment): only the finished timeline has
     # absolute timestamps for between(t,a,b) reveal windows.
+    vf_subs = _subtitles_vf(srt)
     board = niche.board_filter(beats or [], items or [], durations,
                                _rank_font, _has_drawtext, title)
-    vchain = f"[0:v]{board}format=yuv420p[vout]"
+    vchain = (f"[0:v]{board}{vf_subs},format=yuv420p[vout]" if vf_subs
+              else f"[0:v]{board}format=yuv420p[vout]")
     achain = "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
     cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
            "-filter_complex", f"{vchain};{achain}",
@@ -912,10 +908,20 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        if board and "drawtext" in (e.stderr or ""):
-            warn("niche overlay filter failed, rendering without it.")
+        if vf_subs and "subtitles" in (e.stderr or ""):
+            warn("subtitles filter failed, rendering without burned captions.")
             cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                   "-filter_complex", f"[0:v]format=yuv420p[vout];{achain}",
+                   "-filter_complex", f"[0:v]{board}format=yuv420p[vout];{achain}",
+                   "-map", "[vout]", "-map", "[aout]",
+                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+                   "-shortest", str(out_path)]
+            _run_ffmpeg(cmd, "mux-no-subs")
+        elif board and "drawtext" in (e.stderr or ""):
+            warn("niche overlay filter failed, rendering without it.")
+            plain = (f"[0:v]{vf_subs},format=yuv420p[vout]" if vf_subs
+                     else "[0:v]format=yuv420p[vout]")
+            cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
+                   "-filter_complex", f"{plain};{achain}",
                    "-map", "[vout]", "-map", "[aout]",
                    "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                    "-shortest", str(out_path)]

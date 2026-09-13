@@ -99,9 +99,9 @@ API Tokens → create token with the Workers AI template → secrets
 ## Captions + music
 
 - **Captions:** the edge-tts SRT is converted to a styled ASS and burned in
-  with the libass `subtitles` filter. They appear middle-center, slightly
-  smaller, so the Shorts UI never covers them and they don't block the
-  footage. The pipeline avoids comma-heavy `force_style` options because
+  with the libass `subtitles` filter. They are tiny and bottom-anchored
+  (above the Shorts UI), clear of the left-side leaderboard. The pipeline
+  avoids comma-heavy `force_style` options because
   some Windows builds silently render zero caption pixels.
 - **Music:** a dark drone bed is generated per run (brown noise → lowpass →
   slow swell at ~−20dB under the voice). Generated = zero copyright-strike
