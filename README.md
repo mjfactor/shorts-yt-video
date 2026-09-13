@@ -1,8 +1,9 @@
 # youtube-story — $0 Automated YouTube Shorts
 
-Faceless horror Shorts pipeline. Gemini writes the script, edge-tts narrates,
-Pexels (or Pillow fallback) provides visuals, FFmpeg renders vertical video,
-GitHub Actions uploads to YouTube 1x/day. No server, no credit card.
+Faceless Top-5 countdown Shorts pipeline. Gemini writes the ranking script,
+edge-tts narrates, Pexels (or AI-still fallback) provides matched visuals,
+FFmpeg renders vertical video, GitHub Actions uploads to YouTube 1x/day.
+No server, no credit card. (`NICHE_MODE=horror` restores scary stories.)
 
 ## How it works
 
@@ -25,8 +26,9 @@ cron (08:00 UTC daily)
    - Locally: `set YT_CLIENT_ID=... & set YT_CLIENT_SECRET=... & python get_refresh_token.py`
    - Log in with your channel account, copy the printed token into `YT_REFRESH_TOKEN`
 4. Optional: set `VISIBILITY` repo Variable (default `private` — keep until
-   your OAuth app passes YouTube audit). Niche and voice are hardcoded at
-   the top of `pipeline.py`.
+   your OAuth app passes YouTube audit). Niche is `NICHE_MODE` (`ranking`
+   default; set to `horror` for scary stories) and voice is hardcoded
+   in `core.py`.
 5. Actions tab → `daily-short` → **Run workflow** to test one Short.
 
 ## Storage model (why retention is split)
@@ -53,35 +55,42 @@ cron (08:00 UTC daily)
 
 ## Files
 
-- `pipeline.py` — whole pipeline (script/audio/visuals/render/upload)
+- `pipeline.py` — thin entry (`NICHES` registry + `main()` → `core.run`)
+- `core.py` — shared machinery (script/audio/visuals/render/upload/history)
+- `niche_ranking.py` — Top-5 countdown niche (prompt, topics, board overlay)
+- `niche_horror.py` — scary-story niche (prompt, pools, ambient B-roll)
 - `.github/workflows/daily.yml` — schedule + split artifacts + history commit-back
-- `history.json` — committed dedup memory (recent titles/names/settings/rules); the pipeline quotes it into the Gemini prompt so stories never repeat
+- `history.json` — committed dedup memory (recent topics/titles/ranked items); the pipeline quotes it into the Gemini prompt so countdowns never repeat
 - `get_refresh_token.py` — one-time OAuth helper (run locally, never in CI)
 - `.env.example` — list of secrets/vars to configure
 
-## Standalone stories (~2 min each)
+## Standalone countdowns (~2 min each)
 
-Every run is one complete horror story with its own twist ending — no arcs,
+Every run is one complete Top-5 countdown with its own topic — no arcs,
 no episode markers, no "part 2". Each video is evergreen: a stranger can
 watch any upload with zero context. Gemini is prompted for 280–300 words
-(~2 min of narration, 7–8 beats → 14–16 Pexels cuts), one named protagonist in
-one location, escalating scares, one broken rule. Fallback runs (Gemini down)
-use a built-in ~270-word standalone story.
+(~2 min of narration: hook teasing #1, countdown #5→#1 with 1–2 concrete
+facts each, comment-bait closer), 7 beats → 14 Pexels cuts, rounded
+approximate numbers only (never invented precise stats). Fallback runs
+(Gemini down) use a built-in ~290-word Top-5 largest animals countdown.
 
 - Runs are serialized (`concurrency: shorts-single`) so the `history.json`
-  commit-back can't race; every run records its story (title, protagonist,
-  setting, rule, full narration) and the next run is forced onto fresh slots.
+  commit-back can't race; every run records its topic + ranked items and
+  the next run is forced onto a fresh topic (`RANKING_TOPICS`, 24 evergreen
+  categories). Same-topic and ≥2 shared items trigger a regeneration.
 
-## Visuals (ambient horror B-roll)
+## Visuals (item-matched stock)
 
-Gemini splits each narration into 7–8 beats for timing only. Per beat, in
-story order: **Pexels clip** (random ambient horror B-roll from
-`RANDOM_HORROR_QUERIES` — foggy forest, dark hallway, etc., deliberately not
-story-matched, just eye-pleasing) → **Cloudflare Workers AI still** fallback
-(SDXL-Lightning, listed at $0.00/step, native 1080x1920 — free-plan
-hard-stop at cap so billing is impossible) → **title card** with the beat's
-text. Stills get a **Ken Burns slow zoom** (alternating in/out) so they feel
-like motion. Screen time is weighted by beat word count.
+Gemini splits each countdown into 7 beats (hook, #5–#1, closer). Per beat,
+in video order: **Pexels clip** searched with the beat's OWN query — literal
+matches (`lion walking savanna` for the lion entry), no mood forcing — then
+**Cloudflare Workers AI still** fallback (bright subject photo style) →
+**title card** with the beat's text. A persistent leaderboard (slots 1–5,
+left side) fills in with each item's name the moment its rank is revealed —
+current rank highlighted red — burned at the final mux via timed FFmpeg
+`drawtext`, so entries populate exactly in sync with the narration. Stills get a **Ken Burns slow zoom**
+(alternating in/out) so they feel like motion. Screen time is weighted by
+beat word count. (Horror mode instead uses ambient B-roll + dark stills.)
 
 Cloudflare setup (fallback only): free account at dash.cloudflare.com
 (email only, no card) → copy Account ID (dashboard sidebar) → My Profile →
@@ -123,22 +132,21 @@ when viewers choose to watch instead of swiping away, stay through the video,
 rewatch it, share it, comment, like it, or subscribe. Hashtags help classify
 the topic, but they cannot compensate for a weak opening or poor retention.
 
-The script prompt is designed around this retention pattern:
+The script prompt is designed around the proven ranked-list pattern:
 
 ```
-0-2s    shocking hook
-2-8s    unanswered question
-8-25s   clues and rising danger
-25-35s  twist or reveal
-final   strong cliffhanger
+0-3s    hook teasing #1 without naming it ("...and number 1 is NOT what you think")
+#5→#2   one payoff per item (name + 1-2 concrete facts, rounded numbers)
+#1      biggest payoff, held to the end
+final   comment-bait closer ("Disagree? Comment your ranking")
 ```
 
-For readable horror narration, scripts use simple words, short sentences,
-one idea per sentence, concrete sensory details, and a new clue or danger
-every few sentences. When reviewing YouTube Analytics, prioritize **Viewed vs
+Each ranked item is a mini open loop that resets attention, and the closer
+drives comments. Scripts use simple words, short sentences, one idea per
+sentence. When reviewing YouTube Analytics, prioritize **Viewed vs
 swiped away**, audience retention, average percentage viewed, completion,
-rewatches, and shares. Test different hooks while keeping the rest of the
-story format consistent.
+rewatches, shares, and comments. Test different hooks and topics while
+keeping the countdown format consistent.
 
 ## Safety gates
 
