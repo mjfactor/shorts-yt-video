@@ -212,21 +212,41 @@ _BOARD_X = 60
 _BOARD_Y = 710
 _BOARD_ROW_H = 100
 _BOARD_FONT_SIZE = 66
-_BOARD_NAME_LEN = 14
+_BOARD_NAME_LEN = 80
+_BOARD_MAX_WIDTH = C.W - (_BOARD_X * 2)
+_BOARD_MIN_FONT_SIZE = 40
 
 
 def _clean_board_text(name: str, limit: int = _BOARD_NAME_LEN) -> str:
     """Short ASCII-only board label (drawtext uses one font, no emoji)."""
     import re
-    keep = re.sub(r"[^A-Za-z0-9 .'&,!?()\-]", "", name or "")
+    normalized = (name or "").replace("—", " - ").replace("–", " - ")
+    keep = re.sub(r"[^A-Za-z0-9 .'&,!?()\-]", "", normalized)
     keep = re.sub(r"\s+", " ", keep).strip()
-    return keep[:limit].rstrip()
+    if len(keep) <= limit:
+        return keep
+    clipped = keep[:limit].rsplit(" ", 1)[0].rstrip()
+    return clipped or keep[:limit].rstrip()
 
 
 def _escape_drawtext(text: str) -> str:
     """Escape a value for drawtext filter syntax (order matters)."""
     return (text.replace("\\", "\\\\").replace(":", "\\:")
                  .replace(",", "\\,").replace("'", "\\'"))
+
+
+def _board_font_size(text: str, font_path: str) -> int:
+    """Shrink only long leaderboard labels to fit the safe board width."""
+    try:
+        from PIL import ImageFont
+        for size in range(_BOARD_FONT_SIZE, _BOARD_MIN_FONT_SIZE - 1, -1):
+            font = ImageFont.truetype(font_path, size)
+            width = font.getlength(text) if hasattr(font, "getlength") else font.getbbox(text)[2]
+            if width <= _BOARD_MAX_WIDTH:
+                return size
+    except Exception:
+        pass
+    return _BOARD_MIN_FONT_SIZE
 
 
 def board_filter(beats, items, durations, get_font, has_drawtext,
@@ -295,13 +315,15 @@ def board_filter(beats, items, durations, get_font, has_drawtext,
         y = _BOARD_Y + row_of[r] * _BOARD_ROW_H
         reveal = starts[beat_idx]
         end = starts[beat_idx + 1] if beat_idx + 1 < len(starts) else total
-        esc_name = _escape_drawtext(f"{r}. {name}")
+        display_name = f"{r}. {name}"
+        name_font_size = _board_font_size(display_name, font)
+        esc_name = _escape_drawtext(display_name)
         fill = (f"drawtext=fontfile='{esc_font}':text='{esc_name}':"
-                f"fontsize={_BOARD_FONT_SIZE}:fontcolor=white:"
+            f"fontsize={name_font_size}:fontcolor=white:"
                 f"borderw=2:bordercolor=black:x={_BOARD_X}:y={y}:"
                 f"enable='between(t,{reveal:.2f},{total:.2f})'")
         hot = (f"drawtext=fontfile='{esc_font}':text='{esc_name}':"
-               f"fontsize={_BOARD_FONT_SIZE}:fontcolor=red:"
+               f"fontsize={name_font_size}:fontcolor=red:"
                f"borderw=2:bordercolor=black:x={_BOARD_X}:y={y}:"
                f"enable='between(t,{reveal:.2f},{end:.2f})'")
         parts += [fill, hot]
