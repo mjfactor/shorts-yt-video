@@ -3,7 +3,7 @@
 Faceless Top-5 countdown Shorts pipeline. Gemini writes the ranking script,
 edge-tts narrates, Pexels (or AI-still fallback) provides matched visuals,
 FFmpeg renders vertical video, GitHub Actions uploads to YouTube 1x/day.
-No server, no credit card. (`NICHE_MODE=horror` restores scary stories.)
+No server, no credit card.
 
 ## How it works
 
@@ -26,9 +26,7 @@ cron (08:00 UTC daily)
    - Locally: `set YT_CLIENT_ID=... & set YT_CLIENT_SECRET=... & python get_refresh_token.py`
    - Log in with your channel account, copy the printed token into `YT_REFRESH_TOKEN`
 4. Optional: set `VISIBILITY` repo Variable (default `private` — keep until
-   your OAuth app passes YouTube audit). Niche is `NICHE_MODE` (`ranking`
-   default; set to `horror` for scary stories) and voice is hardcoded
-   in `core.py`.
+   your OAuth app passes YouTube audit).
 5. Actions tab → `daily-short` → **Run workflow** to test one Short.
 
 ## Storage model (why retention is split)
@@ -58,21 +56,22 @@ cron (08:00 UTC daily)
 - `pipeline.py` — thin entry (`NICHES` registry + `main()` → `core.run`)
 - `core.py` — shared machinery (script/audio/visuals/render/upload/history)
 - `niche_ranking.py` — Top-5 countdown niche (prompt, topics, board overlay)
-- `niche_horror.py` — scary-story niche (prompt, pools, ambient B-roll)
 - `.github/workflows/daily.yml` — schedule + split artifacts + history commit-back
 - `history.json` — committed dedup memory (recent topics/titles/ranked items); the pipeline quotes it into the Gemini prompt so countdowns never repeat
 - `get_refresh_token.py` — one-time OAuth helper (run locally, never in CI)
 - `.env.example` — list of secrets/vars to configure
 
-## Standalone countdowns (~2 min each)
+## Standalone countdowns (~90s each)
 
 Every run is one complete Top-5 countdown with its own topic — no arcs,
 no episode markers, no "part 2". Each video is evergreen: a stranger can
-watch any upload with zero context. Gemini is prompted for 280–300 words
-(~2 min of narration: hook teasing #1, countdown #5→#1 with 1–2 concrete
+watch any upload with zero context. Gemini is prompted for 200–220 words
+(~90s of narration: hook teasing #1, countdown #5→#1 with 1–2 concrete
 facts each, comment-bait closer), 7 beats → 14 Pexels cuts, rounded
-approximate numbers only (never invented precise stats). Fallback runs
-(Gemini down) use a built-in ~290-word Top-5 largest animals countdown.
+approximate numbers only (never invented precise stats). Gemini also adds
+fitting emojis to the title (1) and description (1-2) — metadata only, since
+the on-screen banner sanitizer strips any emoji that slips through. Fallback runs
+(Gemini down) use a built-in ~200-word Top-5 largest animals countdown.
 
 - Runs are serialized (`concurrency: shorts-single`) so the `history.json`
   commit-back can't race; every run records its topic + ranked items and
@@ -90,7 +89,7 @@ left side) fills in with each item's name the moment its rank is revealed —
 current rank highlighted red — burned at the final mux via timed FFmpeg
 `drawtext`, so entries populate exactly in sync with the narration. Stills get a **Ken Burns slow zoom**
 (alternating in/out) so they feel like motion. Screen time is weighted by
-beat word count. (Horror mode instead uses ambient B-roll + dark stills.)
+beat word count.
 
 Cloudflare setup (fallback only): free account at dash.cloudflare.com
 (email only, no card) → copy Account ID (dashboard sidebar) → My Profile →

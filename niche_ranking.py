@@ -71,17 +71,19 @@ def build_prompt(history: list[dict]):
         "It must be complete in this one video: no part 1/2, no episode markers. "
         f"{C.history_block(history, MODE, format_history_line, AVOID_INTRO, AVOID_OUTRO)}"
         "Return ONLY valid JSON with keys: title (<=60 chars, scary-hook style, "
-        "e.g. 'Top 5 ... — Number 1 Is Terrifying'; vary the title shape every run), "
-        "narration (280-300 words so the video runs about 2 minutes / ~120 seconds, "
+        "e.g. 'Top 5 ... — Number 1 Is Terrifying'; include 1 fitting emoji "
+        "(the on-screen banner shows the same text without emoji); vary the title shape every run), "
+        "narration (200-220 words so the video runs about 90 seconds / ~1:30, "
         "present tense, fifth-grade reading level, short punchy sentences, one clear "
-        "idea per sentence; structure: a 1-2 sentence hook that teases number 1 "
+        "idea per sentence, plain text with no emojis since it is spoken aloud; structure: a 1-2 sentence hook that teases number 1 "
         "without naming it, then the countdown from number 5 up to number 1 where "
         "each entry names the item plus 1-2 striking concrete facts with ROUNDED "
         "approximate numbers like 'over 800 meters', then a 1-sentence closer that "
         "asks viewers to comment their own ranking; use commas and ellipses for "
         "dramatic pauses before each reveal), "
-        "description (2 sentences + 3 hashtags), "
-        "tags (array of 5 strings), "
+        "description (2 sentences with 1-2 fitting emojis + 3 hashtags; "
+        "emojis are metadata-only, never burned into the video), "
+        "tags (array of 5 plain-ASCII strings, no emoji), "
         "items (array of the 5 ranked item names, number 5 first, number 1 last; "
         "keep each name SHORT, 1-3 words, since it is also shown on screen), "
         "beats (array of 7 objects in video order: hook, number 5, number 4, "
@@ -112,20 +114,15 @@ def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
         "These are the 5 largest animals on Earth. And number 1 is so huge, it is bigger than a passenger jet. "
         "Stay until the end, because you will not believe how big it gets. "
         "At number 5, the saltwater crocodile. Over 6 meters long, with jaws that crush bone like paper. "
-        "It can wait without moving for hours, barely breathing. Then it explodes out of the water in half a second. "
-        "No animal in its river stands a chance once those jaws lock shut. "
-        "Number 4, the hippopotamus. Nearly 2 tonnes of pure muscle hiding under the river surface. "
-        "It looks slow and lazy, floating with just its eyes above the water. It is not slow. "
-        "A hippo can outrun a human on land, easily, and it is one of the most dangerous animals in Africa. "
-        "Number 3, the giraffe. Almost 6 meters tall, towering over every other land animal alive. "
+        "It waits without moving for hours. Then it explodes out of the water in half a second. "
+        "Number 4, the hippopotamus. Nearly 2 tonnes of muscle hiding under the river surface. "
+        "It looks slow and lazy. It is not slow. A hippo can outrun a human on land. "
+        "Number 3, the giraffe. Almost 6 meters tall, towering over every land animal alive. "
         "Its heart alone weighs as much as a grown man, just to pump blood all the way up that neck. "
-        "And when it drinks, it must spread its front legs wide, dropping its head into the most vulnerable position in nature. "
         "Number 2, the African bush elephant. Over 6 tonnes. The heaviest animal walking the Earth today. "
         "One step shakes the ground. One charge flattens trees like grass. "
-        "Yet it greets family members by touching trunks, and it mourns its dead for days. "
         "And number 1, the blue whale. Nearly 30 meters long. Over 100 tonnes. "
         "Its heart is the size of a small car. Its call travels across entire oceans. "
-        "A single baby drinks hundreds of liters of milk every single day. "
         "Nothing alive today even comes close. Comment which giant shocked you most, and follow for the next top 5."
     )
     words = narration.split()
@@ -144,9 +141,9 @@ def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
                           "label": rank_labels[i]})
     slots = {"topic": topic}
     return {
-        "title": "Top 5 Largest Animals on Earth #shorts",
+        "title": "\U0001F981 Top 5 Largest Animals on Earth #shorts",
         "narration": narration,
-        "description": "The 5 largest animals on Earth, ranked. #shorts #animals #top5",
+        "description": "\U0001F42C The 5 largest animals on Earth, ranked \U0001F30A. #shorts #animals #top5",
         "tags": ["shorts", "top5", "animals", "ranking", "countdown"],
         "items": items,
         "beats": beats,
@@ -232,13 +229,13 @@ def _escape_drawtext(text: str) -> str:
                  .replace(",", "\\,").replace("'", "\\'"))
 
 
-def board_filter(beats, items, durations, get_font, has_drawtext) -> str:
+def board_filter(beats, items, durations, get_font, has_drawtext,
+                 title: str = "") -> str:
     """Persistent leaderboard overlay (trailing comma) or "" when N/A.
 
     Every rank slot ("1."–"5.") is on screen from the start; each fills in
     with its item name the moment that rank is revealed, with the current
-    rank highlighted. get_font/has_drawtext are core probes, called lazily
-    so horror runs never pay for (or warn about) them.
+    rank highlighted. get_font/has_drawtext are core probes, called lazily.
     """
     labeled = [(i, b.get("label", "")) for i, b in enumerate(beats or [])
                if str(b.get("label", "")).isdigit()]
@@ -263,6 +260,16 @@ def board_filter(beats, items, durations, get_font, has_drawtext) -> str:
     row_of = {r: idx for idx, r in enumerate(ranks)}
     esc_font = font.replace(":", "\\:")
     parts = []
+    # Banner cap: ~30 chars at fontsize 64 fills 1080px — longer titles
+    # would clip at both edges. Cut at a word boundary, not mid-word.
+    clean_title = _clean_board_text(title, 30)
+    if len(clean_title) == 30 and " " in clean_title:
+        clean_title = clean_title.rsplit(" ", 1)[0]
+    if clean_title:
+        parts.append(
+            f"drawtext=fontfile='{esc_font}':text='{_escape_drawtext(clean_title)}':"
+            f"fontsize=64:fontcolor=white:borderw=3:bordercolor=black:"
+            f"x=(w-text_w)/2:y=140")
     for r in ranks:
         y = _BOARD_Y + row_of[r] * _BOARD_ROW_H
         base = (f"drawtext=fontfile='{esc_font}':text='{r}.':"

@@ -17,7 +17,7 @@ A niche module must provide (see niche_ranking.py for the reference):
     beat_anchor(beats)    -> str (CF still continuity anchor, "" if none)
     image_prompt(beat_text, query, anchor) -> str (CF fallback prompt)
     history_fields(slots, meta) -> dict (extra history.json entry fields)
-    board_filter(beats, items, durations, get_font, has_drawtext) -> str
+    board_filter(beats, items, durations, get_font, has_drawtext, title="") -> str
 
 Import direction is one-way: niche modules import core, core never imports
 a niche (pipeline.py wires them). To delete a niche, delete its file and
@@ -66,19 +66,29 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 W, H = 1080, 1920  # vertical Shorts
 
 
+def _print(msg: str):
+    """print() that survives non-UTF-8 consoles (Windows cp1252). Without
+    this, any Gemini emoji in a log line would raise UnicodeEncodeError —
+    either failing the run or masking the real error with a bogus warning."""
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", "replace").decode(), flush=True)
+
+
 def log(msg: str):
-    print(f"[pipeline] {msg}", flush=True)
+    _print(f"[pipeline] {msg}")
 
 
 def warn(msg: str):
     """Degraded-but-continuing path. Surfaces as an annotated warning in Actions."""
-    print(f"::warning::{msg}", flush=True)
+    _print(f"::warning::{msg}")
     log(f"WARNING: {msg}")
 
 
 def err(msg: str):
     """Fatal path. Surfaces as an annotated error in Actions."""
-    print(f"::error::{msg}", flush=True)
+    _print(f"::error::{msg}")
     log(f"ERROR: {msg}")
 
 
@@ -160,7 +170,8 @@ def save_history(entry: dict, path: Path = HISTORY_PATH):
     try:
         history = load_history(path)
         history.append(entry)
-        path.write_text(json.dumps(history[-HISTORY_KEEP:], indent=2),
+        path.write_text(json.dumps(history[-HISTORY_KEEP:], indent=2,
+                                   ensure_ascii=False),
                         encoding="utf-8")
         log(f"History: recorded '{entry.get('title', '?')}' "
             f"({len(history[-HISTORY_KEEP:])} entries in {path}).")
@@ -219,7 +230,7 @@ def similar_to_history(data: dict, slots: dict, history: list[dict], niche):
     return None
 
 
-# ---------- 1. Script (target ~2:00: 280-300 words, 7-8 beats) ----------
+# ---------- 1. Script (target ~1:30: 200-220 words, 7 beats) ----------
 def _validate_script(data, niche) -> dict:
     """Strict-check Gemini output. Raises ValueError with the reason if unusable."""
     if not isinstance(data, dict):
@@ -664,27 +675,8 @@ def _clean_beat_text(beat_text: str, limit: int = 350) -> str:
     return text[:limit].rstrip() or beat_text[:limit].rstrip()
 
 
-def _image_prompt(beat_text: str, query: str, anchor: str = "") -> str:
-    """Visual prompt for the Cloudflare fallback still.
-
-    Single depicted moment, scene anchored on the concrete `query` (not the
-    abstract narration), with a continuity anchor so beats share one
-    protagonist/setting instead of each still inventing its own.
-    """
-    core = _clean_beat_text(beat_text)
-    same = f"Same protagonist and night setting as: {anchor}. " if anchor else ""
-    return (
-        f"{same}One single vertical 9:16 cinematic horror film still, "
-        f"one clear moment only: {core}. "
-        f"Scene anchor: {query}. Photorealistic, dark blue-black shadows, "
-        f"muted red accent, cinematic low-key lighting, strong foreground "
-        f"subject, readable silhouette. No collage, no split screen, "
-        f"no text, no watermark, no daytime."
-    )
-
-
-def cloudflare_image(beat_text: str, query: str, i: int, anchor: str = "",
-                     make_prompt=None):
+def cloudflare_image(beat_text: str, query: str, i: int, anchor: str,
+                     make_prompt):
     """Literal still via Workers AI free allowance (no card, no watermark).
 
     Default model SDXL-Lightning is listed at $0.00/step and takes native
@@ -694,7 +686,7 @@ def cloudflare_image(beat_text: str, query: str, i: int, anchor: str = "",
     """
     if not (CF_ACCOUNT_ID and CF_API_TOKEN):
         return None
-    prompt = (make_prompt or _image_prompt)(beat_text, query, anchor)
+    prompt = make_prompt(beat_text, query, anchor)
     seed = random.randint(1, 999999)
     dest = ASSETS / f"cf_beat_{i}_{seed}.jpg"
 
@@ -849,10 +841,11 @@ def _run_ffmpeg(cmd, step: str):
 
 def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
            durations: list[float], out_path: Path, niche,
-           beats: list[dict] | None = None, items: list[str] | None = None):
+           beats: list[dict] | None = None, items: list[str] | None = None,
+           title: str = ""):
     """Normalize clips to 1080x1920, splitting each beat's duration evenly
-    across its cuts, mux narration + bed + styled subs. `beats`/`items` feed
-    the niche overlay (e.g. ranking leaderboard; "" when N/A)."""
+    across its cuts, mux narration + bed + niche overlay. `beats`/`items` feed
+    the niche overlay (e.g. ranking leaderboard + title; "" when N/A)."""
     # Build per-clip normalized segments (uniform fps/size/codec so concat is safe
     # even when Pexels clips have mixed frame rates).
     segs = []
@@ -902,15 +895,14 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
     _run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
                  "-i", str(concat), "-c:v", "libx264", "-preset", "veryfast",
                  "-pix_fmt", "yuv420p", str(video_only)], "concat")
-    # Mux narration + bed + styled burned subtitles + niche overlay.
+    # Mux narration + bed + niche overlay. Captions remain available as the
+    # sidecar SRT but are not burned into the video.
     # Bed is mixed quietly under the voice (normalize=0 keeps narration full).
     # The overlay lives here (not per-segment): only the finished timeline has
     # absolute timestamps for between(t,a,b) reveal windows.
-    vf_subs = _subtitles_vf(srt)
     board = niche.board_filter(beats or [], items or [], durations,
-                               _rank_font, _has_drawtext)
-    vchain = (f"[0:v]{board}{vf_subs},format=yuv420p[vout]" if vf_subs
-              else f"[0:v]{board}format=yuv420p[vout]")
+                               _rank_font, _has_drawtext, title)
+    vchain = f"[0:v]{board}format=yuv420p[vout]"
     achain = "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
     cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
            "-filter_complex", f"{vchain};{achain}",
@@ -920,20 +912,10 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        if vf_subs and "subtitles" in (e.stderr or ""):
-            warn("subtitles filter failed, rendering without burned captions.")
-            cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                   "-filter_complex", f"[0:v]{board}format=yuv420p[vout];{achain}",
-                   "-map", "[vout]", "-map", "[aout]",
-                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                   "-shortest", str(out_path)]
-            _run_ffmpeg(cmd, "mux-no-subs")
-        elif board and "drawtext" in (e.stderr or ""):
+        if board and "drawtext" in (e.stderr or ""):
             warn("niche overlay filter failed, rendering without it.")
-            plain = (f"[0:v]{vf_subs},format=yuv420p[vout]" if vf_subs
-                     else "[0:v]format=yuv420p[vout]")
             cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                   "-filter_complex", f"{plain};{achain}",
+                   "-filter_complex", f"[0:v]format=yuv420p[vout];{achain}",
                    "-map", "[vout]", "-map", "[aout]",
                    "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                    "-shortest", str(out_path)]
@@ -1017,7 +999,7 @@ def run(niche):
     out_mp4 = stem.with_suffix(".mp4")
     try:
         render(clips, mp3, bed, srt, durations, out_mp4, niche,
-               beats, list(meta.get("items", [])))
+               beats, list(meta.get("items", [])), meta.get("title", ""))
         video_id = upload(out_mp4, meta)
     finally:
         cleanup_intermediates()

@@ -20,7 +20,6 @@ jobs:
       contents: write  # write = commit history.json back so next run avoids repeats
     env:
       VISIBILITY: ${{ vars.VISIBILITY || 'private' }}
-      NICHE_MODE: ${{ vars.NICHE_MODE || 'ranking' }}
       TTS_RATE: ${{ vars.TTS_RATE || '-5%' }}
       TTS_PITCH: ${{ vars.TTS_PITCH || '-10Hz' }}
       TTS_VOLUME: ${{ vars.TTS_VOLUME || '+0%' }}

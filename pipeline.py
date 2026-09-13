@@ -2,28 +2,18 @@
 Run: python pipeline.py  (all config via env vars, see .env.example)
 Output: out/<date>_short.mp4 (+ .srt, metadata.json)
 
-Layout: pipeline.py (this entry + niche registry), core.py (shared
-machinery), niche_ranking.py / niche_horror.py (self-contained niches).
-To delete a niche: delete its niche_*.py file and remove its line from
-NICHES below — core.py never imports a niche, so nothing else changes.
+Layout: pipeline.py (this entry), core.py (shared machinery),
+niche_ranking.py (Top-5 countdown niche, behind the interface documented
+at the top of core.py).
 """
-import os
 import sys
 
 import core
-import niche_horror
 import niche_ranking
-
-NICHES = {"ranking": niche_ranking, "horror": niche_horror}
-
-# Change here or via NICHE_MODE env (workflow wires vars.NICHE_MODE).
-NICHE_MODE = os.getenv("NICHE_MODE", "ranking").strip().lower()
-if NICHE_MODE not in NICHES:
-    NICHE_MODE = "ranking"
 
 
 def main():
-    core.run(NICHES[NICHE_MODE])
+    core.run(niche_ranking)
 
 
 if __name__ == "__main__":
