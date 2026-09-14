@@ -12,13 +12,13 @@ Output `out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
 ## Commands
 
 - Full run (needs `ffmpeg` + `ffprobe` on PATH): `python pipeline.py`
-- Syntax check (no tests/lint/typecheck in repo): `python -m py_compile pipeline.py core.py niche_ranking.py niche_horror.py get_refresh_token.py`
+- Syntax check (no tests/lint/typecheck in repo, Python `3.11` per CI): `python -m py_compile pipeline.py core.py niche_ranking.py get_refresh_token.py`
 - Deps: `pip install -r requirements.txt`
 - OAuth helper, local-only with browser, never CI: `python get_refresh_token.py` (needs `YT_CLIENT_ID`/`YT_CLIENT_SECRET`)
 
 ## CI (`.github/workflows/daily.yml` is source of truth)
 
-- `ubuntu-latest`, Python `3.11`, `timeout-minutes: 30`, schedule `0 8 * * *` (1x daily) + `workflow_dispatch`
+- `ubuntu-latest`, Python `3.11`, `timeout-minutes: 30`, schedule `0 8,20 * * *` (2x daily: 08:00 + 20:00 UTC) + `workflow_dispatch`
 - `concurrency.group: shorts-single`, `cancel-in-progress: false`; `permissions.contents: write` — each run commits `history.json` back, so runs must stay serial (no state-commit race)
 - Commit-back step after pipeline: `git add history.json` + commit `[skip ci]` + push (no-op when unchanged/failed). Workflow triggers only on schedule/dispatch, so the push never loops
 - Artifacts: `out/*.json` on `always()` 90d; `out/*.mp4`+`*.mp3`+`*.srt` on `failure()` only 3d (YouTube is permanent storage)

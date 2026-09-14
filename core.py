@@ -49,7 +49,7 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 # Tried in order; first working model wins. Override via GEMINI_MODELS="model-a,model-b".
 GEMINI_MODELS = [m.strip() for m in
                  os.getenv("GEMINI_MODELS",
-                           "gemini-3.6-flash,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
+                            "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
                  if m.strip()]
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
 MIN_AUDIO_SEC = float(os.getenv("MIN_AUDIO_SEC", "10"))

@@ -2,13 +2,13 @@
 
 Faceless Top-5 countdown Shorts pipeline. Gemini writes the ranking script,
 edge-tts narrates, Pexels (or AI-still fallback) provides matched visuals,
-FFmpeg renders vertical video, GitHub Actions uploads to YouTube 1x/day.
+FFmpeg renders vertical video, GitHub Actions uploads to YouTube 2x/day.
 No server, no credit card.
 
 ## How it works
 
 ```
-cron (08:00 UTC daily)
+cron (08:00 + 20:00 UTC daily)
  -> pipeline.py: Gemini script -> edge-tts mp3+srt -> Pexels clips
  -> FFmpeg 1080x1920 + burned subtitles -> YouTube Data API upload
  -> history.json committed back (dedup memory so stories never repeat)
@@ -43,13 +43,13 @@ cron (08:00 UTC daily)
 
 ## Limits ($0 budget)
 
-| Item | Free allowance | Our usage (1x/day) |
+| Item | Free allowance | Our usage (2x/day) |
 |---|---|---|
-| Actions minutes | 2,000 min/mo | ~400–600 min/mo |
-| Artifact storage | 500 MB | ~60 MB rolling |
-| YouTube uploads | 100/day | 1/day |
-| Pexels API | 200 req/hour + 20k/mo | ~14/day |
-| Gemini Flash | free tier | 1 call/day |
+| Actions minutes | 2,000 min/mo | ~800–1,200 min/mo |
+| Artifact storage | 500 MB | ~120 MB rolling |
+| YouTube uploads | 100/day | 2/day |
+| Pexels API | 200 req/hour + 20k/mo | ~28/day |
+| Gemini Flash | free tier | 2 calls/day |
 
 ## Files
 
