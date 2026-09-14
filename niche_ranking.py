@@ -70,9 +70,17 @@ def build_prompt(history: list[dict]):
         f"Write a Top-5 countdown YouTube Shorts script about the {topic}. "
         "It must be complete in this one video: no part 1/2, no episode markers. "
         f"{C.history_block(history, MODE, format_history_line, AVOID_INTRO, AVOID_OUTRO)}"
-        "Return ONLY valid JSON with keys: title (<=60 chars, scary-hook style, "
-        "e.g. 'Top 5 ... — Number 1 Is Terrifying'; include 1 fitting emoji "
-        "(the on-screen banner shows the same text without emoji); vary the title shape every run), "
+        "Return ONLY valid JSON with keys: title (<=60 chars, "
+        "hook-style with 1 fitting emoji "
+        "(the on-screen banner shows the same text without emoji); "
+        "ROTATE the hook shape every run — pick a shape DIFFERENT from the "
+        "recent titles quoted above, e.g. a question ('Which Giant Really "
+        "Tops the List?'), a superlative ('The Biggest Animal Ever Found'), "
+        "a challenge ('Rank These 5 Giants Correctly'), a curiosity gap "
+        "('What Actually Lives at #1?'), or a plain ranked list ('Top 5 "
+        "Largest Animals, Ranked'). BANNED overused hooks, never use them: "
+        "'Number 1 Is Terrifying', 'Number One Is Terrifying', '#1 Is "
+        "Terrifying', 'Will Shock You', 'You Won\\u2019t Believe'), "
         "narration (200-220 words so the video runs about 90 seconds / ~1:30, "
         "present tense, fifth-grade reading level, short punchy sentences, one clear "
         "idea per sentence, plain text with no emojis since it is spoken aloud; structure: a 1-2 sentence hook that teases number 1 "
@@ -161,8 +169,23 @@ def validate_extra(data: dict) -> dict:
     return {"items": [t.strip() for t in items if t.strip()][:10]}
 
 
+# Overused title hooks: the prompt bans them, and this is the backstop —
+# a draft using one is treated as a repeat (regenerated, best-effort).
+BANNED_TITLE_HOOKS = (
+    "number 1 is terrifying",
+    "number one is terrifying",
+    "#1 is terrifying",
+    "will shock you",
+)
+
+
 def similarity_reason(data: dict, slots: dict, recent: list[dict]):
-    """Repeat reason for same-topic or shared ranked items, else None."""
+    """Repeat reason for same-topic, shared ranked items, or banned title
+    hook, else None."""
+    title = str(data.get("title", "")).casefold()
+    for hook in BANNED_TITLE_HOOKS:
+        if hook in title:
+            return f"title uses banned overused hook '{hook}'"
     if str(slots.get("topic", "")).casefold() in {
             str(h.get("topic", "")).casefold() for h in recent}:
         return f"topic '{slots.get('topic')}' already used"

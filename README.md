@@ -110,6 +110,17 @@ API Tokens → create token with the Workers AI template → secrets
   pool) to the repo root (YouTube Audio Library is a safe
   source) — the pipeline loops it under the narration automatically.
 
+## TikTok dual-post (optional, free via Buffer)
+
+YouTube stays exactly as-is — only TikTok goes through Buffer (Buffer's
+audited TikTok app posts publicly, so no TikTok audit of your own needed):
+
+1. `buffer.com` → connect **TikTok only** → `publish.buffer.com/settings/api` → API key → secret `BUFFER_API_KEY`
+2. Nothing else — the Cloudinary public host is already hardcoded (`epuxrxa5` / `buffer_shorts`, unsigned preset, not sensitive). Override via `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_UPLOAD_PRESET` only if you use your own Cloudinary account (Buffer has no upload endpoint; the mp4 needs a public URL)
+3. Optional secret `BUFFER_TIKTOK_CHANNEL_ID` — auto-picked when empty
+
+Missing creds = TikTok skipped with a warning, YouTube unaffected. The Buffer post id is recorded as `tiktokBufferPostId` in the same `history.json` entry.
+
 ## Failure alerts (optional, free)
 
 If a run crashes, the pipeline pings you instead of failing silently.
