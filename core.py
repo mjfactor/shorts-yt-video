@@ -1040,7 +1040,7 @@ def _buffer_tiktok_channel() -> str | None:
         oid = org.get("id", "")
         data = _buffer_graphql(
             f'query GetChannels {{ channels(input: {{ organizationId: "{oid}" }}) '
-            "{ id displayName service } } }")
+            "{ id displayName service } }")
         for ch in data.get("channels") or []:
             if str(ch.get("service", "")).lower() == "tiktok":
                 log(f"Buffer: using TikTok channel '{ch.get('displayName', '?')}' ({ch['id']})")
