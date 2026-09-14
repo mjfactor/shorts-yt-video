@@ -977,8 +977,8 @@ def upload(video: Path, meta: dict):
 # SELF_ONLY/private until it passes TikTok's audit.
 # Docs: https://developers.buffer.com (auth / create-video-post /
 # hosting-media / posts-and-scheduling / character-limits / error-handling).
-BUFFER_API_KEY = os.getenv("BUFFER_API_KEY", "")
-BUFFER_TIKTOK_CHANNEL_ID = os.getenv("BUFFER_TIKTOK_CHANNEL_ID", "")
+BUFFER_API_KEY = os.getenv("BUFFER_API_KEY", "").strip()
+BUFFER_TIKTOK_CHANNEL_ID = os.getenv("BUFFER_TIKTOK_CHANNEL_ID", "").strip()
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "") or "epuxrxa5"
 CLOUDINARY_UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET", "") or "buffer_shorts"
 BUFFER_API_URL = "https://api.buffer.com"
@@ -998,7 +998,13 @@ def _buffer_graphql(query: str) -> dict:
             json={"query": query},
             timeout=60,
         )
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            # Attach the response body (truncated): Buffer's error text says
+            # more than the status code (e.g. bad-key details on a 500).
+            raise requests.HTTPError(f"{e} | body: {(r.text or '')[:300]}",
+                                      response=r) from e
         return r.json()
     data = retry("Buffer API", do, tries=3, backoff=10)
     if isinstance(data, dict) and data.get("errors"):
