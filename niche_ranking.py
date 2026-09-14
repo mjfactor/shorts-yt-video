@@ -212,21 +212,59 @@ _BOARD_X = 60
 _BOARD_Y = 710
 _BOARD_ROW_H = 100
 _BOARD_FONT_SIZE = 66
-_BOARD_NAME_LEN = 14
+_BOARD_NAME_LEN = 80
+_BOARD_MAX_WIDTH = C.W - (_BOARD_X * 2)
+_BOARD_MIN_FONT_SIZE = 40
 
 
 def _clean_board_text(name: str, limit: int = _BOARD_NAME_LEN) -> str:
     """Short ASCII-only board label (drawtext uses one font, no emoji)."""
     import re
-    keep = re.sub(r"[^A-Za-z0-9 .'&,!?()\-]", "", name or "")
+    normalized = (name or "").replace("—", " - ").replace("–", " - ")
+    keep = re.sub(r"[^A-Za-z0-9 .'&,!?()\-]", "", normalized)
     keep = re.sub(r"\s+", " ", keep).strip()
-    return keep[:limit].rstrip()
+    if len(keep) <= limit:
+        return keep
+    clipped = keep[:limit].rsplit(" ", 1)[0].rstrip()
+    return clipped or keep[:limit].rstrip()
 
 
 def _escape_drawtext(text: str) -> str:
     """Escape a value for drawtext filter syntax (order matters)."""
     return (text.replace("\\", "\\\\").replace(":", "\\:")
                  .replace(",", "\\,").replace("'", "\\'"))
+
+
+def _board_font_size(text: str, font_path: str) -> int:
+    """Shrink only long leaderboard labels to fit the safe board width."""
+    try:
+        from PIL import ImageFont
+        for size in range(_BOARD_FONT_SIZE, _BOARD_MIN_FONT_SIZE - 1, -1):
+            font = ImageFont.truetype(font_path, size)
+            width = font.getlength(text) if hasattr(font, "getlength") else font.getbbox(text)[2]
+            if width <= _BOARD_MAX_WIDTH:
+                return size
+    except Exception:
+        pass
+    return _BOARD_MIN_FONT_SIZE
+
+
+def _fit_board_label(display_name: str, font_path: str) -> tuple[int, str]:
+    """(size, text) guaranteed to fit the safe width: shrink first, then
+    word-truncate only the pathological remainder (real item names are
+    1-3 words and never reach this). Keeps the "N. " prefix."""
+    size = _board_font_size(display_name, font_path)
+    text = display_name
+    try:
+        from PIL import ImageFont
+        font = ImageFont.truetype(font_path, size)
+        get = (font.getlength if hasattr(font, "getlength")
+               else lambda t: font.getbbox(t)[2])
+        while get(text) > _BOARD_MAX_WIDTH and " " in text.strip():
+            text = text.strip().rsplit(" ", 1)[0].rstrip()
+    except Exception:
+        pass
+    return size, text
 
 
 def board_filter(beats, items, durations, get_font, has_drawtext,
@@ -260,16 +298,28 @@ def board_filter(beats, items, durations, get_font, has_drawtext,
     row_of = {r: idx for idx, r in enumerate(ranks)}
     esc_font = font.replace(":", "\\:")
     parts = []
-    # Banner cap: ~30 chars at fontsize 64 fills 1080px — longer titles
-    # would clip at both edges. Cut at a word boundary, not mid-word.
-    clean_title = _clean_board_text(title, 30)
-    if len(clean_title) == 30 and " " in clean_title:
-        clean_title = clean_title.rsplit(" ", 1)[0]
-    if clean_title:
-        parts.append(
-            f"drawtext=fontfile='{esc_font}':text='{_escape_drawtext(clean_title)}':"
-            f"fontsize=70:fontcolor=white:borderw=3:bordercolor=black:"
-            f"x=(w-text_w)/2:y=140")
+    # Keep a safe side margin. Longer titles wrap at word boundaries instead
+    # of being clipped or truncated.
+    clean_title = _clean_board_text(title, 100)
+    title_words = clean_title.split()
+    title_lines = []
+    line = ""
+    for word in title_words:
+        candidate = f"{line} {word}".strip()
+        if line and len(candidate) > 24:
+            title_lines.append(line)
+            line = word
+        else:
+            line = candidate
+    if line:
+        title_lines.append(line)
+    if title_lines:
+        title_y = 140 - (len(title_lines) - 1) * 36
+        for line_no, title_line in enumerate(title_lines):
+            parts.append(
+                f"drawtext=fontfile='{esc_font}':text='{_escape_drawtext(title_line)}':"
+                f"fontsize=70:fontcolor=white:borderw=3:bordercolor=black:"
+                f"x=(w-text_w)/2:y={title_y + line_no * 72}")
     for r in ranks:
         y = _BOARD_Y + row_of[r] * _BOARD_ROW_H
         base = (f"drawtext=fontfile='{esc_font}':text='{r}.':"
@@ -283,13 +333,15 @@ def board_filter(beats, items, durations, get_font, has_drawtext,
         y = _BOARD_Y + row_of[r] * _BOARD_ROW_H
         reveal = starts[beat_idx]
         end = starts[beat_idx + 1] if beat_idx + 1 < len(starts) else total
-        esc_name = _escape_drawtext(f"{r}. {name}")
+        display_name = f"{r}. {name}"
+        name_font_size, display_name = _fit_board_label(display_name, font)
+        esc_name = _escape_drawtext(display_name)
         fill = (f"drawtext=fontfile='{esc_font}':text='{esc_name}':"
-                f"fontsize={_BOARD_FONT_SIZE}:fontcolor=white:"
+            f"fontsize={name_font_size}:fontcolor=white:"
                 f"borderw=2:bordercolor=black:x={_BOARD_X}:y={y}:"
                 f"enable='between(t,{reveal:.2f},{total:.2f})'")
         hot = (f"drawtext=fontfile='{esc_font}':text='{esc_name}':"
-               f"fontsize={_BOARD_FONT_SIZE}:fontcolor=red:"
+               f"fontsize={name_font_size}:fontcolor=red:"
                f"borderw=2:bordercolor=black:x={_BOARD_X}:y={y}:"
                f"enable='between(t,{reveal:.2f},{end:.2f})'")
         parts += [fill, hot]
