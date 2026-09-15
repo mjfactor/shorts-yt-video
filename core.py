@@ -59,10 +59,21 @@ MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
 TTS_RATE = os.getenv("TTS_RATE", "-5%")
 TTS_PITCH = os.getenv("TTS_PITCH", "-10Hz")
 TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
-# TTS engine: "edge" (default, free edge-tts, word-level captions) or
-# "gemini" (pilot: Gemini TTS — more natural, style-steerable, voices
-# alternate per beat; beat-level captions; falls back to edge on any fail).
-TTS_ENGINE = os.getenv("TTS_ENGINE", "edge").strip().lower()
+# TTS engine chain (default flux -> gemini -> edge): "flux" (free OpenRouter
+# Flux TTS first — no Gemini quota burn), "gemini" (Gemini TTS, then edge),
+# or "edge" (free edge-tts only, word-level captions). Remote engines synth
+# per beat with voices alternating; beat-level captions (audio-only output,
+# no word timings); missing keys skip, any failure moves to the next engine.
+TTS_ENGINE = os.getenv("TTS_ENGINE", "flux").strip().lower()
+# OpenRouter (needs OPENROUTER_API_KEY): free tier is 50 req/day without
+# credits (1000/day after $10 lifetime) — 7 beats x 2 runs = ~14/day fits.
+OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_TTS_MODEL = os.getenv("OPENROUTER_TTS_MODEL", "deepgram/flux-tts:free")
+# Flux voice catalog is 36 English voices (flux-{name}-en); one voice =
+# single narrator, two = man/woman alternation per beat.
+FLUX_TTS_VOICES = ([v.strip() for v in
+                    os.getenv("FLUX_TTS_VOICES", "flux-bruce-en,flux-haley-en").split(",")
+                    if v.strip()] or ["flux-bruce-en"])
 # Tried in order; first working model wins (mirrors GEMINI_MODELS).
 GEMINI_TTS_MODELS = [m.strip() for m in
                      os.getenv("GEMINI_TTS_MODELS",
@@ -417,57 +428,117 @@ def _format_srt_ts(sec: float) -> str:
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d},{int(ms * 1000):03d}"
 
 
-def _gen_audio_gemini(beats: list[dict], mp3: Path, srt: Path) -> list[float]:
-    """Per-beat Gemini TTS, concatenated. Returns per-beat durations.
+def _flux_tts_beat(text: str, voice: str) -> bytes:
+    """One beat of MP3 audio via OpenRouter Flux TTS. Raises on failure.
 
-    Voices alternate per beat (GEMINI_TTS_VOICES). SRT has one cue per beat
-    (Gemini returns audio only, no word timings — beat-level captions are
-    the best available). Intermediates are tts_* (see INTERMEDIATE_PATTERNS).
+    Endpoint returns raw audio bytes (not JSON); failures are JSON
+    {"error": {...}}, told apart by the content-type header. 429/5xx retry
+    via retry(); other 4xx (bad key, no quota) fail fast to the next engine.
+    """
+    def _do():
+        r = requests.post(
+            "https://openrouter.ai/api/v1/audio/speech",
+            headers={"Authorization": f"Bearer {OPENROUTER_KEY}",
+                     "Content-Type": "application/json"},
+            json={"model": OPENROUTER_TTS_MODEL, "input": text,
+                  "voice": voice, "response_format": "mp3"},
+            timeout=120)
+        ct = r.headers.get("content-type", "")
+        if r.ok and ct.startswith("audio/") and r.content:
+            return r.content
+        try:
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            try:
+                msg = (r.json().get("error") or {}).get("message", "")
+            except Exception:
+                msg = (r.text or "")[:200]
+            raise requests.HTTPError(f"{e} | {msg}".rstrip(" |"),
+                                     response=r) from e
+        raise ValueError(f"Flux TTS returned non-audio ({ct or 'no content-type'})")
+    audio = retry("Flux TTS", _do, tries=3, backoff=10)
+    if len(audio) < 1_000:
+        raise ValueError(f"Flux TTS audio too small ({len(audio)}b)")
+    return audio
+
+
+def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
+                    synth, tag: str) -> list[float]:
+    """Shared per-beat assembly for audio-only TTS engines (no word timings).
+
+    synth(i, beat) -> (voice_label, seg_mp3_path); raises on failure (the
+    caller then tries the next engine — never per-beat retries). Returns
+    per-beat durations; writes concatenated mp3 + beat-level SRT.
+    Intermediates are tts_* (see INTERMEDIATE_PATTERNS).
     """
     parts, cues, durations = [], [], []
     t = 0.0
     for i, b in enumerate(beats):
-        voice = GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
-        pcm, rate = _gemini_tts_beat(b["text"], voice)  # raises -> edge fallback
-        raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
-        seg = ASSETS / f"tts_beat_{i}.mp3"
-        raw_pcm.write_bytes(pcm)
-        _run_ffmpeg(["ffmpeg", "-y", "-f", "s16le", "-ar", str(rate), "-ac", "1",
-                     "-i", str(raw_pcm), "-c:a", "libmp3lame", str(seg)],
-                    f"tts-beat-{i}-pcm")
+        voice, seg = synth(i, b)
         d = audio_duration(seg)
         parts.append(seg)
         cues.append((t, t + d, " ".join(b["text"].split())))
         durations.append(d)
         t += d
-        log(f"TTS beat {i + 1}/{len(beats)} voice={voice} {d:.1f}s")
+        log(f"TTS {tag} beat {i + 1}/{len(beats)} voice={voice} {d:.1f}s")
     lst = ASSETS / "tts_parts.txt"
     lst.write_text("".join(f"file '{p.resolve()}'\n" for p in parts))
     _run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
-                 "-c:a", "libmp3lame", str(mp3)], "tts-concat")
+                 "-c:a", "libmp3lame", str(mp3)], f"tts-{tag}-concat")
     srt.write_text("".join(
         f"{n}\n{_format_srt_ts(s)} --> {_format_srt_ts(e)}\n{txt}\n\n"
         for n, (s, e, txt) in enumerate(cues, 1)), encoding="utf-8")
     return durations
 
 
+def _gemini_synth(i: int, beat: dict):
+    """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure."""
+    voice = GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
+    pcm, rate = _gemini_tts_beat(beat["text"], voice)
+    raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
+    seg = ASSETS / f"tts_beat_{i}.mp3"
+    raw_pcm.write_bytes(pcm)
+    _run_ffmpeg(["ffmpeg", "-y", "-f", "s16le", "-ar", str(rate), "-ac", "1",
+                 "-i", str(raw_pcm), "-c:a", "libmp3lame", str(seg)],
+                f"tts-beat-{i}-pcm")
+    return voice, seg
+
+
+def _flux_synth(i: int, beat: dict):
+    """Flux per-beat synth step: (voice, seg_mp3). Raises on failure."""
+    voice = FLUX_TTS_VOICES[i % len(FLUX_TTS_VOICES)]
+    seg = ASSETS / f"tts_beat_{i}.mp3"
+    seg.write_bytes(_flux_tts_beat(beat["text"], voice))
+    return voice, seg
+
+
 def gen_audio(narration: str, stem: Path,
               beats: list[dict] | None = None) -> tuple[Path, Path, list[float] | None]:
     """Narrate + produce captions. Returns (mp3, srt, beat_durations|None).
 
-    engine=edge (default): one edge-tts call, word-level SRT, None durations
-    (run() falls back to word-count weighting). engine=gemini: per-beat
-    Gemini TTS with real per-beat durations; ANY failure warns and falls
-    back to edge for the whole narration (never fails the run here).
+    Remote engines synth per beat (real per-beat durations for visuals).
+    Chain: flux -> gemini -> edge (flux first = free, no Gemini quota burn).
+    Missing keys skip with a warning; any engine failure warns and moves to
+    the next; edge is last and raises on failure (existing behavior).
     """
     mp3 = stem.with_suffix(".mp3")
     srt = stem.with_suffix(".srt")
-    if TTS_ENGINE == "gemini" and beats:
-        try:
-            durations = _gen_audio_gemini(beats, mp3, srt)
-            return mp3, srt, durations
-        except Exception as e:
-            warn(f"Gemini TTS failed ({e}), falling back to edge-tts.")
+    if beats and TTS_ENGINE in ("flux", "gemini"):
+        if TTS_ENGINE == "flux":
+            if OPENROUTER_KEY:
+                try:
+                    return mp3, srt, _assemble_beats(beats, mp3, srt, _flux_synth, "flux")
+                except Exception as e:
+                    warn(f"Flux TTS failed ({e}), trying next engine.")
+            else:
+                warn("OPENROUTER_API_KEY missing -> skipping Flux TTS.")
+        if GEMINI_KEY:
+            try:
+                return mp3, srt, _assemble_beats(beats, mp3, srt, _gemini_synth, "gemini")
+            except Exception as e:
+                warn(f"Gemini TTS failed ({e}), falling back to edge-tts.")
+        else:
+            warn("GEMINI_API_KEY missing -> skipping Gemini TTS.")
     _gen_audio_edge(narration, mp3, srt)
     return mp3, srt, None
 
@@ -1252,8 +1323,14 @@ def run(niche):
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem = OUT / f"{stamp}_short"
     # Non-secret effective config so Actions logs show what actually ran.
-    tts_desc = (f"gemini(models={GEMINI_TTS_MODELS},voices={GEMINI_TTS_VOICES})"
-                if TTS_ENGINE == "gemini" else f"edge(voice={VOICE})")
+    if TTS_ENGINE == "flux":
+        tts_desc = (f"flux(model={OPENROUTER_TTS_MODEL},voices={FLUX_TTS_VOICES})"
+                    f"->gemini->edge")
+    elif TTS_ENGINE == "gemini":
+        tts_desc = (f"gemini(models={GEMINI_TTS_MODELS},voices={GEMINI_TTS_VOICES})"
+                    "->edge")
+    else:
+        tts_desc = f"edge(voice={VOICE})"
     log(f"Config: mode={niche.MODE} tts={tts_desc} rate={TTS_RATE} pitch={TTS_PITCH} niche='{niche.NICHE_LABEL}' visibility={VISIBILITY} "
         f"min/max={MIN_AUDIO_SEC:g}/{MAX_AUDIO_SEC:g}s models={GEMINI_MODELS} "
         f"cf_model={CF_IMAGE_MODEL} "
