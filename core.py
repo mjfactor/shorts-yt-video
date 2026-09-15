@@ -36,6 +36,7 @@ import textwrap
 import time
 import base64
 from pathlib import Path
+from typing import Any
 
 import requests
 
@@ -165,7 +166,7 @@ def _http_status(e: Exception):
     if resp is not None:
         if isinstance(resp, dict):
             try:
-                return int(resp.get("status"))
+                return int(resp.get("status"))  # type: ignore[arg-type]
             except (TypeError, ValueError):
                 return None
         for attr in ("status_code", "status"):
@@ -178,7 +179,7 @@ def _http_status(e: Exception):
     return None
 
 
-def retry(name: str, func, tries: int = 3, backoff: int = 5, fatal=()):
+def retry(name: str, func, tries: int = 3, backoff: int = 5, fatal=()) -> Any:
     """Retry temporary failures (network blips, 5xx, 429, process errors).
 
     Permanent client errors (other 4xx, e.g. bad API key / bad credentials)
@@ -573,18 +574,18 @@ def notify_failure(error: Exception):
 
 
 # Caption style for vertical Shorts: tiny bold white text with a dark outline,
-# anchored near the bottom while staying above the Shorts UI.
+# anchored top-center just below the title (above the leaderboard).
 # DejaVu Sans ships with the Ubuntu runner (libass falls back if missing).
 # NOTE: applied via generated .ass file, NOT force_style (comma-bearing
 # force_style silently yields zero pixels on some FFmpeg/libass builds).
 SUB_STYLE = ("FontName=DejaVu Sans,FontSize=34,Bold=-1,"
              "PrimaryColour=&H00FFFFFF,OutlineColour=&HCC000000,"
              "BorderStyle=1,Outline=2,Shadow=0,"
-             "Alignment=2,MarginV=230,WrapStyle=0")
+             "Alignment=8,MarginV=320,WrapStyle=0")
 
 
 def _srt_to_ass(srt: Path) -> Path:
-    """Convert edge-tts SRT to a styled ASS (bottom-center, tiny text).
+    """Convert edge-tts SRT to a styled ASS (top-center below title, tiny text).
 
     Avoids force_style entirely: style lives in the file header, so the
     subtitles filter stays a plain path with no commas to misparse.
@@ -594,6 +595,8 @@ def _srt_to_ass(srt: Path) -> Path:
 
     def _ts(ts: str) -> str:
         m = re.match(r"(\d+):(\d+):(\d+)[,.](\d+)", ts.strip())
+        if m is None:
+            raise ValueError(f"bad SRT timestamp: {ts!r}")
         h, mi, s, ms = map(int, m.groups())
         return f"{h}:{mi:02d}:{s:02d}.{ms // 10:02d}"
 
@@ -622,7 +625,7 @@ def _srt_to_ass(srt: Path) -> Path:
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         "Style: Default,DejaVu Sans,34,&H00FFFFFF,&H000019FF,&HCC000000,"
-        "&H00000000,-1,0,0,0,100,100,0,0,1,2,0,2,10,10,230,1\n"
+        "&H00000000,-1,0,0,0,100,100,0,0,1,2,0,8,10,10,320,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -771,7 +774,7 @@ def pexels_clip(query: str, used: set | None = None, mood: bool = True):
 
 def beat_card(i: int, text: str) -> Path:
     """Title card carrying the beat's story text (gap filler, always matches)."""
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw  # type: ignore[import-not-found]
     colors = [(18, 18, 40), (40, 18, 30), (18, 40, 35), (35, 35, 18)]
     img = Image.new("RGB", (W, H), colors[i % len(colors)])
     d = ImageDraw.Draw(img)
