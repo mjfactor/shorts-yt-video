@@ -77,12 +77,53 @@ GEMINI_TTS_MODELS = [m.strip() for m in
 GEMINI_TTS_VOICES = ([v.strip() for v in
                       os.getenv("GEMINI_TTS_VOICES", "Charon").split(",")
                       if v.strip()] or ["Charon"])
-GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE", "") or
-                    "Read aloud in a deep, dramatic countdown-narrator voice: "
-                    "confident and energetic, with strong emphasis on every reveal.")
+DEFAULT_GEMINI_TTS_STYLE = (
+    "Read in a premium, cinematic documentary voice with confident pacing, "
+    "subtle drama, and a sense of wonder. Clear, polished, and authoritative, "
+    "with strong emphasis on reveal moments."
+)
+GEMINI_TTS_STYLE = os.getenv("GEMINI_TTS_STYLE", DEFAULT_GEMINI_TTS_STYLE)
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+
+def pick_tts_style(topic: str, text: str) -> str:
+    """Choose a narrator style tuned to the topic and storytelling tone."""
+    haystack = f"{topic} {text}".lower()
+
+    if any(k in haystack for k in [
+        "planet", "space", "galaxy", "moon", "star", "ocean", "mountain",
+        "building", "statue", "island", "river", "desert", "volcano"
+    ]):
+        return (
+            "Read in a premium, cinematic documentary voice with confident pacing, "
+            "clear authority, and a sense of scale and wonder. Keep it polished, "
+            "immersive, and slightly dramatic at the ranking reveals."
+        )
+
+    if any(k in haystack for k in [
+        "deadly", "danger", "horror", "haunted", "ghost", "creature",
+        "predator", "attack", "monster", "scary", "venom"
+    ]):
+        return (
+            "Read in a dark, ominous, high-tension narration voice with restrained horror, "
+            "measured pacing, and strong emphasis on danger and surprise."
+        )
+
+    if any(k in haystack for k in [
+        "animal", "wild", "snake", "shark", "elephant", "giraffe", "cat",
+        "dog", "predator", "nature"
+    ]):
+        return (
+            "Read in a dramatic but accessible countdown voice with strong emphasis on each reveal, "
+            "clear pacing, and an energetic sense of awe."
+        )
+
+    return (
+        "Read in a calm, confident narrator voice with steady pacing, authoritative tone, "
+        "and clean emphasis on each reveal."
+    )
 
 W, H = 1080, 1920  # vertical Shorts
 
@@ -380,7 +421,7 @@ def _gen_audio_edge(narration: str, mp3: Path, srt: Path):
           tries=3, backoff=10)
 
 
-def _gemini_tts_beat(text: str, voice: str) -> tuple[bytes, int]:
+def _gemini_tts_beat(text: str, voice: str, topic: str = "") -> tuple[bytes, int]:
     """One beat of raw PCM audio via Gemini TTS. Returns (pcm, sample_rate).
 
     Tries GEMINI_TTS_MODELS in order; raises when all fail. The caller falls
@@ -389,7 +430,7 @@ def _gemini_tts_beat(text: str, voice: str) -> tuple[bytes, int]:
     """
     if not GEMINI_KEY:
         raise ValueError("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it)")
-    prompt = f"{GEMINI_TTS_STYLE} Say the following text:\n\n{text}"
+    prompt = f"{pick_tts_style(topic, text) if topic else GEMINI_TTS_STYLE} Say the following text:\n\n{text}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -426,7 +467,7 @@ def _format_srt_ts(sec: float) -> str:
 
 
 def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
-                    synth, tag: str) -> list[float]:
+                    synth, tag: str, topic: str = "") -> list[float]:
     """Shared per-beat assembly for audio-only TTS engines (no word timings).
 
     synth(i, beat) -> (voice_label, seg_mp3_path); raises on failure (the
@@ -437,7 +478,7 @@ def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
     parts, cues, durations = [], [], []
     t = 0.0
     for i, b in enumerate(beats):
-        voice, seg = synth(i, b)
+        voice, seg = synth(i, b, topic) if topic else synth(i, b)
         d = audio_duration(seg)
         parts.append(seg)
         cues.append((t, t + d, " ".join(b["text"].split())))
@@ -454,10 +495,10 @@ def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
     return durations
 
 
-def _gemini_synth(i: int, beat: dict):
+def _gemini_synth(i: int, beat: dict, topic: str = ""):
     """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure."""
     voice = GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
-    pcm, rate = _gemini_tts_beat(beat["text"], voice)
+    pcm, rate = _gemini_tts_beat(beat["text"], voice, topic)
     raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
     seg = ASSETS / f"tts_beat_{i}.mp3"
     raw_pcm.write_bytes(pcm)
@@ -468,7 +509,8 @@ def _gemini_synth(i: int, beat: dict):
 
 
 def gen_audio(narration: str, stem: Path,
-              beats: list[dict] | None = None) -> tuple[Path, Path, list[float] | None]:
+              beats: list[dict] | None = None,
+              topic: str = "") -> tuple[Path, Path, list[float] | None]:
     """Narrate + produce captions. Returns (mp3, srt, beat_durations|None).
 
     engine=gemini (default): per-beat Gemini TTS, real per-beat durations
@@ -483,7 +525,7 @@ def gen_audio(narration: str, stem: Path,
     if beats and TTS_ENGINE == "gemini":
         if GEMINI_KEY:
             try:
-                return mp3, srt, _assemble_beats(beats, mp3, srt, _gemini_synth, "gemini")
+                return mp3, srt, _assemble_beats(beats, mp3, srt, _gemini_synth, "gemini", topic)
             except Exception as e:
                 warn(f"Gemini TTS failed ({e}), falling back to edge-tts.")
         else:
