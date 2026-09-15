@@ -623,14 +623,16 @@ def notify_failure(error: Exception):
             log(f"Telegram notify failed (non-fatal): {e}")
 
 
-# Caption style for vertical Shorts: tiny bold white text with a dark outline,
-# anchored top-center just below the title (above the leaderboard).
-# DejaVu Sans ships with the Ubuntu runner (libass falls back if missing).
+# Caption style for vertical Shorts: tiny bold yellow text with a solid black
+# outline + shadow, anchored top-center just below the title (above the
+# leaderboard). Yellow holds contrast on bright daylight footage where white
+# washes out. DejaVu Sans ships with the Ubuntu runner (libass falls back
+# if missing).
 # NOTE: applied via generated .ass file, NOT force_style (comma-bearing
 # force_style silently yields zero pixels on some FFmpeg/libass builds).
 SUB_STYLE = ("FontName=DejaVu Sans,FontSize=34,Bold=-1,"
-             "PrimaryColour=&H00FFFFFF,OutlineColour=&HCC000000,"
-             "BorderStyle=1,Outline=2,Shadow=0,"
+             "PrimaryColour=&H0000FFFF,OutlineColour=&HFF000000,"
+             "BorderStyle=1,Outline=3,Shadow=1,"
              "Alignment=8,MarginV=320,WrapStyle=0")
 
 
@@ -674,8 +676,8 @@ def _srt_to_ass(srt: Path) -> Path:
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        "Style: Default,DejaVu Sans,34,&H00FFFFFF,&H000019FF,&HCC000000,"
-        "&H00000000,-1,0,0,0,100,100,0,0,1,2,0,8,10,10,320,1\n"
+        "Style: Default,DejaVu Sans,34,&H0000FFFF,&H000019FF,&HFF000000,"
+        "&H00000000,-1,0,0,0,100,100,0,0,1,3,1,8,10,10,320,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
