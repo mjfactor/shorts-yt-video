@@ -49,12 +49,15 @@ VOICE = "en-US-ChristopherNeural"  # deep male narrator (News/Novel, Authority)
 VISIBILITY = os.getenv("VISIBILITY", "private")  # private = safe for unverified OAuth apps
 def _parse_gemini_keys() -> list[str]:
     """All configured Gemini keys: GEMINI_API_KEY (comma-separated, so a
-    single key keeps working) plus optional GEMINI_API_KEY_2 failover."""
+    single key keeps working) plus GEMINI_API_KEY_2.._10 failover keys."""
+    raws = [os.getenv("GEMINI_API_KEY", "")]
+    raws += [os.getenv(f"GEMINI_API_KEY_{i}", "") for i in range(2, 11)]
     keys: list[str] = []
-    for k in os.getenv("GEMINI_API_KEY", "").split(",") + [os.getenv("GEMINI_API_KEY_2", "")]:
-        k = k.strip()
-        if k and k not in keys:
-            keys.append(k)
+    for raw in raws:
+        for k in raw.split(","):
+            k = k.strip()
+            if k and k not in keys:
+                keys.append(k)
     return keys
 
 
