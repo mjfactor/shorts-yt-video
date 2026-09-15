@@ -36,6 +36,7 @@ import textwrap
 import time
 import base64
 from pathlib import Path
+from typing import Any
 
 import requests
 
@@ -46,13 +47,32 @@ ASSETS.mkdir(exist_ok=True)
 
 VOICE = "en-US-ChristopherNeural"  # deep male narrator (News/Novel, Authority)
 VISIBILITY = os.getenv("VISIBILITY", "private")  # private = safe for unverified OAuth apps
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+def _parse_gemini_keys() -> list[str]:
+    """All configured Gemini keys: GEMINI_API_KEY (comma-separated, so a
+    single key keeps working) plus GEMINI_API_KEY_2.._10 failover keys."""
+    raws = [os.getenv("GEMINI_API_KEY", "")]
+    raws += [os.getenv(f"GEMINI_API_KEY_{i}", "") for i in range(2, 11)]
+    keys: list[str] = []
+    for raw in raws:
+        for k in raw.split(","):
+            k = k.strip()
+            if k and k not in keys:
+                keys.append(k)
+    return keys
+
+
+GEMINI_KEYS = _parse_gemini_keys()
+GEMINI_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else ""  # first key; back-compat
+_GEMINI_KEY_IDX = 0  # working key; advances on quota rejection
 # Tried in order; first working model wins. Override via GEMINI_MODELS="model-a,model-b".
 GEMINI_MODELS = [m.strip() for m in
                  os.getenv("GEMINI_MODELS",
                             "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
                  if m.strip()]
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
+# Minimum Pexels file width to prefer (default 1080: 1:1 with the 1080x1920
+# canvas, no upscale softness). Smaller files still play as fallback.
+PEXELS_MIN_WIDTH = int(os.getenv("PEXELS_MIN_WIDTH", "1080"))
 MIN_AUDIO_SEC = float(os.getenv("MIN_AUDIO_SEC", "10"))
 MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
 # TTS prosody: slightly slower + lower reads more dramatic.
@@ -165,7 +185,7 @@ def _http_status(e: Exception):
     if resp is not None:
         if isinstance(resp, dict):
             try:
-                return int(resp.get("status"))
+                return int(resp.get("status"))  # type: ignore[arg-type]
             except (TypeError, ValueError):
                 return None
         for attr in ("status_code", "status"):
@@ -178,7 +198,7 @@ def _http_status(e: Exception):
     return None
 
 
-def retry(name: str, func, tries: int = 3, backoff: int = 5, fatal=()):
+def retry(name: str, func, tries: int = 3, backoff: int = 5, fatal=()) -> Any:
     """Retry temporary failures (network blips, 5xx, 429, process errors).
 
     Permanent client errors (other 4xx, e.g. bad API key / bad credentials)
@@ -343,13 +363,53 @@ def _validate_script(data, niche) -> dict:
     return out
 
 
-def _fetch_gemini(url: str, payload: dict):
-    """POST to Gemini with retries for transient failures (5xx/429/network)."""
-    def _do():
-        r = requests.post(url, json=payload, timeout=60)
-        r.raise_for_status()
-        return r.json()
-    return retry("Gemini", _do, tries=3, backoff=5)
+def _fetch_gemini(url: str, payload: dict, tries: int = 3, backoff: int = 5):
+    """POST to Gemini with key rotation + retries. `url` is keyless.
+
+    Sticks with the working key; a quota/invalid-key rejection (429 or other
+    4xx) fails over to the next key immediately, while transient 5xx/network
+    errors retry with backoff first. Raises the last error when all keys fail.
+    """
+    global _GEMINI_KEY_IDX
+    if not GEMINI_KEYS:
+        raise ValueError("GEMINI_API_KEY missing")
+    n = len(GEMINI_KEYS)
+    last_err: Exception | None = None
+    server_only_failures = 0  # keys that exhausted attempts with only 5xx/timeout/network errors
+    for k in range(n):
+        idx = (_GEMINI_KEY_IDX + k) % n
+        sep = "&" if "?" in url else "?"
+        keyed = f"{url}{sep}key={GEMINI_KEYS[idx]}"
+        key_server_only = True  # stays True unless this key sees a 4xx rejection
+        for attempt in range(1, tries + 1):
+            try:
+                r = requests.post(keyed, json=payload, timeout=60)
+                r.raise_for_status()
+                _GEMINI_KEY_IDX = idx  # stick with the working key
+                return r.json()
+            except Exception as e:
+                last_err = e
+                status = _http_status(e)
+                if status is not None and 400 <= status < 500 and status != 408:
+                    key_server_only = False
+                    if k < n - 1:
+                        log(f"Gemini key {idx + 1}/{n} rejected (HTTP {status}), "
+                            "failing over to next key...")
+                    break  # 4xx won't heal with retries — try next key
+                if attempt == tries:
+                    break
+                wait = backoff * attempt
+                log(f"Gemini(key {idx + 1}/{n}) failed (attempt {attempt}/{tries}: {e}), "
+                    f"retrying in {wait}s...")
+                time.sleep(wait)
+        if key_server_only:
+            server_only_failures += 1
+            if server_only_failures >= 2 and k < n - 1:
+                log(f"Gemini endpoint looks down ({server_only_failures} keys failed "
+                    "with only server-side errors), skipping remaining keys...")
+                break
+    assert last_err is not None
+    raise last_err
 
 
 def gen_script(niche):
@@ -360,7 +420,7 @@ def gen_script(niche):
     Fallback matches the active niche too (slots avoid recent history).
     """
     history = load_history()
-    if GEMINI_KEY:
+    if GEMINI_KEYS:
         for attempt in range(1 + SIMILARITY_RETRIES):
             prompt, slots = niche.build_prompt(history)
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -368,7 +428,7 @@ def gen_script(niche):
             for model in GEMINI_MODELS:
                 try:
                     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                           f"{model}:generateContent?key={GEMINI_KEY}")
+                           f"{model}:generateContent")
                     raw = _fetch_gemini(url, payload)
                     text = raw["candidates"][0]["content"]["parts"][0]["text"]
                     # strip markdown fences
@@ -428,7 +488,7 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "") -> tuple[bytes, int
     back to edge-tts for the WHOLE narration on any failure — per-beat
     retries would multiply a total outage by the beat count.
     """
-    if not GEMINI_KEY:
+    if not GEMINI_KEYS:
         raise ValueError("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it)")
     prompt = f"{pick_tts_style(topic, text) if topic else GEMINI_TTS_STYLE} Say the following text:\n\n{text}"
     payload = {
@@ -442,7 +502,7 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "") -> tuple[bytes, int
     for model in GEMINI_TTS_MODELS:
         try:
             url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                   f"{model}:generateContent?key={GEMINI_KEY}")
+                   f"{model}:generateContent")
             raw = _fetch_gemini(url, payload)
             parts = raw["candidates"][0]["content"].get("parts", [])
             inline = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
@@ -523,7 +583,7 @@ def gen_audio(narration: str, stem: Path,
     if TTS_ENGINE not in ("gemini", "edge"):
         warn(f"Unknown TTS_ENGINE={TTS_ENGINE!r}, using edge-tts.")
     if beats and TTS_ENGINE == "gemini":
-        if GEMINI_KEY:
+        if GEMINI_KEYS:
             try:
                 return mp3, srt, _assemble_beats(beats, mp3, srt, _gemini_synth, "gemini", topic)
             except Exception as e:
@@ -572,19 +632,21 @@ def notify_failure(error: Exception):
             log(f"Telegram notify failed (non-fatal): {e}")
 
 
-# Caption style for vertical Shorts: tiny bold white text with a dark outline,
-# anchored near the bottom while staying above the Shorts UI.
-# DejaVu Sans ships with the Ubuntu runner (libass falls back if missing).
+# Caption style for vertical Shorts: tiny bold yellow text with a solid black
+# outline + shadow, anchored top-center just below the title (above the
+# leaderboard). Yellow holds contrast on bright daylight footage where white
+# washes out. DejaVu Sans ships with the Ubuntu runner (libass falls back
+# if missing).
 # NOTE: applied via generated .ass file, NOT force_style (comma-bearing
 # force_style silently yields zero pixels on some FFmpeg/libass builds).
 SUB_STYLE = ("FontName=DejaVu Sans,FontSize=34,Bold=-1,"
-             "PrimaryColour=&H00FFFFFF,OutlineColour=&HCC000000,"
-             "BorderStyle=1,Outline=2,Shadow=0,"
-             "Alignment=2,MarginV=230,WrapStyle=0")
+             "PrimaryColour=&H0000FFFF,OutlineColour=&HFF000000,"
+             "BorderStyle=1,Outline=3,Shadow=1,"
+             "Alignment=8,MarginV=320,WrapStyle=0")
 
 
 def _srt_to_ass(srt: Path) -> Path:
-    """Convert edge-tts SRT to a styled ASS (bottom-center, tiny text).
+    """Convert edge-tts SRT to a styled ASS (top-center below title, tiny text).
 
     Avoids force_style entirely: style lives in the file header, so the
     subtitles filter stays a plain path with no commas to misparse.
@@ -594,6 +656,8 @@ def _srt_to_ass(srt: Path) -> Path:
 
     def _ts(ts: str) -> str:
         m = re.match(r"(\d+):(\d+):(\d+)[,.](\d+)", ts.strip())
+        if m is None:
+            raise ValueError(f"bad SRT timestamp: {ts!r}")
         h, mi, s, ms = map(int, m.groups())
         return f"{h}:{mi:02d}:{s:02d}.{ms // 10:02d}"
 
@@ -621,8 +685,8 @@ def _srt_to_ass(srt: Path) -> Path:
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        "Style: Default,DejaVu Sans,34,&H00FFFFFF,&H000019FF,&HCC000000,"
-        "&H00000000,-1,0,0,0,100,100,0,0,1,2,0,2,10,10,230,1\n"
+        "Style: Default,DejaVu Sans,34,&H0000FFFF,&H000019FF,&HFF000000,"
+        "&H00000000,-1,0,0,0,100,100,0,0,1,3,1,8,10,10,320,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -741,10 +805,12 @@ def pexels_clip(query: str, used: set | None = None, mood: bool = True):
         for v in r.json().get("videos", []):
             if used is not None and v.get("id") in used:
                 continue  # same story must not show the same clip twice
-            # Prefer the smallest file >=720p wide: keeps CI downloads fast.
+            # Sharp-but-bounded: smallest file clearing PEXELS_MIN_WIDTH
+            # (default 1080p, 1:1 with the canvas). Falls back to whatever
+            # exists so clips with only SD files still play.
             cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
                            key=lambda f: f.get("width", 0))
-            big_enough = [f for f in cands if f.get("width", 0) >= 720]
+            big_enough = [f for f in cands if f.get("width", 0) >= PEXELS_MIN_WIDTH]
             pick = (big_enough or cands)
             if not pick:
                 continue
@@ -771,7 +837,7 @@ def pexels_clip(query: str, used: set | None = None, mood: bool = True):
 
 def beat_card(i: int, text: str) -> Path:
     """Title card carrying the beat's story text (gap filler, always matches)."""
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw  # type: ignore[import-not-found]
     colors = [(18, 18, 40), (40, 18, 30), (18, 40, 35), (35, 35, 18)]
     img = Image.new("RGB", (W, H), colors[i % len(colors)])
     d = ImageDraw.Draw(img)
@@ -1323,7 +1389,7 @@ def run(niche):
     log(f"Config: mode={niche.MODE} tts={tts_desc} rate={TTS_RATE} pitch={TTS_PITCH} niche='{niche.NICHE_LABEL}' visibility={VISIBILITY} "
         f"min/max={MIN_AUDIO_SEC:g}/{MAX_AUDIO_SEC:g}s models={GEMINI_MODELS} "
         f"cf_model={CF_IMAGE_MODEL} "
-        f"keys: gemini={bool(GEMINI_KEY)} pexels={bool(PEXELS_KEY)} "
+        f"keys: gemini_keys={len(GEMINI_KEYS)} pexels={bool(PEXELS_KEY)} "
         f"cf={bool(CF_ACCOUNT_ID and CF_API_TOKEN)} "
         f"yt={(bool(os.getenv('YT_CLIENT_ID')) and bool(os.getenv('YT_CLIENT_SECRET')) and bool(os.getenv('YT_REFRESH_TOKEN')))} "
         f"buffer={bool(BUFFER_API_KEY)}")  # key presence only, never the key itself
