@@ -23,6 +23,10 @@ jobs:
       TTS_RATE: ${{ vars.TTS_RATE || '-5%' }}
       TTS_PITCH: ${{ vars.TTS_PITCH || '-10Hz' }}
       TTS_VOLUME: ${{ vars.TTS_VOLUME || '+0%' }}
+      TTS_ENGINE: ${{ vars.TTS_ENGINE || 'gemini' }}
+      GEMINI_TTS_VOICES: ${{ vars.GEMINI_TTS_VOICES || 'Charon' }}
+      GEMINI_TTS_STYLE: ${{ vars.GEMINI_TTS_STYLE || '' }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}

@@ -98,8 +98,9 @@ API Tokens → create token with the Workers AI template → secrets
 
 ## Captions + music
 
-- **Captions:** the edge-tts SRT is converted to a styled ASS and burned in
-  with the libass `subtitles` filter. They are tiny and bottom-anchored
+- **Captions:** the TTS SRT (word-level from edge-tts, or one cue per beat
+  from Gemini TTS, the default engine) is converted to a styled ASS
+  and burned in with the libass `subtitles` filter. They are tiny and bottom-anchored
   (above the Shorts UI), clear of the left-side leaderboard. The pipeline
   avoids comma-heavy `force_style` options because
   some Windows builds silently render zero caption pixels.
