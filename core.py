@@ -375,10 +375,12 @@ def _fetch_gemini(url: str, payload: dict, tries: int = 3, backoff: int = 5):
         raise ValueError("GEMINI_API_KEY missing")
     n = len(GEMINI_KEYS)
     last_err: Exception | None = None
+    server_only_failures = 0  # keys that exhausted attempts with only 5xx/timeout/network errors
     for k in range(n):
         idx = (_GEMINI_KEY_IDX + k) % n
         sep = "&" if "?" in url else "?"
         keyed = f"{url}{sep}key={GEMINI_KEYS[idx]}"
+        key_server_only = True  # stays True unless this key sees a 4xx rejection
         for attempt in range(1, tries + 1):
             try:
                 r = requests.post(keyed, json=payload, timeout=60)
@@ -389,6 +391,7 @@ def _fetch_gemini(url: str, payload: dict, tries: int = 3, backoff: int = 5):
                 last_err = e
                 status = _http_status(e)
                 if status is not None and 400 <= status < 500 and status != 408:
+                    key_server_only = False
                     if k < n - 1:
                         log(f"Gemini key {idx + 1}/{n} rejected (HTTP {status}), "
                             "failing over to next key...")
@@ -399,6 +402,12 @@ def _fetch_gemini(url: str, payload: dict, tries: int = 3, backoff: int = 5):
                 log(f"Gemini(key {idx + 1}/{n}) failed (attempt {attempt}/{tries}: {e}), "
                     f"retrying in {wait}s...")
                 time.sleep(wait)
+        if key_server_only:
+            server_only_failures += 1
+            if server_only_failures >= 2 and k < n - 1:
+                log(f"Gemini endpoint looks down ({server_only_failures} keys failed "
+                    "with only server-side errors), skipping remaining keys...")
+                break
     assert last_err is not None
     raise last_err
 

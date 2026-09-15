@@ -31,7 +31,7 @@ Output `out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
 
 ## Config (all env, see `.env.example`; never hardcode/commit)
 
-- Required for the YouTube path: `GEMINI_API_KEY` (+ optional `GEMINI_API_KEY_2..4` failover — `_fetch_gemini` sticks with the working key, fails over on 429/4xx; also accepts comma-separated keys), `PEXELS_API_KEY`, `YT_CLIENT_ID`/`YT_CLIENT_SECRET`/`YT_REFRESH_TOKEN`
+- Required for the YouTube path: `GEMINI_API_KEY` (+ optional `GEMINI_API_KEY_2..4` failover — `_fetch_gemini` sticks with the working key, fails over on 429/4xx; 2 keys failing with only 5xx/timeout trips a circuit breaker that skips the rest (endpoint down, not quota); also accepts comma-separated keys), `PEXELS_API_KEY`, `YT_CLIENT_ID`/`YT_CLIENT_SECRET`/`YT_REFRESH_TOKEN`
 - `VISIBILITY` default `private` — keep until the OAuth app passes YouTube audit
 - `GEMINI_MODELS` tried in order, first win; same pattern for `GEMINI_TTS_MODELS`
 - `MIN_AUDIO_SEC=10`/`MAX_AUDIO_SEC=180`; `CF_IMAGE_MODEL` default `@cf/bytedance/stable-diffusion-xl-lightning`; `CF_NUM_STEPS` default 8; `STILLS_PER_BEAT` default 2
