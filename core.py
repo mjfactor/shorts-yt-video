@@ -8,6 +8,7 @@ A niche module must provide (see niche_ranking.py for the reference):
     build_prompt(history) -> (prompt, slots)
     fallback_script(history) -> (meta, slots)
     validate_extra(data)  -> dict merged into validated meta ({} if none)
+    sanitize_title(title, slots) -> str (channel title format enforcement)
     similarity_reason(data, slots, recent) -> str | None
     format_history_line(h) -> str
     AVOID_INTRO, AVOID_OUTRO   str (history avoidance prompt wrapper)
@@ -59,21 +60,13 @@ MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
 TTS_RATE = os.getenv("TTS_RATE", "-5%")
 TTS_PITCH = os.getenv("TTS_PITCH", "-10Hz")
 TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
-# TTS engine chain (default flux -> gemini -> edge): "flux" (free OpenRouter
-# Flux TTS first — no Gemini quota burn), "gemini" (Gemini TTS, then edge),
-# or "edge" (free edge-tts only, word-level captions). Remote engines synth
-# per beat with voices alternating; beat-level captions (audio-only output,
-# no word timings); missing keys skip, any failure moves to the next engine.
-TTS_ENGINE = os.getenv("TTS_ENGINE", "flux").strip().lower()
-# OpenRouter (needs OPENROUTER_API_KEY): free tier is 50 req/day without
-# credits (1000/day after $10 lifetime) — 7 beats x 2 runs = ~14/day fits.
+# TTS engine chain (default gemini -> edge): "gemini" (per-beat Gemini TTS,
+# voices alternate, beat-level captions since Gemini returns audio only),
+# or "edge" (free edge-tts only, word-level captions). Missing keys skip
+# with a warning; any engine failure warns and moves to the next.
+TTS_ENGINE = os.getenv("TTS_ENGINE", "gemini").strip().lower()
+# Reserved for future OpenRouter use (currently no engine reads it).
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_TTS_MODEL = os.getenv("OPENROUTER_TTS_MODEL", "deepgram/flux-tts:free")
-# Flux voice catalog is 36 English voices (flux-{name}-en); one voice =
-# single narrator, two = man/woman alternation per beat.
-FLUX_TTS_VOICES = ([v.strip() for v in
-                    os.getenv("FLUX_TTS_VOICES", "flux-bruce-en,flux-haley-en").split(",")
-                    if v.strip()] or ["flux-bruce-en"])
 # Tried in order; first working model wins (mirrors GEMINI_MODELS).
 GEMINI_TTS_MODELS = [m.strip() for m in
                      os.getenv("GEMINI_TTS_MODELS",
@@ -347,7 +340,10 @@ def gen_script(niche):
                 log("All Gemini models failed, using fallback.")
                 break
             reason = similar_to_history(data, slots, history, niche)
+            # Sanitize AFTER the similarity verdict: stripping banned hooks
+            # beforehand would hide them from the regen backstop.
             if reason is None:
+                data["title"] = niche.sanitize_title(data.get("title", ""), slots)
                 log(f"Gemini script OK: {data.get('title')}")
                 return data, slots
             if attempt < SIMILARITY_RETRIES:
@@ -356,6 +352,7 @@ def gen_script(niche):
                 continue
             warn(f"Gemini draft still similar ({reason}), accepting "
                  f"to avoid failing the run.")
+            data["title"] = niche.sanitize_title(data.get("title", ""), slots)
             return data, slots
     warn("Gemini unavailable: using standalone fallback script.")
     return niche.fallback_script(history)
@@ -428,40 +425,6 @@ def _format_srt_ts(sec: float) -> str:
     return f"{int(h):02d}:{int(m):02d}:{int(s):02d},{int(ms * 1000):03d}"
 
 
-def _flux_tts_beat(text: str, voice: str) -> bytes:
-    """One beat of MP3 audio via OpenRouter Flux TTS. Raises on failure.
-
-    Endpoint returns raw audio bytes (not JSON); failures are JSON
-    {"error": {...}}, told apart by the content-type header. 429/5xx retry
-    via retry(); other 4xx (bad key, no quota) fail fast to the next engine.
-    """
-    def _do():
-        r = requests.post(
-            "https://openrouter.ai/api/v1/audio/speech",
-            headers={"Authorization": f"Bearer {OPENROUTER_KEY}",
-                     "Content-Type": "application/json"},
-            json={"model": OPENROUTER_TTS_MODEL, "input": text,
-                  "voice": voice, "response_format": "mp3"},
-            timeout=120)
-        ct = r.headers.get("content-type", "")
-        if r.ok and ct.startswith("audio/") and r.content:
-            return r.content
-        try:
-            r.raise_for_status()
-        except requests.HTTPError as e:
-            try:
-                msg = (r.json().get("error") or {}).get("message", "")
-            except Exception:
-                msg = (r.text or "")[:200]
-            raise requests.HTTPError(f"{e} | {msg}".rstrip(" |"),
-                                     response=r) from e
-        raise ValueError(f"Flux TTS returned non-audio ({ct or 'no content-type'})")
-    audio = retry("Flux TTS", _do, tries=3, backoff=10)
-    if len(audio) < 1_000:
-        raise ValueError(f"Flux TTS audio too small ({len(audio)}b)")
-    return audio
-
-
 def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
                     synth, tag: str) -> list[float]:
     """Shared per-beat assembly for audio-only TTS engines (no word timings).
@@ -504,41 +467,28 @@ def _gemini_synth(i: int, beat: dict):
     return voice, seg
 
 
-def _flux_synth(i: int, beat: dict):
-    """Flux per-beat synth step: (voice, seg_mp3). Raises on failure."""
-    voice = FLUX_TTS_VOICES[i % len(FLUX_TTS_VOICES)]
-    seg = ASSETS / f"tts_beat_{i}.mp3"
-    seg.write_bytes(_flux_tts_beat(beat["text"], voice))
-    return voice, seg
-
-
 def gen_audio(narration: str, stem: Path,
               beats: list[dict] | None = None) -> tuple[Path, Path, list[float] | None]:
     """Narrate + produce captions. Returns (mp3, srt, beat_durations|None).
 
-    Remote engines synth per beat (real per-beat durations for visuals).
-    Chain: flux -> gemini -> edge (flux first = free, no Gemini quota burn).
-    Missing keys skip with a warning; any engine failure warns and moves to
-    the next; edge is last and raises on failure (existing behavior).
+    engine=gemini (default): per-beat Gemini TTS, real per-beat durations
+    for visuals, beat-level SRT. Missing key or any failure warns and falls
+    back to edge for the whole narration (fail-fast on first bad beat, never
+    per-beat retries). engine=edge: one edge-tts call, word-level SRT.
     """
     mp3 = stem.with_suffix(".mp3")
     srt = stem.with_suffix(".srt")
-    if beats and TTS_ENGINE in ("flux", "gemini"):
-        if TTS_ENGINE == "flux":
-            if OPENROUTER_KEY:
-                try:
-                    return mp3, srt, _assemble_beats(beats, mp3, srt, _flux_synth, "flux")
-                except Exception as e:
-                    warn(f"Flux TTS failed ({e}), trying next engine.")
-            else:
-                warn("OPENROUTER_API_KEY missing -> skipping Flux TTS.")
+    if TTS_ENGINE not in ("gemini", "edge"):
+        warn(f"Unknown TTS_ENGINE={TTS_ENGINE!r}, using edge-tts.")
+    if beats and TTS_ENGINE == "gemini":
         if GEMINI_KEY:
             try:
                 return mp3, srt, _assemble_beats(beats, mp3, srt, _gemini_synth, "gemini")
             except Exception as e:
                 warn(f"Gemini TTS failed ({e}), falling back to edge-tts.")
         else:
-            warn("GEMINI_API_KEY missing -> skipping Gemini TTS.")
+            warn("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it), "
+                 "falling back to edge-tts.")
     _gen_audio_edge(narration, mp3, srt)
     return mp3, srt, None
 
@@ -1323,10 +1273,7 @@ def run(niche):
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem = OUT / f"{stamp}_short"
     # Non-secret effective config so Actions logs show what actually ran.
-    if TTS_ENGINE == "flux":
-        tts_desc = (f"flux(model={OPENROUTER_TTS_MODEL},voices={FLUX_TTS_VOICES})"
-                    f"->gemini->edge")
-    elif TTS_ENGINE == "gemini":
+    if TTS_ENGINE == "gemini":
         tts_desc = (f"gemini(models={GEMINI_TTS_MODELS},voices={GEMINI_TTS_VOICES})"
                     "->edge")
     else:

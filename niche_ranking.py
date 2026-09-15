@@ -4,6 +4,8 @@ Self-contained: prompt, topic pool, offline fallback, history shape,
 similarity rules, stock policy, still style, and leaderboard overlay.
 Delete this file + its NICHES line in pipeline.py to drop the niche.
 """
+import re
+
 import core as C
 
 MODE = "ranking"
@@ -68,41 +70,17 @@ def build_prompt(history: list[dict]):
     C.log(f"Ranking topic: {topic}")
     prompt = (
         f"Write a Top-5 countdown YouTube Shorts script about the {topic}. "
-        "It must be complete in this one video: no part 1/2, no episode markers. "
+        "This must be a single complete video with no part 1/2, no episode markers, and no recap setup. "
         f"{C.history_block(history, MODE, format_history_line, AVOID_INTRO, AVOID_OUTRO)}"
-        "Return ONLY valid JSON with keys: title (<=60 chars, "
-        "hook-style with 1 fitting emoji "
-        "(the on-screen banner shows the same text without emoji); "
-        "ROTATE the hook shape every run — pick a shape DIFFERENT from the "
-        "recent titles quoted above, e.g. a question ('Which Giant Really "
-        "Tops the List?'), a superlative ('The Biggest Animal Ever Found'), "
-        "a challenge ('Rank These 5 Giants Correctly'), a curiosity gap "
-        "('What Actually Lives at #1?'), or a plain ranked list ('Top 5 "
-        "Largest Animals, Ranked'). BANNED overused hooks, never use them: "
-        "'Number 1 Is Terrifying', 'Number One Is Terrifying', '#1 Is "
-        "Terrifying', 'Will Shock You', 'You Won\\u2019t Believe'), "
-        "narration (200-220 words so the video runs about 90 seconds / ~1:30, "
-        "present tense, fifth-grade reading level, short punchy sentences, one clear "
-        "idea per sentence, plain text with no emojis since it is spoken aloud; structure: a 1-2 sentence hook that teases number 1 "
-        "without naming it, then the countdown from number 5 up to number 1 where "
-        "each entry names the item plus 1-2 striking concrete facts with ROUNDED "
-        "approximate numbers like 'over 800 meters', then a 1-sentence closer that "
-        "asks viewers to comment their own ranking; use commas and ellipses for "
-        "dramatic pauses before each reveal), "
-        "description (2 sentences with 1-2 fitting emojis + 3 hashtags; "
-        "emojis are metadata-only, never burned into the video), "
-        "tags (array of 5 plain-ASCII strings, no emoji), "
-        "items (array of the 5 ranked item names, number 5 first, number 1 last; "
-        "keep each name SHORT, 1-3 words, since it is also shown on screen), "
-        "beats (array of 7 objects in video order: hook, number 5, number 4, "
-        "number 3, number 2, number 1, closer; each {text: that beat's exact "
-        "narration chunk, query: literal stock-video search showing exactly that "
-        "beat's subject, e.g. 'lion walking savanna', label: the rank digit "
-        "burned big on screen — '5','4','3','2','1' for the five item beats in "
-        "order, '' for hook and closer}; "
-        "beat texts joined must equal the full narration). "
-        "Facts must be widely known and uncontroversial — NEVER invent precise "
-        "statistics, dates, or records; approximate openly ('about', 'over', 'nearly')."
+        "Return ONLY valid JSON with exactly these keys: title, narration, description, tags, items, beats. "
+        "Title: plain ranked-list format, must start with '5' and state exactly what is ranked. Example valid titles: '5 Largest Animals on Earth' or '5 Most Expensive Things Ever Sold'. Keep it under 60 characters, no question hook, no curiosity-gap phrasing, no 'which' or 'where' setup, no 'Number 1...' suffix, no clickbait. Do not use any banned title hooks such as 'Number 1 Is Terrifying', 'Number One Is Terrifying', '#1 Is Terrifying', 'Will Shock You', or 'You Won't Believe'. One emoji is allowed only at the very start or end, but the on-screen banner still shows the same title without the emoji. "
+        "Narration: 200-220 words, present tense, fifth-grade reading level, short punchy sentences, one clear idea per sentence, no emojis, spoken aloud. Structure: 1-2 sentence hook teasing number 1 without naming it; then the countdown from number 5 to number 1, each entry naming the item and 1-2 rounded, widely known facts using approximate language like 'about', 'over', or 'nearly'; then a 1-sentence closer asking viewers to comment their own ranking. Use commas and ellipses for dramatic pauses before each reveal. "
+        "Description: exactly 2 sentences, include 1-2 fitting emojis and 3 hashtags, but emojis are metadata-only and never burned into the video. "
+        "Tags: array of exactly 5 plain-ASCII strings, no emoji. "
+        "Items: array of exactly 5 ranked item names, number 5 first and number 1 last. Keep each name short, 1-3 words, unique, and readable on screen. "
+        "Beats: array of exactly 7 objects in video order: hook, number 5, number 4, number 3, number 2, number 1, closer. Each object must be {\"text\": <exact narration chunk>, \"query\": <literal stock-video search phrase for that subject>, \"label\": <\"\" for hook and closer, or \"5\", \"4\", \"3\", \"2\", \"1\" for the five ranked beats>}. "
+        "Hard validation rules: (1) the 7 beat texts joined in order must equal the full narration exactly, (2) each of the 5 items must appear in the narration, (3) all 5 item names must be unique, (4) the chosen topic and ranked items must differ from recent history, (5) facts must be broadly known and safe; do not invent precise dates, records, or statistics. Example valid beat object: {'text': 'At number 5, the saltwater crocodile. Over 6 meters long.', 'query': 'saltwater crocodile water surface', 'label': '5'}. "
+        "Do not include markdown, notes, or any extra keys. Output only the JSON object."
     )
     return prompt, slots
 
@@ -170,13 +148,53 @@ def validate_extra(data: dict) -> dict:
 
 
 # Overused title hooks: the prompt bans them, and this is the backstop —
-# a draft using one is treated as a repeat (regenerated, best-effort).
+# a draft using one is treated as a repeat (regenerated, best-effort) AND
+# stripped by sanitize_title (deterministic — the regen alone leaks, since
+# best-effort accept keeps the draft after SIMILARITY_RETRIES).
 BANNED_TITLE_HOOKS = (
     "number 1 is terrifying",
     "number one is terrifying",
     "#1 is terrifying",
     "will shock you",
+    "you won't believe",
+    "you won\u2019t believe",
+    "you wont believe",
 )
+
+
+# Suffix clauses that pollute titles when Gemini tacks them on
+# ("5 Largest Animals — Number 1 Is Terrifying 😲"). sanitize_title strips
+# them; titles that still don't match the "5 ..." channel format (question
+# hooks etc.) are rebuilt from the run topic instead.
+_BANNED_TITLE_RES = (
+    r"\s*[–—\-:|]\s*number\s+1\s+is\s+terrifying.*$",
+    r"\s*[–—\-:|]\s*number\s+one\s+is\s+terrifying.*$",
+    r"\s*[–—\-:|]\s*#1\s+is\s+terrifying.*$",
+    r"\s*[–—\-:|]\s*will\s+shock\s+you.*$",
+    r"\s*[–—\-:|]\s*you\s+won['\u2019]?t\s+believe.*$",
+)
+
+_TITLE_FORMAT_RE = re.compile(r"^[\W_]*((top\s+)?5)\b", re.IGNORECASE)
+
+
+def sanitize_title(title: str, slots: dict | None = None) -> str:
+    """Enforce the channel title format. Never raises (returns a safe title).
+
+    Strips banned-hook suffix clauses, then rebuilds from the run topic when
+    the title still doesn't start with "5"/"Top 5" (leading emoji allowed).
+    """
+    t = (title or "").strip()
+    for pat in _BANNED_TITLE_RES:
+        t = re.sub(pat, "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"\s*[–—\-:|;,.]+\s*$", "", t).strip()
+    low = t.casefold()
+    # Suffix-strip misses mid-title hooks ("5 Cities You Won't Believe"),
+    # so re-check the banned list on what remains.
+    has_banned = any(hook in low for hook in BANNED_TITLE_HOOKS)
+    if has_banned or not _TITLE_FORMAT_RE.match(t) or len(t) < 12:
+        topic = ((slots or {}).get("topic") or "").strip()
+        t = f"5 {topic[0].upper() + topic[1:]}" if topic else "Top 5 Countdown"
+    return t[:100].strip() or "Top 5 Countdown"
 
 
 def similarity_reason(data: dict, slots: dict, recent: list[dict]):
