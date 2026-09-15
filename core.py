@@ -54,6 +54,9 @@ GEMINI_MODELS = [m.strip() for m in
                             "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
                  if m.strip()]
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
+# Minimum Pexels file width to prefer (default 1080: 1:1 with the 1080x1920
+# canvas, no upscale softness). Smaller files still play as fallback.
+PEXELS_MIN_WIDTH = int(os.getenv("PEXELS_MIN_WIDTH", "1080"))
 MIN_AUDIO_SEC = float(os.getenv("MIN_AUDIO_SEC", "10"))
 MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
 # TTS prosody: slightly slower + lower reads more dramatic.
@@ -744,10 +747,12 @@ def pexels_clip(query: str, used: set | None = None, mood: bool = True):
         for v in r.json().get("videos", []):
             if used is not None and v.get("id") in used:
                 continue  # same story must not show the same clip twice
-            # Prefer the smallest file >=720p wide: keeps CI downloads fast.
+            # Sharp-but-bounded: smallest file clearing PEXELS_MIN_WIDTH
+            # (default 1080p, 1:1 with the canvas). Falls back to whatever
+            # exists so clips with only SD files still play.
             cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
                            key=lambda f: f.get("width", 0))
-            big_enough = [f for f in cands if f.get("width", 0) >= 720]
+            big_enough = [f for f in cands if f.get("width", 0) >= PEXELS_MIN_WIDTH]
             pick = (big_enough or cands)
             if not pick:
                 continue
