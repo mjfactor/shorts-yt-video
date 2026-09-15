@@ -59,6 +59,23 @@ MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
 TTS_RATE = os.getenv("TTS_RATE", "-5%")
 TTS_PITCH = os.getenv("TTS_PITCH", "-10Hz")
 TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
+# TTS engine: "edge" (default, free edge-tts, word-level captions) or
+# "gemini" (pilot: Gemini TTS — more natural, style-steerable, voices
+# alternate per beat; beat-level captions; falls back to edge on any fail).
+TTS_ENGINE = os.getenv("TTS_ENGINE", "edge").strip().lower()
+# Tried in order; first working model wins (mirrors GEMINI_MODELS).
+GEMINI_TTS_MODELS = [m.strip() for m in
+                     os.getenv("GEMINI_TTS_MODELS",
+                               "gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts").split(",")
+                     if m.strip()]
+# One voice = classic single narrator; two = man/woman alternation per beat
+# (e.g. "Charon,Kore"). 30 prebuilt voices, see AI Studio voice library.
+GEMINI_TTS_VOICES = ([v.strip() for v in
+                      os.getenv("GEMINI_TTS_VOICES", "Charon").split(",")
+                      if v.strip()] or ["Charon"])
+GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE", "") or
+                    "Read aloud in a deep, dramatic countdown-narrator voice: "
+                    "confident and energetic, with strong emphasis on every reveal.")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -333,10 +350,9 @@ def gen_script(niche):
     return niche.fallback_script(history)
 
 
-# ---------- 2. Audio (edge-tts, free, no key) ----------
-def gen_audio(narration: str, stem: Path) -> tuple[Path, Path]:
-    mp3 = stem.with_suffix(".mp3")
-    srt = stem.with_suffix(".srt")
+# ---------- 2. Audio (edge-tts default, free, no key; Gemini TTS pilot) ----------
+def _gen_audio_edge(narration: str, mp3: Path, srt: Path):
+    """Single edge-tts call: media + word-level SRT. Raises on failure."""
     # edge-tts CLI writes media + subtitles in one call.
     # NOTE: rate/pitch/volume/text use --flag=value form because values like
     # -10% start with a dash, which some edge-tts builds parse as a new flag
@@ -354,7 +370,106 @@ def gen_audio(narration: str, stem: Path) -> tuple[Path, Path]:
     log(f"TTS voice={VOICE} rate={TTS_RATE} pitch={TTS_PITCH} volume={TTS_VOLUME}")
     retry("edge-tts", lambda: subprocess.run(cmd, check=True),
           tries=3, backoff=10)
-    return mp3, srt
+
+
+def _gemini_tts_beat(text: str, voice: str) -> tuple[bytes, int]:
+    """One beat of raw PCM audio via Gemini TTS. Returns (pcm, sample_rate).
+
+    Tries GEMINI_TTS_MODELS in order; raises when all fail. The caller falls
+    back to edge-tts for the WHOLE narration on any failure — per-beat
+    retries would multiply a total outage by the beat count.
+    """
+    if not GEMINI_KEY:
+        raise ValueError("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it)")
+    prompt = f"{GEMINI_TTS_STYLE} Say the following text:\n\n{text}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
+        },
+    }
+    last_err: Exception | None = None
+    for model in GEMINI_TTS_MODELS:
+        try:
+            url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"{model}:generateContent?key={GEMINI_KEY}")
+            raw = _fetch_gemini(url, payload)
+            parts = raw["candidates"][0]["content"].get("parts", [])
+            inline = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
+            if not inline or not inline.get("data"):
+                raise ValueError(f"TTS model {model} returned no audio")
+            rate_m = re.search(r"rate=(\d+)", inline.get("mimeType", ""))
+            rate = int(rate_m.group(1)) if rate_m else 24000
+            return base64.b64decode(inline["data"]), rate
+        except Exception as e:
+            last_err = e
+            log(f"Gemini TTS model {model} unusable ({e}), trying next...")
+    raise ValueError(f"All Gemini TTS models failed ({last_err})")
+
+
+def _format_srt_ts(sec: float) -> str:
+    """Seconds -> SRT timestamp (HH:MM:SS,mmm)."""
+    sec = max(0.0, sec)
+    h, rem = divmod(sec, 3600)
+    m, rem = divmod(rem, 60)
+    s, ms = divmod(rem, 1)
+    return f"{int(h):02d}:{int(m):02d}:{int(s):02d},{int(ms * 1000):03d}"
+
+
+def _gen_audio_gemini(beats: list[dict], mp3: Path, srt: Path) -> list[float]:
+    """Per-beat Gemini TTS, concatenated. Returns per-beat durations.
+
+    Voices alternate per beat (GEMINI_TTS_VOICES). SRT has one cue per beat
+    (Gemini returns audio only, no word timings — beat-level captions are
+    the best available). Intermediates are tts_* (see INTERMEDIATE_PATTERNS).
+    """
+    parts, cues, durations = [], [], []
+    t = 0.0
+    for i, b in enumerate(beats):
+        voice = GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
+        pcm, rate = _gemini_tts_beat(b["text"], voice)  # raises -> edge fallback
+        raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
+        seg = ASSETS / f"tts_beat_{i}.mp3"
+        raw_pcm.write_bytes(pcm)
+        _run_ffmpeg(["ffmpeg", "-y", "-f", "s16le", "-ar", str(rate), "-ac", "1",
+                     "-i", str(raw_pcm), "-c:a", "libmp3lame", str(seg)],
+                    f"tts-beat-{i}-pcm")
+        d = audio_duration(seg)
+        parts.append(seg)
+        cues.append((t, t + d, " ".join(b["text"].split())))
+        durations.append(d)
+        t += d
+        log(f"TTS beat {i + 1}/{len(beats)} voice={voice} {d:.1f}s")
+    lst = ASSETS / "tts_parts.txt"
+    lst.write_text("".join(f"file '{p.resolve()}'\n" for p in parts))
+    _run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                 "-c:a", "libmp3lame", str(mp3)], "tts-concat")
+    srt.write_text("".join(
+        f"{n}\n{_format_srt_ts(s)} --> {_format_srt_ts(e)}\n{txt}\n\n"
+        for n, (s, e, txt) in enumerate(cues, 1)), encoding="utf-8")
+    return durations
+
+
+def gen_audio(narration: str, stem: Path,
+              beats: list[dict] | None = None) -> tuple[Path, Path, list[float] | None]:
+    """Narrate + produce captions. Returns (mp3, srt, beat_durations|None).
+
+    engine=edge (default): one edge-tts call, word-level SRT, None durations
+    (run() falls back to word-count weighting). engine=gemini: per-beat
+    Gemini TTS with real per-beat durations; ANY failure warns and falls
+    back to edge for the whole narration (never fails the run here).
+    """
+    mp3 = stem.with_suffix(".mp3")
+    srt = stem.with_suffix(".srt")
+    if TTS_ENGINE == "gemini" and beats:
+        try:
+            durations = _gen_audio_gemini(beats, mp3, srt)
+            return mp3, srt, durations
+        except Exception as e:
+            warn(f"Gemini TTS failed ({e}), falling back to edge-tts.")
+    _gen_audio_edge(narration, mp3, srt)
+    return mp3, srt, None
 
 
 def check_audio_duration(dur: float, words: int):
@@ -767,7 +882,8 @@ def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
 # Glob patterns for per-run FFmpeg intermediates. The pexels_*.mp4 cache
 # is intentionally NOT listed: re-downloads waste time/bandwidth on re-runs.
 INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png",
-                         "cf_*.jpg", "bed.mp3", "concat.txt", "video_only.mp4")
+                         "cf_*.jpg", "bed.mp3", "concat.txt", "video_only.mp4",
+                         "tts_*")
 
 
 def cleanup_intermediates():
@@ -1136,7 +1252,9 @@ def run(niche):
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem = OUT / f"{stamp}_short"
     # Non-secret effective config so Actions logs show what actually ran.
-    log(f"Config: mode={niche.MODE} voice={VOICE} rate={TTS_RATE} pitch={TTS_PITCH} niche='{niche.NICHE_LABEL}' visibility={VISIBILITY} "
+    tts_desc = (f"gemini(models={GEMINI_TTS_MODELS},voices={GEMINI_TTS_VOICES})"
+                if TTS_ENGINE == "gemini" else f"edge(voice={VOICE})")
+    log(f"Config: mode={niche.MODE} tts={tts_desc} rate={TTS_RATE} pitch={TTS_PITCH} niche='{niche.NICHE_LABEL}' visibility={VISIBILITY} "
         f"min/max={MIN_AUDIO_SEC:g}/{MAX_AUDIO_SEC:g}s models={GEMINI_MODELS} "
         f"cf_model={CF_IMAGE_MODEL} "
         f"keys: gemini={bool(GEMINI_KEY)} pexels={bool(PEXELS_KEY)} "
@@ -1145,17 +1263,23 @@ def run(niche):
         f"buffer={bool(BUFFER_API_KEY)}")  # key presence only, never the key itself
     meta, slots = gen_script(niche)
     (stem.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
-    mp3, srt = gen_audio(meta["narration"], stem)
+    mp3, srt, beat_durs = gen_audio(meta["narration"], stem, meta.get("beats"))
     log(f"Audio: mp3={mp3.stat().st_size // 1024} KB srt_exists={srt.exists()} "
         f"srt_bytes={srt.stat().st_size if srt.exists() else 0}")
     dur = audio_duration(mp3)
     check_audio_duration(dur, len(meta["narration"].split()))
     beats = meta["beats"]
     clips = visuals_for_beats(beats, niche)
-    # Weight each beat's screen time by its share of words (speech rate is
-    # roughly constant, so each clip covers its own story moment).
-    total_words = sum(len(b["text"].split()) for b in beats) or 1
-    durations = [dur * len(b["text"].split()) / total_words for b in beats]
+    if beat_durs and len(beat_durs) == len(beats) and sum(beat_durs) > 0:
+        # Measured per-beat TTS timings (Gemini path): rescale to the real
+        # muxed total so concat rounding can't drift visuals off the voice.
+        scale = dur / sum(beat_durs)
+        durations = [d * scale for d in beat_durs]
+    else:
+        # Weight each beat's screen time by its share of words (speech rate is
+        # roughly constant, so each clip covers its own story moment).
+        total_words = sum(len(b["text"].split()) for b in beats) or 1
+        durations = [dur * len(b["text"].split()) / total_words for b in beats]
     bed = make_bed(dur)
     out_mp4 = stem.with_suffix(".mp4")
     try:
