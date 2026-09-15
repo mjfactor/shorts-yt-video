@@ -4,6 +4,8 @@ Self-contained: prompt, topic pool, offline fallback, history shape,
 similarity rules, stock policy, still style, and leaderboard overlay.
 Delete this file + its NICHES line in pipeline.py to drop the niche.
 """
+import json
+import os
 import re
 
 import core as C
@@ -13,7 +15,12 @@ NICHE_LABEL = "top-5 rankings and countdowns"
 
 # Ranking topics: evergreen, factual, filmable with stock footage. One is
 # drawn per run and forced into the prompt; history.json excludes recent ones.
+# Rules for adding more: must rank 5 distinct, visible subjects (1-3 word
+# names, stock-searchable), with broadly known rounded facts — no precise
+# stats, no obscure items Gemini would invent, no near-dupes of existing
+# entries (same topic or >=2 shared items triggers a wasted regen).
 TOPICS = (
+    # Launch set: animals, geography, structures, vehicles.
     "largest animals on Earth",
     "most dangerous animals in the world",
     "fastest animals on the planet",
@@ -38,6 +45,73 @@ TOPICS = (
     "largest volcanoes in the world",
     "biggest sharks that ever lived",
     "most expensive things ever sold",
+    # Animals: birds, reptiles, sea life, records, pets.
+    "largest birds on Earth",
+    "fastest birds on the planet",
+    "most colorful birds in the world",
+    "largest reptiles on Earth",
+    "longest snakes in the world",
+    "biggest bears on Earth",
+    "biggest wild cats in the world",
+    "largest primates in the world",
+    "largest owls in the world",
+    "largest eagles in the world",
+    "fastest sea animals in the ocean",
+    "largest fish in the ocean",
+    "most dangerous creatures in the ocean",
+    "longest-lived animals on Earth",
+    "strongest bite forces in the animal kingdom",
+    "loudest animals in the world",
+    "smartest dog breeds in the world",
+    "fastest dog breeds in the world",
+    "most popular pets in the world",
+    "largest insects in the world",
+    # Geography and nature.
+    "tallest waterfalls in the world",
+    "largest lakes in the world",
+    "longest mountain ranges on Earth",
+    "largest glaciers in the world",
+    "most active volcanoes in the world",
+    "deepest canyons on Earth",
+    "largest coral reefs in the world",
+    "biggest waves for surfing in the world",
+    "tallest trees on Earth",
+    "largest flowers in the world",
+    "hottest places on Earth",
+    "coldest inhabited places on Earth",
+    "longest coastlines in the world",
+    "most famous beaches in the world",
+    "most dangerous roads in the world",
+    # Structures, cities, landmarks.
+    "longest bridges in the world",
+    "largest castles in the world",
+    "largest temples in the world",
+    "largest dams in the world",
+    "longest tunnels in the world",
+    "largest airports in the world",
+    "tallest roller coasters in the world",
+    "biggest Ferris wheels in the world",
+    "largest cruise ships in the world",
+    "most famous landmarks in the world",
+    "most visited cities in the world",
+    "most visited museums in the world",
+    "largest aquariums in the world",
+    "oldest buildings on Earth",
+    "biggest shipwrecks in history",
+    # Vehicles and machines.
+    "largest cargo airplanes ever built",
+    "fastest fighter jets ever built",
+    "largest helicopters ever built",
+    "fastest motorcycles in the world",
+    "fastest trains in the world",
+    "largest yachts in the world",
+    "largest submarines ever built",
+    # Space, sports, food.
+    "largest planets in the solar system",
+    "biggest moons in the solar system",
+    "most popular sports in the world",
+    "hottest chili peppers in the world",
+    "most expensive fruits in the world",
 )
 
 AVOID_INTRO = ("Already-used countdowns — do NOT reuse any of these topics, "
@@ -59,19 +133,109 @@ def format_history_line(h: dict) -> str:
             f"(topic={h.get('topic', '?')}; items: {items})")
 
 
+# Hybrid topics: Gemini may propose a fresh countdown topic each run, but the
+# pool stays authoritative — a proposal only airs when it passes validation
+# (fresh vs history, sane shape, 5 concrete filmable subjects). Anything else
+# falls back to a pool draw, so the run never depends on the extra call.
+# Kill switch (no workflow change needed): AI_TOPICS=off.
+AI_TOPICS = os.getenv("AI_TOPICS", "on").strip().lower() not in (
+    "0", "off", "false", "no")
+AI_TOPIC_TRIES = 2  # proposal rounds before giving up to the pool
+
+
+def _recent_topic_names(history: list[dict]) -> set:
+    """Casefolded topics from recent same-niche history entries."""
+    return {str(h.get("topic", "")).casefold()
+            for h in (history or [])[-C.HISTORY_PROMPT_N:]
+            if h.get("niche", "horror") == MODE}
+
+
+def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
+    """Ask Gemini for one fresh countdown topic. Returns (topic, items_hint).
+
+    (None, None) on any failure or rejection — the caller falls back to the
+    pool. Uses the shared key rotation, so quota pain is minimal (1-2 calls).
+    """
+    if not AI_TOPICS or not C.GEMINI_KEYS:
+        return None, None
+    recent = _recent_topic_names(history)
+    avoid = "".join(f"- {h.get('topic', '?')}\n"
+                    for h in (history or [])[-C.HISTORY_PROMPT_N:]
+                    if h.get("niche", "horror") == MODE)
+    prompt = (
+        "Propose ONE Top-5 countdown YouTube Shorts topic. Reply with ONLY "
+        "valid JSON: {\"topic\": <noun phrase>, \"items\": [5 names]}. "
+        "Rules: evergreen and factual; rank 5 distinct real subjects a camera "
+        "could film with stock footage (animals, places, vehicles, structures, "
+        "food — NO people names, NO events, NO abstract concepts); each item "
+        "1-3 words, unique, plain ASCII. Topic examples: 'largest owls on "
+        "Earth', 'longest bridges in the world'. No questions, no hooks, "
+        "no clickbait, no markdown, no extra keys.\n"
+        f"Do NOT reuse any of these recent topics or their subjects:\n{avoid or '(none yet)'}\n"
+        "Output only the JSON object."
+    )
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    for round_no in range(1, AI_TOPIC_TRIES + 1):
+        data = None
+        for model in C.GEMINI_MODELS:
+            try:
+                url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                       f"{model}:generateContent")
+                raw = C._fetch_gemini(url, payload)
+                text = raw["candidates"][0]["content"]["parts"][0]["text"]
+                text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                data = json.loads(text)
+                break
+            except Exception as e:
+                C.log(f"AI topic model {model} unusable ({e}), trying next...")
+        if not isinstance(data, dict):
+            continue
+        topic = str(data.get("topic", "")).strip()
+        raw_items = data.get("items", [])
+        items = [str(i).strip() for i in raw_items
+                 if isinstance(i, str) and str(i).strip()]
+        items = list(dict.fromkeys(items))[:5]
+        problems = []
+        if not (8 <= len(topic) <= 80) or "?" in topic:
+            problems.append("bad topic shape")
+        if topic.casefold() in recent:
+            problems.append("topic already used")
+        if len(items) < 5:
+            problems.append("fewer than 5 subjects")
+        if any(len(i.split()) > 4 or len(i) > 40 for i in items):
+            problems.append("unfilmable subject names")
+        if problems:
+            C.log(f"AI topic rejected ({'; '.join(problems)}), "
+                  f"round {round_no}/{AI_TOPIC_TRIES}.")
+            continue
+        C.log(f"AI topic accepted: {topic}")
+        return topic, items
+    return None, None
+
+
+def _items_hint_line(hint: list[str] | None) -> str:
+    """Nudge the script toward the proposed subjects without trusting them."""
+    if not hint:
+        return ""
+    return (f"Suggested subjects (verify each against known facts; swap out "
+            f"any that does not fit): {', '.join(hint)}. ")
+
+
 def build_prompt(history: list[dict]):
     """Gemini prompt for a Top-5 countdown (~2 min). Returns (prompt, slots)."""
     history = history or []
-    recent_topics = {str(h.get("topic", "")).casefold()
-                     for h in history[-C.HISTORY_PROMPT_N:]
-                     if h.get("niche", "horror") == MODE}
-    topic = C._pick_avoiding(TOPICS, recent_topics)
-    slots = {"topic": topic}
-    C.log(f"Ranking topic: {topic}")
+    recent_topics = _recent_topic_names(history)
+    topic, hint = propose_topic(history)
+    source = "ai" if topic else "pool"
+    if topic is None:
+        topic = C._pick_avoiding(TOPICS, recent_topics)
+    slots = {"topic": topic, "topic_source": source}
+    C.log(f"Ranking topic ({source}): {topic}")
     prompt = (
         f"Write a Top-5 countdown YouTube Shorts script about the {topic}. "
         "This must be a single complete video with no part 1/2, no episode markers, and no recap setup. "
         f"{C.history_block(history, MODE, format_history_line, AVOID_INTRO, AVOID_OUTRO)}"
+        f"{_items_hint_line(hint)}"
         "Return ONLY valid JSON with exactly these keys: title, narration, description, tags, items, beats. "
         "Title: plain ranked-list format, must start with '5' and state exactly what is ranked. Example valid titles: '5 Largest Animals on Earth' or '5 Most Expensive Things Ever Sold'. Keep it under 60 characters, no question hook, no curiosity-gap phrasing, no 'which' or 'where' setup, no 'Number 1...' suffix, no clickbait. Do not use any banned title hooks such as 'Number 1 Is Terrifying', 'Number One Is Terrifying', '#1 Is Terrifying', 'Will Shock You', or 'You Won't Believe'. One emoji is allowed only at the very start or end, but the on-screen banner still shows the same title without the emoji. "
         "Narration: 200-220 words, present tense, fifth-grade reading level, short punchy sentences, one clear idea per sentence, no emojis, spoken aloud. Structure: 1-2 sentence hook teasing number 1 without naming it; then the countdown from number 5 to number 1, each entry naming the item and 1-2 rounded, widely known facts using approximate language like 'about', 'over', or 'nearly'; then a 1-sentence closer asking viewers to comment their own ranking. Use commas and ellipses for dramatic pauses before each reveal. "
@@ -220,6 +384,7 @@ def similarity_reason(data: dict, slots: dict, recent: list[dict]):
 
 def history_fields(slots: dict, meta: dict) -> dict:
     return {"topic": slots.get("topic", ""),
+            "topicSource": slots.get("topic_source", "pool"),
             "items": list(meta.get("items", [])[:10])}
 
 

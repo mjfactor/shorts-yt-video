@@ -47,7 +47,20 @@ ASSETS.mkdir(exist_ok=True)
 
 VOICE = "en-US-ChristopherNeural"  # deep male narrator (News/Novel, Authority)
 VISIBILITY = os.getenv("VISIBILITY", "private")  # private = safe for unverified OAuth apps
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+def _parse_gemini_keys() -> list[str]:
+    """All configured Gemini keys: GEMINI_API_KEY (comma-separated, so a
+    single key keeps working) plus optional GEMINI_API_KEY_2 failover."""
+    keys: list[str] = []
+    for k in os.getenv("GEMINI_API_KEY", "").split(",") + [os.getenv("GEMINI_API_KEY_2", "")]:
+        k = k.strip()
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
+GEMINI_KEYS = _parse_gemini_keys()
+GEMINI_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else ""  # first key; back-compat
+_GEMINI_KEY_IDX = 0  # working key; advances on quota rejection
 # Tried in order; first working model wins. Override via GEMINI_MODELS="model-a,model-b".
 GEMINI_MODELS = [m.strip() for m in
                  os.getenv("GEMINI_MODELS",
@@ -347,13 +360,44 @@ def _validate_script(data, niche) -> dict:
     return out
 
 
-def _fetch_gemini(url: str, payload: dict):
-    """POST to Gemini with retries for transient failures (5xx/429/network)."""
-    def _do():
-        r = requests.post(url, json=payload, timeout=60)
-        r.raise_for_status()
-        return r.json()
-    return retry("Gemini", _do, tries=3, backoff=5)
+def _fetch_gemini(url: str, payload: dict, tries: int = 3, backoff: int = 5):
+    """POST to Gemini with key rotation + retries. `url` is keyless.
+
+    Sticks with the working key; a quota/invalid-key rejection (429 or other
+    4xx) fails over to the next key immediately, while transient 5xx/network
+    errors retry with backoff first. Raises the last error when all keys fail.
+    """
+    global _GEMINI_KEY_IDX
+    if not GEMINI_KEYS:
+        raise ValueError("GEMINI_API_KEY missing")
+    n = len(GEMINI_KEYS)
+    last_err: Exception | None = None
+    for k in range(n):
+        idx = (_GEMINI_KEY_IDX + k) % n
+        sep = "&" if "?" in url else "?"
+        keyed = f"{url}{sep}key={GEMINI_KEYS[idx]}"
+        for attempt in range(1, tries + 1):
+            try:
+                r = requests.post(keyed, json=payload, timeout=60)
+                r.raise_for_status()
+                _GEMINI_KEY_IDX = idx  # stick with the working key
+                return r.json()
+            except Exception as e:
+                last_err = e
+                status = _http_status(e)
+                if status is not None and 400 <= status < 500 and status != 408:
+                    if k < n - 1:
+                        log(f"Gemini key {idx + 1}/{n} rejected (HTTP {status}), "
+                            "failing over to next key...")
+                    break  # 4xx won't heal with retries — try next key
+                if attempt == tries:
+                    break
+                wait = backoff * attempt
+                log(f"Gemini(key {idx + 1}/{n}) failed (attempt {attempt}/{tries}: {e}), "
+                    f"retrying in {wait}s...")
+                time.sleep(wait)
+    assert last_err is not None
+    raise last_err
 
 
 def gen_script(niche):
@@ -364,7 +408,7 @@ def gen_script(niche):
     Fallback matches the active niche too (slots avoid recent history).
     """
     history = load_history()
-    if GEMINI_KEY:
+    if GEMINI_KEYS:
         for attempt in range(1 + SIMILARITY_RETRIES):
             prompt, slots = niche.build_prompt(history)
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -372,7 +416,7 @@ def gen_script(niche):
             for model in GEMINI_MODELS:
                 try:
                     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                           f"{model}:generateContent?key={GEMINI_KEY}")
+                           f"{model}:generateContent")
                     raw = _fetch_gemini(url, payload)
                     text = raw["candidates"][0]["content"]["parts"][0]["text"]
                     # strip markdown fences
@@ -432,7 +476,7 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "") -> tuple[bytes, int
     back to edge-tts for the WHOLE narration on any failure — per-beat
     retries would multiply a total outage by the beat count.
     """
-    if not GEMINI_KEY:
+    if not GEMINI_KEYS:
         raise ValueError("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it)")
     prompt = f"{pick_tts_style(topic, text) if topic else GEMINI_TTS_STYLE} Say the following text:\n\n{text}"
     payload = {
@@ -446,7 +490,7 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "") -> tuple[bytes, int
     for model in GEMINI_TTS_MODELS:
         try:
             url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                   f"{model}:generateContent?key={GEMINI_KEY}")
+                   f"{model}:generateContent")
             raw = _fetch_gemini(url, payload)
             parts = raw["candidates"][0]["content"].get("parts", [])
             inline = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
@@ -527,7 +571,7 @@ def gen_audio(narration: str, stem: Path,
     if TTS_ENGINE not in ("gemini", "edge"):
         warn(f"Unknown TTS_ENGINE={TTS_ENGINE!r}, using edge-tts.")
     if beats and TTS_ENGINE == "gemini":
-        if GEMINI_KEY:
+        if GEMINI_KEYS:
             try:
                 return mp3, srt, _assemble_beats(beats, mp3, srt, _gemini_synth, "gemini", topic)
             except Exception as e:
@@ -1331,7 +1375,7 @@ def run(niche):
     log(f"Config: mode={niche.MODE} tts={tts_desc} rate={TTS_RATE} pitch={TTS_PITCH} niche='{niche.NICHE_LABEL}' visibility={VISIBILITY} "
         f"min/max={MIN_AUDIO_SEC:g}/{MAX_AUDIO_SEC:g}s models={GEMINI_MODELS} "
         f"cf_model={CF_IMAGE_MODEL} "
-        f"keys: gemini={bool(GEMINI_KEY)} pexels={bool(PEXELS_KEY)} "
+        f"keys: gemini_keys={len(GEMINI_KEYS)} pexels={bool(PEXELS_KEY)} "
         f"cf={bool(CF_ACCOUNT_ID and CF_API_TOKEN)} "
         f"yt={(bool(os.getenv('YT_CLIENT_ID')) and bool(os.getenv('YT_CLIENT_SECRET')) and bool(os.getenv('YT_REFRESH_TOKEN')))} "
         f"buffer={bool(BUFFER_API_KEY)}")  # key presence only, never the key itself
