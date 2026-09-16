@@ -9,14 +9,12 @@ A niche module must provide (see niche_ranking.py for the reference):
     fallback_script(history) -> (meta, slots)
     validate_extra(data)  -> dict merged into validated meta ({} if none)
     sanitize_title(title, slots) -> str (channel title format enforcement)
-    similarity_reason(data, slots, recent) -> str | None
+    similarity_reason(data, slots, recent, item_recent=None) -> str | None
     format_history_line(h) -> str
     AVOID_INTRO, AVOID_OUTRO   str (history avoidance prompt wrapper)
     USE_BEAT_QUERY        bool (True: Pexels searches the beat's own query)
     AMBIENT_QUERIES       tuple (used when USE_BEAT_QUERY is False)
     USE_MOOD              bool (force horror mood on Pexels queries)
-    beat_anchor(beats)    -> str (CF still continuity anchor, "" if none)
-    image_prompt(beat_text, query, anchor) -> str (CF fallback prompt)
     history_fields(slots, meta) -> dict (extra history.json entry fields)
     board_filter(beats, items, durations, get_font, has_drawtext, title="") -> str
 
@@ -64,10 +62,29 @@ def _parse_gemini_keys() -> list[str]:
 GEMINI_KEYS = _parse_gemini_keys()
 GEMINI_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else ""  # first key; back-compat
 _GEMINI_KEY_IDX = 0  # working key; advances on quota rejection
+
+
+def _env_int(name: str, default: int) -> int:
+    """Env int with safe fallback to default on missing/blank/garbage."""
+    try:
+        return int((os.getenv(name, "") or "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
+# Failover pacing: short timeout + few tries so a dead endpoint fails over
+# fast instead of burning minutes per dead model. GEMINI_TIMEOUT is the text
+# path (script/topic); TTS voice calls run longer, so GEMINI_TTS_TIMEOUT
+# (60-120 guidance) is used only by the per-beat TTS path. Bad values fall
+# back to the defaults below.
+GEMINI_TIMEOUT = max(1, _env_int("GEMINI_TIMEOUT", 40))
+GEMINI_TTS_TIMEOUT = max(1, _env_int("GEMINI_TTS_TIMEOUT", 90))
+GEMINI_TRIES = max(1, _env_int("GEMINI_TRIES", 2))
+GEMINI_BACKOFF = max(0, _env_int("GEMINI_BACKOFF", 5))
 # Tried in order; first working model wins. Override via GEMINI_MODELS="model-a,model-b".
 GEMINI_MODELS = [m.strip() for m in
                  os.getenv("GEMINI_MODELS",
-                            "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
+                            "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
                  if m.strip()]
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
 # Minimum Pexels file width to prefer (default 1080: 1:1 with the 1080x1920
@@ -92,17 +109,41 @@ GEMINI_TTS_MODELS = [m.strip() for m in
                      os.getenv("GEMINI_TTS_MODELS",
                                "gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts").split(",")
                      if m.strip()]
-# One voice = classic single narrator; two = man/woman alternation per beat
-# (e.g. "Charon,Kore"). 30 prebuilt voices, see AI Studio voice library.
+# Single narrator voice (default "Charon"); tone alternates between runs
+# instead (even history count -> energetic, odd -> deep). A comma-separated
+# pool still alternates voices per run. 30 prebuilt voices, see AI Studio library.
 GEMINI_TTS_VOICES = ([v.strip() for v in
                       os.getenv("GEMINI_TTS_VOICES", "Charon").split(",")
                       if v.strip()] or ["Charon"])
 DEFAULT_GEMINI_TTS_STYLE = (
-    "Read in a premium, cinematic documentary voice with confident pacing, "
-    "subtle drama, and a sense of wonder. Clear, polished, and authoritative, "
-    "with strong emphasis on reveal moments."
+    "Read in a single energetic countdown-narrator voice with clear pacing, "
+    "confident delivery, and lively momentum. Polished and engaging, "
+    "with strong emphasis on each reveal."
 )
-GEMINI_TTS_STYLE = os.getenv("GEMINI_TTS_STYLE", DEFAULT_GEMINI_TTS_STYLE)
+# Deep-voice alternate body style for per-run tone alternation (see
+# pick_run_tone): low, resonant, authoritative countdown delivery —
+# confident and weighty, never horror.
+DEEP_GEMINI_TTS_STYLE = (
+    "Read in a deep, resonant countdown-narrator voice with slow confident "
+    "pacing and weighty authority. Commanding and polished, with powerful "
+    "emphasis on each reveal."
+)
+# Opening hook (beat 0) gets extra punch: the first 2 seconds decide retention.
+GEMINI_TTS_HOOK_PREFIX = (
+    "For this opening hook only, deliver with super-energetic, bright, "
+    "attention-grabbing punch, as if the first two seconds decide whether "
+    "the viewer stays. "
+)
+# Empty/whitespace env counts as unset so a CI empty string never kills direction.
+GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE") or "").strip() or DEFAULT_GEMINI_TTS_STYLE
+# True when the user explicitly set a non-blank style: it wins for the body
+# and per-run tone alternation is skipped that run.
+GEMINI_TTS_STYLE_EXPLICIT = bool((os.getenv("GEMINI_TTS_STYLE") or "").strip())
+# Single voice selected for this run by pick_run_voice() (None = not yet picked).
+RUN_VOICE: str | None = None
+# Delivery tone for this run ("energetic" | "deep" | None), picked by
+# pick_run_tone(); None means an explicit GEMINI_TTS_STYLE won instead.
+RUN_TONE: str | None = None
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -227,8 +268,16 @@ def retry(name: str, func, tries: int = 3, backoff: int = 5, fatal=()) -> Any:
 # and forces fresh slots, plus a similarity gate retries when Gemini repeats
 # a recent entry anyway. Never fails the run.
 HISTORY_PATH = Path("history.json")
-HISTORY_KEEP = 50  # entries stored on disk
-HISTORY_PROMPT_N = 20  # recent entries quoted in the prompt
+HISTORY_KEEP = 110  # entries stored on disk (100 videos + headroom)
+HISTORY_PROMPT_N = 20  # recent entries quoted in the prompt (advisory bans only)
+# Hard programmatic freshness gates scan the FULL kept history below, not
+# just the 20 quoted above: the prompt block stays small for token sanity
+# (advisory), while DEDUP_WINDOW enforces no-repeat topics across 100 videos.
+DEDUP_WINDOW = HISTORY_KEEP
+# Shared-items (>=2) gate looks back this far only: across 110 videos common
+# animals would false-positive constantly, so items enforce vs the last 30
+# while the topic gate enforces vs the full window.
+DEDUP_ITEM_WINDOW = 30
 SIMILARITY_RETRIES = 2  # extra script attempts after a too-similar draft
 
 
@@ -270,10 +319,29 @@ def history_block(history: list[dict], mode: str, fmt, intro: str, outro: str) -
     return intro + "\n".join(fmt(h) for h in recent) + "\n" + outro
 
 
-def _pick_avoiding(pool: tuple, recent: set):
-    """Random pool pick excluding recently used values (falls back to random)."""
-    fresh = [v for v in pool if v not in recent]
-    return random.choice(fresh) if fresh else random.choice(pool)
+def _pick_avoiding(pool: tuple, recent: set, history: list[dict] | None = None):
+    """Pool pick excluding recently used values (case-insensitive both sides).
+
+    Fresh candidates are chosen at random. When the pool is exhausted (every
+    topic aired within the window), falls back to least-recently-used: the
+    pool topic whose last airing is oldest (or never aired), using `history`
+    (newest-last, like load_history); without history, legacy random pick.
+    """
+    folded = {str(v).casefold() for v in recent}
+    fresh = [v for v in pool if str(v).casefold() not in folded]
+    if fresh:
+        return random.choice(fresh)
+    if history:
+        last_seen: dict[str, int] = {}
+        for pos, h in enumerate(history):
+            t = str(h.get("topic", "")).casefold()
+            if t:
+                last_seen[t] = pos  # newest last: larger pos = more recent
+        def _recency(v) -> int:
+            return last_seen.get(str(v).casefold(), -1)  # never aired first
+        oldest = min(_recency(v) for v in pool)
+        return random.choice([v for v in pool if _recency(v) == oldest])
+    return random.choice(pool)
 
 
 def _story_signature(text: str) -> set:
@@ -287,20 +355,27 @@ def _story_signature(text: str) -> set:
 
 
 def similar_to_history(data: dict, slots: dict, history: list[dict], niche):
-    """Return a repeat reason if the draft is too close to history, else None."""
-    recent = [h for h in history[-HISTORY_PROMPT_N:]
+    """Return a repeat reason if the draft is too close to history, else None.
+
+    Title + topic gates enforce vs the full DEDUP_WINDOW (no repeat across
+    100 videos); the shared-items and story-overlap gates enforce vs the
+    recent DEDUP_ITEM_WINDOW only (exact matches don't false-positive).
+    """
+    window = [h for h in history[-DEDUP_WINDOW:]
               if h.get("niche", "horror") == niche.MODE]
-    if not recent:
+    if not window:
         return None
-    recent_titles = {str(h.get("title", "")).strip().casefold() for h in recent}
+    recent_titles = {str(h.get("title", "")).strip().casefold() for h in window}
     if str(data.get("title", "")).strip().casefold() in recent_titles:
         return "title already used"
-    reason = niche.similarity_reason(data, slots, recent)
+    item_window = [h for h in history[-DEDUP_ITEM_WINDOW:]
+                   if h.get("niche", "horror") == niche.MODE]
+    reason = niche.similarity_reason(data, slots, window, item_window)
     if reason is not None:
         return reason
     new_sig = _story_signature(
         f"{data.get('title', '')} {data.get('narration', '')}")
-    for h in recent:
+    for h in item_window:
         old_sig = _story_signature(
             f"{h.get('title', '')} {h.get('narration', '')}")
         if not old_sig or not new_sig:
@@ -363,13 +438,25 @@ def _validate_script(data, niche) -> dict:
     return out
 
 
-def _fetch_gemini(url: str, payload: dict, tries: int = 3, backoff: int = 5):
+def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
+                  backoff: int | None = None, timeout: int | None = None):
     """POST to Gemini with key rotation + retries. `url` is keyless.
 
-    Sticks with the working key; a quota/invalid-key rejection (429 or other
-    4xx) fails over to the next key immediately, while transient 5xx/network
-    errors retry with backoff first. Raises the last error when all keys fail.
+    Sticks with the working key; invalid-key rejections (other 4xx) fail
+    over to the next key immediately, as does a connect/read timeout (a
+    timing-out endpoint won't heal in one backoff — fast 5xx responses may
+    still retry). HTTP 429 is per-project quota, so it backs off with
+    jitter on the SAME key instead of rotating (key-hopping would deepen
+    exhaustion); 429 retries count toward the key's tries. Raises the last
+    error when all keys fail. Defaults come from the GEMINI_TIMEOUT (text)
+    / GEMINI_TTS_TIMEOUT (voice), GEMINI_TRIES, GEMINI_BACKOFF env tunables.
     """
+    if tries is None:
+        tries = GEMINI_TRIES
+    if backoff is None:
+        backoff = GEMINI_BACKOFF
+    if timeout is None:
+        timeout = GEMINI_TIMEOUT
     global _GEMINI_KEY_IDX
     if not GEMINI_KEYS:
         raise ValueError("GEMINI_API_KEY missing")
@@ -383,19 +470,36 @@ def _fetch_gemini(url: str, payload: dict, tries: int = 3, backoff: int = 5):
         key_server_only = True  # stays True unless this key sees a 4xx rejection
         for attempt in range(1, tries + 1):
             try:
-                r = requests.post(keyed, json=payload, timeout=60)
+                r = requests.post(keyed, json=payload, timeout=timeout)
                 r.raise_for_status()
                 _GEMINI_KEY_IDX = idx  # stick with the working key
                 return r.json()
             except Exception as e:
                 last_err = e
                 status = _http_status(e)
+                if status == 429:
+                    # Per-project quota: rotating keys deepens exhaustion, so
+                    # back off with jitter on the SAME key; the retry counts
+                    # toward this key's tries, then normal failover applies.
+                    key_server_only = False
+                    if attempt == tries:
+                        break
+                    wait = backoff * attempt + random.uniform(0, 1)
+                    log(f"Gemini key {idx + 1}/{n} rate-limited (429, "
+                        f"attempt {attempt}/{tries}), backing off {wait:.1f}s...")
+                    time.sleep(wait)
+                    continue
                 if status is not None and 400 <= status < 500 and status != 408:
                     key_server_only = False
                     if k < n - 1:
                         log(f"Gemini key {idx + 1}/{n} rejected (HTTP {status}), "
                             "failing over to next key...")
                     break  # 4xx won't heal with retries — try next key
+                if isinstance(e, requests.exceptions.Timeout):
+                    if k < n - 1:
+                        log(f"Gemini key {idx + 1}/{n} timed out "
+                            f"(attempt {attempt}/{tries}), failing over to next key...")
+                    break  # timeouts won't heal in one backoff — try next key
                 if attempt == tries:
                     break
                 wait = backoff * attempt
@@ -456,7 +560,13 @@ def gen_script(niche):
             data["title"] = niche.sanitize_title(data.get("title", ""), slots)
             return data, slots
     warn("Gemini unavailable: using standalone fallback script.")
-    return niche.fallback_script(history)
+    meta, slots = niche.fallback_script(history)
+    # Verdict for the record only: with no Gemini there is nothing to
+    # regenerate with, so a hit still airs (warn, never raise).
+    reason = similar_to_history(meta, slots, history, niche)
+    if reason is not None:
+        warn(f"Offline fallback repeats history ({reason}), airing anyway.")
+    return meta, slots
 
 
 # ---------- 2. Audio (edge-tts default, free, no key; Gemini TTS pilot) ----------
@@ -481,16 +591,71 @@ def _gen_audio_edge(narration: str, mp3: Path, srt: Path):
           tries=3, backoff=10)
 
 
-def _gemini_tts_beat(text: str, voice: str, topic: str = "") -> tuple[bytes, int]:
+def pick_run_voice(history_len: int | None, stamp: str = "") -> tuple[str, str]:
+    """Voice for the whole run (default single Charon, no voice alternation).
+
+    Pool is GEMINI_TTS_VOICES; multiple configured voices alternate
+    deterministically: history entry count parity (even -> pool[0],
+    odd -> pool[1]); when history is unavailable (None), fall back to the
+    stamp's day-of-month parity. Returns (voice, reason) so run() can log
+    why this voice was picked.
+    """
+    pool = GEMINI_TTS_VOICES or ["Charon"]
+    if len(pool) == 1:
+        return pool[0], "single voice configured (no alternation)"
+    if history_len is not None:
+        return pool[history_len % len(pool)], f"history parity (entries={history_len})"
+    try:
+        day = int(stamp[8:10])
+    except (ValueError, IndexError):
+        day = datetime.datetime.now().day
+    return pool[day % len(pool)], "date-stamp day parity (history unavailable)"
+
+
+def pick_run_tone(history_len: int | None, stamp: str = "") -> tuple[str, str]:
+    """Body delivery tone for the whole run, alternating between runs.
+
+    Same history-parity cadence as voice selection: even history entry
+    count -> "energetic", odd -> "deep" (Charon+energetic one run,
+    Charon+deep the next); when history is unavailable (None), fall back to
+    the stamp's day-of-month parity. Returns (tone, reason) for logging.
+    An explicit non-blank GEMINI_TTS_STYLE skips this entirely (see run()).
+    """
+    if history_len is not None:
+        tone = "energetic" if history_len % 2 == 0 else "deep"
+        return tone, f"history parity (entries={history_len})"
+    try:
+        day = int(stamp[8:10])
+    except (ValueError, IndexError):
+        day = datetime.datetime.now().day
+    tone = "energetic" if day % 2 == 0 else "deep"
+    return tone, "date-stamp day parity (history unavailable)"
+
+
+def _gemini_tts_beat(text: str, voice: str, topic: str = "",
+                     is_hook: bool = False) -> tuple[bytes, int]:
     """One beat of raw PCM audio via Gemini TTS. Returns (pcm, sample_rate).
 
     Tries GEMINI_TTS_MODELS in order; raises when all fail. The caller falls
     back to edge-tts for the WHOLE narration on any failure — per-beat
-    retries would multiply a total outage by the beat count.
+    retries would multiply a total outage by the beat count. Beat text is
+    always sent verbatim; only the delivery prefix varies (hook punch on
+    beat 0, base countdown style otherwise).
     """
     if not GEMINI_KEYS:
         raise ValueError("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it)")
-    prompt = f"{pick_tts_style(topic, text) if topic else GEMINI_TTS_STYLE} Say the following text:\n\n{text}"
+    if topic:
+        base_style = pick_tts_style(topic, text)
+    elif GEMINI_TTS_STYLE_EXPLICIT:
+        base_style = GEMINI_TTS_STYLE
+    elif (RUN_TONE or "energetic") == "deep":
+        base_style = DEEP_GEMINI_TTS_STYLE
+    else:
+        base_style = GEMINI_TTS_STYLE
+    # Hook keeps its punchy prefix on every tone: a bright hook dropping into
+    # a deep weighty body is the contrast, and retention needs the first 2s.
+    prefix = GEMINI_TTS_HOOK_PREFIX if is_hook else ""
+    prompt = f"{prefix}{base_style} Say the following text:\n\n{text}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -503,7 +668,7 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "") -> tuple[bytes, int
         try:
             url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                    f"{model}:generateContent")
-            raw = _fetch_gemini(url, payload)
+            raw = _fetch_gemini(url, payload, timeout=GEMINI_TTS_TIMEOUT)
             parts = raw["candidates"][0]["content"].get("parts", [])
             inline = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
             if not inline or not inline.get("data"):
@@ -556,9 +721,15 @@ def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
 
 
 def _gemini_synth(i: int, beat: dict, topic: str = ""):
-    """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure."""
-    voice = GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
-    pcm, rate = _gemini_tts_beat(beat["text"], voice, topic)
+    """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure.
+
+    Single voice per run (RUN_VOICE picked in run()); beat 0 gets the hook
+    delivery punch, beats 1-6 keep the base countdown style. Beat text is
+    verbatim; SRT/validation/fallback untouched.
+    """
+    voice = RUN_VOICE or (GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
+                          if GEMINI_TTS_VOICES else "Charon")
+    pcm, rate = _gemini_tts_beat(beat["text"], voice, topic, is_hook=(i == 0))
     raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
     seg = ASSETS / f"tts_beat_{i}.mp3"
     raw_pcm.write_bytes(pcm)
@@ -711,10 +882,11 @@ def _subtitles_vf(srt: Path):
 
 # Optional override: put your own loopable track(s) at bgm.mp3 (repo root,
 # e.g. from the YouTube Audio Library) or assets/bgm.mp3 (local only).
-# Numbered tracks (bgm1.mp3, bgm2.mp3, bgm3.mp3) are picked at random each
-# run so videos don't all sound identical. Random, not strict rotation:
-# bed choice is intentionally stateless (history.json tracks stories, not
-# music) — but with 3 tracks repeats are rare and harmless.
+# Numbered tracks (bgm1.mp3..bgm9.mp3) play in strict rotation: run() passes
+# its history entry count as the slot, so track = pool[slot % len(pool)]
+# over the sorted pool — every track plays before any repeats, and no two
+# back-to-back runs share a bed. slot=None (history unreadable) falls back
+# to a random pick, preserving the old stateless behavior for that edge case.
 def _bgm_pool() -> list:
     """Available custom bed tracks. Repo-root bgm*.mp3 wins (CI-visible);
     assets/bgm*.mp3 is the local-only fallback. Sorted for stable logs."""
@@ -724,13 +896,26 @@ def _bgm_pool() -> list:
     return [p for p in pool if p.is_file()]
 
 
-def make_bed(duration: float) -> Path:
-    """Background audio matching narration length. Never fails the run."""
+def make_bed(duration: float, slot: int | None = None) -> tuple[Path, str | None]:
+    """Background audio matching narration length. Never fails the run.
+
+    Returns (bed_mp3, track_filename|None): the filename (drone -> None) is
+    recorded in history so rotation stays auditable. A numeric slot picks
+    pool[slot % len(pool)] (strict rotation over the sorted pool); slot=None
+    keeps the legacy random pick.
+    """
     bed = ASSETS / "bed.mp3"
     pool = _bgm_pool()
-    custom = random.choice(pool) if pool else None
+    custom = None
+    if pool:
+        if slot is not None:
+            idx = slot % len(pool)
+            custom = pool[idx]
+            log(f"Bed: track {idx + 1}/{len(pool)} {custom.name} by rotation")
+        else:
+            custom = random.choice(pool)
+            log(f"Bed: looping custom track {custom} (1 of {len(pool)} in pool)")
     if custom is not None:
-        log(f"Bed: looping custom track {custom} (1 of {len(pool)} in pool)")
         _run_ffmpeg(["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(custom),
                      "-t", str(duration), "-af", "volume=0.20",
                      "-c:a", "libmp3lame", str(bed)], "bed-loop")
@@ -756,7 +941,7 @@ def make_bed(duration: float) -> Path:
                      "-filter_complex", fc, "-map", "[aout]",
                      "-t", str(duration),
                      "-c:a", "libmp3lame", str(bed)], "bed-drone")
-    return bed
+    return bed, (custom.name if custom is not None else None)
 
 
 def audio_duration(path: Path) -> float:
@@ -780,59 +965,247 @@ def _mood_query(q: str) -> str:
     return f"{q} dark"
 
 
+_QUERY_STOPWORDS = frozenset({
+    "a", "an", "the", "in", "on", "of", "at", "to", "for",
+    "with", "from", "and", "or", "is", "are", "its", "it",
+})
+
+
+def _query_words(q: str) -> list[str]:
+    """Lowercase alphanum tokens minus stopwords."""
+    return [w for w in re.findall(r"[a-z0-9]+", (q or "").lower())
+            if w not in _QUERY_STOPWORDS]
+
+
+def _query_variants(q: str) -> list[str]:
+    """Full query + drop-last-word backoff until 2 words remain (max 3)."""
+    full = (q or "").strip()
+    if not full:
+        return []
+    words = full.split()
+    if len(words) <= 2:
+        return [full]
+    variants = [full]
+    while len(words) > 2 and len(variants) < 3:
+        words = words[:-1]
+        variants.append(" ".join(words))
+    seen: list[str] = []
+    for v in variants:
+        if v not in seen:
+            seen.append(v)
+    return seen
+
+
+def _score_text(haystack, words: list[str]) -> int:
+    """Count of query words present as substrings in haystack."""
+    h = (haystack or "").lower()
+    return sum(1 for w in words if w and w in h)
+
+
+def _best_video(query: str, used: set | None = None, mood: bool = True):
+    """Best literal-match stock video for one query (read-only on `used`).
+
+    Returns (dest|None, raw_score, commit_key|None). `used` is only checked,
+    never mutated — the caller commits the winner's key so a losing candidate
+    never burns its id. raw_score counts query words in the URL slug; the
+    caller normalizes with *2 for fair comparison against photo scores
+    (photo alt hits already count double, so a 2-word video slug match = 4
+    lines up with a 2-word photo alt match = 4). Score 0 when no candidate
+    meets the accuracy gate (min(2, len(words)) multi-word, 1 single-word).
+    """
+    if not PEXELS_KEY:
+        return None, 0, None
+    try:
+        words = _query_words(query)
+        threshold = min(2, len(words)) if len(words) > 1 else 1
+        best_video = None
+        best_pick_file = None
+        best_score = -1
+        for variant in _query_variants(query):
+            def _search(variant=variant):
+                r = requests.get(
+                    "https://api.pexels.com/videos/search",
+                    headers={"Authorization": PEXELS_KEY},
+                    params={"query": _mood_query(variant) if mood else variant,
+                            "per_page": 8,
+                            "orientation": "portrait", "size": "medium"},
+                    timeout=30,
+                )
+                r.raise_for_status()
+                return r
+            r = retry("Pexels search", _search, tries=3, backoff=5)
+            for v in r.json().get("videos", []):
+                if used is not None and v.get("id") in used:
+                    continue  # same story must not show the same clip twice
+                score = _score_text(v.get("url", ""), words)
+                if score < threshold:
+                    continue
+                # Sharp-but-bounded: smallest file clearing PEXELS_MIN_WIDTH
+                # (default 1080p, 1:1 with the canvas). Falls back to whatever
+                # exists so clips with only SD files still play.
+                cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
+                               key=lambda f: f.get("width", 0))
+                big_enough = [f for f in cands if f.get("width", 0) >= PEXELS_MIN_WIDTH]
+                pick = (big_enough or cands)
+                if not pick:
+                    continue
+                if score > best_score:
+                    best_score = score
+                    best_video = v
+                    best_pick_file = pick[0]
+            if best_video is not None and best_score >= threshold:
+                break  # earliest (most specific) variant already met the gate
+        if best_video is None or best_pick_file is None:
+            return None, 0, None
+        dest = ASSETS / f"pexels_{best_video['id']}.mp4"
+        if not dest.exists():
+            def _download(url=best_pick_file["link"], dest=dest):
+                with requests.get(url, stream=True, timeout=120) as d:
+                    d.raise_for_status()
+                    with open(dest, "wb") as f:
+                        shutil.copyfileobj(d.raw, f)
+            try:
+                retry("Pexels download", _download, tries=2, backoff=5)
+            except Exception:
+                if dest.exists():
+                    dest.unlink()  # never keep a partial file
+                raise
+        return dest, best_score, best_video["id"]
+    except Exception as e:
+        warn(f"Pexels failed for '{query}' ({e}).")
+    return None, 0, None
+
+
 def pexels_clip(query: str, used: set | None = None, mood: bool = True):
     """First unused stock clip for one query. Returns None (no key/fail/empty).
 
     `used` holds Pexels video ids already shown in this run, so similar
     queries can't repeat the same clip twice in one story. `mood=False`
     skips the horror-mood forcing (ranking niche wants literal matches).
+
+    Accuracy gate: each candidate video is scored by how many query words
+    appear in its URL slug; only clips meeting
+    min(2, len(words)) (multi-word) or 1 (single-word) are accepted, so a
+    wrong-animal clip returns None and lets the photo fallback try instead.
+    Tries up to 3 query backoff variants (full -> drop-last-word).
     """
-    if not PEXELS_KEY:
-        return None
+    dest, _score, key = _best_video(query, used, mood)
+    if dest is not None and key is not None and used is not None:
+        used.add(key)
+    return dest
+
+
+def _best_photos(query: str, used: set | None = None, n: int = 1):
+    """Top-N literal-match stock photos for one query (read-only on `used`).
+
+    Returns [(dest, score, commit_key)] sorted score desc, then area desc,
+    then aspect-near-9:16 — distinct ids passing the accuracy gate
+    (score >= min(2, len(words)), width >= PEXELS_MIN_WIDTH, has original),
+    skipping ids already in `used` and dupes within this call. `used` is
+    only checked, never mutated; the caller commits the winners' keys.
+    One photo search per query variant (max 3), collecting top-N from the
+    same pages — no extra per-photo API calls. Downloads+caches each hit
+    (assets/pexels_{id}.jpg); a failed download warns, deletes the partial,
+    and skips to the next candidate.
+    """
+    if n <= 0 or not PEXELS_KEY:
+        return []
     try:
-        def _search():
-            r = requests.get(
-                "https://api.pexels.com/videos/search",
-                headers={"Authorization": PEXELS_KEY},
-                params={"query": _mood_query(query) if mood else query,
-                        "per_page": 4,
-                        "orientation": "portrait", "size": "medium"},
-                timeout=30,
-            )
-            r.raise_for_status()
-            return r
-        r = retry("Pexels search", _search, tries=3, backoff=5)
-        for v in r.json().get("videos", []):
-            if used is not None and v.get("id") in used:
-                continue  # same story must not show the same clip twice
-            # Sharp-but-bounded: smallest file clearing PEXELS_MIN_WIDTH
-            # (default 1080p, 1:1 with the canvas). Falls back to whatever
-            # exists so clips with only SD files still play.
-            cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
-                           key=lambda f: f.get("width", 0))
-            big_enough = [f for f in cands if f.get("width", 0) >= PEXELS_MIN_WIDTH]
-            pick = (big_enough or cands)
-            if not pick:
-                continue
-            dest = ASSETS / f"pexels_{v['id']}.mp4"
+        words = _query_words(query)
+        threshold = min(2, len(words)) if len(words) > 1 else 1
+        pool: dict = {}
+        for variant in _query_variants(query):
+            def _search(variant=variant):
+                r = requests.get(
+                    "https://api.pexels.com/v1/search",
+                    headers={"Authorization": PEXELS_KEY},
+                    params={"query": variant,
+                            "per_page": 10,
+                            "orientation": "portrait", "size": "large"},
+                    timeout=30,
+                )
+                r.raise_for_status()
+                return r
+            r = retry("Pexels photo search", _search, tries=3, backoff=5)
+            for p in r.json().get("photos", []):
+                pid = p.get("id")
+                if pid in pool:
+                    continue
+                if used is not None and f"photo_{pid}" in used:
+                    continue
+                alt = p.get("alt", "")
+                url = p.get("url", "")
+                score = (2 * _score_text(alt, words)
+                         + _score_text(url, words))
+                if score < threshold:
+                    continue
+                w = p.get("width", 0) or 0
+                if w and w < PEXELS_MIN_WIDTH:
+                    continue
+                src = p.get("src", {})
+                if not src.get("original"):
+                    continue
+                h = p.get("height", 0) or 0
+                # Prefer true-portrait near 9:16 on ties (smaller rank wins).
+                if w and h:
+                    aspect = w / h
+                    rank = abs(aspect - 9 / 16)
+                else:
+                    rank = 1.0
+                area = (w or 0) * (h or 0)
+                pool[pid] = (p, score, area, rank)
+            if len(pool) >= n:
+                break  # most specific variant(s) already filled the set
+        if not pool:
+            return []
+        ranked = sorted(pool.values(), key=lambda t: (-t[1], -t[2], t[3]))
+        out = []
+        for (p, score, _area, _rank) in ranked[:max(1, n)]:
+            dest = ASSETS / f"pexels_{p['id']}.jpg"
             if not dest.exists():
-                def _download(url=pick[0]["link"], dest=dest):
+                def _download(url=p["src"]["original"], dest=dest):
                     with requests.get(url, stream=True, timeout=120) as d:
                         d.raise_for_status()
                         with open(dest, "wb") as f:
                             shutil.copyfileobj(d.raw, f)
                 try:
-                    retry("Pexels download", _download, tries=2, backoff=5)
-                except Exception:
+                    retry("Pexels photo download", _download, tries=2, backoff=5)
+                except Exception as e:
                     if dest.exists():
                         dest.unlink()  # never keep a partial file
-                    raise
-            if used is not None:
-                used.add(v["id"])
-            return dest
+                    warn(f"Pexels photo download failed for '{query}' ({e}).")
+                    continue
+            out.append((dest, score, f"photo_{p['id']}"))
+        return out
     except Exception as e:
-        warn(f"Pexels failed for '{query}' ({e}).")
-    return None
+        warn(f"Pexels photo failed for '{query}' ({e}).")
+    return []
+
+
+def _best_photo(query: str, used: set | None = None):
+    """Best literal-match stock photo for one query (read-only on `used`).
+
+    Returns (dest|None, score, commit_key|None). `used` is only checked,
+    never mutated — the caller commits the winner's f"photo_{id}" key so a
+    losing candidate never burns its id. Score = 2*alt_hits + url_hits
+    (alt is more descriptive, hence double weight); callers compare it
+    against video raw_score*2. Score 0 when nothing meets the gate.
+    """
+    res = _best_photos(query, used, 1)
+    return res[0] if res else (None, 0, None)
+
+
+def pexels_photo(query: str, used: set | None = None):
+    """Best literal-match stock photo for one query (Ken Burns at render).
+
+    Returns an assets/pexels_{id}.jpg Path (the .jpg suffix triggers the
+    render() Ken Burns branch) or None. `used` keys photos as f"photo_{id}"
+    so they never collide with video ids in the shared per-run set.
+    """
+    dest, _score, key = _best_photo(query, used)
+    if dest is not None and key is not None and used is not None:
+        used.add(key)
+    return dest
 
 
 def beat_card(i: int, text: str) -> Path:
@@ -848,27 +1221,11 @@ def beat_card(i: int, text: str) -> Path:
     return p
 
 
-# Optional: Cloudflare Workers AI (free 10k neurons/day, no card) fallback
-# when Pexels has no stock. Account ID + API token with Workers AI
-# permission. Without them, this step is skipped silently.
-CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
-CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
-# SDXL-Lightning: listed at $0.00/step (Beta) + native portrait size, so it
-# beats FLUX on cost. Override back to FLUX if you ever want it:
-# "@cf/black-forest-labs/flux-1-schnell".
-CF_IMAGE_MODEL = os.getenv(
-    "CF_IMAGE_MODEL", "@cf/bytedance/stable-diffusion-xl-lightning")
-# More steps = better prompt adherence (exact moment/action), but each step
-# burns Workers AI neurons out of the 10k/day free allowance. Lightning is a
-# distilled few-step model: below ~8 steps it ignores prompt detail and falls
-# back to generic horror frames; FLUX-schnell adheres better at the same cost
-# in neurons, so prefer switching models over cranking steps past ~20.
-CF_NUM_STEPS = int(os.getenv("CF_NUM_STEPS", "8"))
-# Cuts per beat: 2 stills per beat ≈ 14-16 images/video, cutting mid-beat like
-# real Shorts pacing (~4-7s per still) instead of one static slideshow frame
-# per beat. 1 = old behavior (one still per beat). Costs 2x Cloudflare calls
-# per run — inside the free allowance, which hard-stops instead of billing.
-STILLS_PER_BEAT = int(os.getenv("STILLS_PER_BEAT", "2"))
+# Cuts per beat: 3 cuts per beat ≈ 21 clips/video, cutting mid-beat like
+# real Shorts pacing (~4-7s per cut) instead of one static slideshow frame
+# per beat. 1 = old behavior (one clip per beat). Second-half cuts seek into
+# different stock footage (see _stock_offset).
+STILLS_PER_BEAT = int(os.getenv("STILLS_PER_BEAT", "3"))
 
 
 def _split_beat(text: str, n: int) -> list[str]:
@@ -894,124 +1251,69 @@ def _stock_offset(stock: Path, part_idx: int, parts: int):
     return max(0.0, dur * part_idx / parts)
 
 
-# CTA filler that pollutes image prompts when fed to the model literally
-# ("follow...", "part 2 tomorrow") — the model draws marketing, not story.
-CTA_MARKERS = ("follow", "subscribe", "part 2", "part two", "tomorrow",
-               "don't miss", "dont miss", "comment", "like and")
-
-
-def _clean_beat_text(beat_text: str, limit: int = 350) -> str:
-    """Strip CTA/filler sentences so the image model draws the story beat."""
-    kept = []
-    for sent in beat_text.replace("!", ".").replace("?", ".").split("."):
-        s = sent.strip()
-        if not s:
-            continue
-        if any(m in s.lower() for m in CTA_MARKERS):
-            continue
-        kept.append(s)
-    text = ". ".join(kept).strip()
-    return text[:limit].rstrip() or beat_text[:limit].rstrip()
-
-
-def cloudflare_image(beat_text: str, query: str, i: int, anchor: str,
-                     make_prompt):
-    """Literal still via Workers AI free allowance (no card, no watermark).
-
-    Default model SDXL-Lightning is listed at $0.00/step and takes native
-    1080x1920, so cost is ~zero and no crop is needed. Free plan hard-stops
-    at the 10k neuron cap (no overage billing possible). Returns None when
-    creds are unset; raises on failure for the next fallback.
-    """
-    if not (CF_ACCOUNT_ID and CF_API_TOKEN):
-        return None
-    prompt = make_prompt(beat_text, query, anchor)
-    seed = random.randint(1, 999999)
-    dest = ASSETS / f"cf_beat_{i}_{seed}.jpg"
-
-    def _do():
-        r = requests.post(
-            f"https://api.cloudflare.com/client/v4/accounts/"
-            f"{CF_ACCOUNT_ID}/ai/run/{CF_IMAGE_MODEL}",
-            headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
-            json={"prompt": prompt, "seed": seed, "width": W, "height": H,
-                  "num_steps": CF_NUM_STEPS,
-                  "negative_prompt": (
-                      "blurry, low quality, bad anatomy, extra limbs, duplicate person, "
-                      "collage, split screen, multiple scenes, text, subtitles, watermark, "
-                      "logo, daytime, sunlight, cheerful colors")},
-            timeout=180)
-        r.raise_for_status()
-        ct = r.headers.get("content-type", "")
-        if ct.startswith("image/"):
-            raw = r.content  # SDXL models return raw PNG bytes
-        else:  # FLUX-style JSON envelope with base64
-            try:
-                body = r.json()
-            except Exception:
-                raise ValueError(f"Cloudflare returned undecodable body ({ct})")
-            if not isinstance(body, dict):
-                raise ValueError(f"Cloudflare returned unexpected JSON ({ct})")
-            if not body.get("success", False):
-                raise ValueError(f"Cloudflare error: {body.get('errors')}")
-            b64 = (body.get("result") or {}).get("image", "")
-            if not b64:
-                raise ValueError("Cloudflare returned no image")
-            raw = base64.b64decode(b64)
-        if len(raw) < 10_000:
-            raise ValueError(f"Cloudflare image too small ({len(raw)}b)")
-        dest.write_bytes(raw)
-        return dest
-    dest = retry("Cloudflare image", _do, tries=2, backoff=10)
-    log(f"Beat {i + 1}: CF still generated ({dest.stat().st_size // 1024} KB).")
-    return dest
-
-
 def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
-    """Per beat: STILLS_PER_BEAT cuts (Pexels stock -> CF still -> card).
+    """Per beat: STILLS_PER_BEAT cuts (Pexels video vs photos -> card).
 
     The niche decides the stock policy: ranking searches each beat's OWN
     query (literal item match); horror uses ambient B-roll from
     niche.AMBIENT_QUERIES, deliberately not story-matched. Returns
-    [(clip, seek_or_None, beat_idx)]: stock fallbacks seek into different
-    footage per half; durations stay per-beat and are split at render time.
+    [(clip, seek_or_None, beat_idx)]. Video and photos compete head to
+    head at beat level on normalized accuracy (video raw slug score * 2
+    vs best-photo 2*alt + url); higher wins, ties go to video (motion
+    preferred). A video win reuses ONE clip across the beat's cuts (later
+    cuts seek via _stock_offset for continuity); a photo win emits one
+    DISTINCT photo per cut (cycling plist[0] only when Pexels returned
+    fewer than parts), each Ken Burns'd at render. Both missing renders
+    Pillow title cards. Durations stay per-beat, split at render time.
     """
     clips = []
     used_pexels: set = set()
     use_beat = niche.USE_BEAT_QUERY
-    # Continuity anchor from the opening beat so CF fallback stills share one
-    # protagonist/setting instead of each inventing its own (horror only;
-    # ranking stills are standalone subjects).
-    anchor = niche.beat_anchor(beats)
     still_n = 0
+    n_video = n_photo = n_card = 0
     for i, b in enumerate(beats):
         parts = _split_beat(b["text"], STILLS_PER_BEAT)
+        query = (b.get("query", "") if use_beat
+                 else random.choice(niche.AMBIENT_QUERIES))
+        # _best_* only read `used`; the winner's key(s) are committed below
+        # so losers never burn their ids for later beats.
+        vpath, vraw, vkey = _best_video(query, used_pexels, mood=niche.USE_MOOD)
+        plist = _best_photos(query, used_pexels, len(parts))
+        vnorm = vraw * 2
+        pbest = plist[0][1] if plist else 0
+        vclip, photolist, kind = None, [], "card"
+        if plist and (vpath is None or pbest > vnorm):
+            photolist, kind = plist, f"{len(parts)}xphoto"
+            for (_, _, k) in plist:
+                used_pexels.add(k)
+            n_photo += len(parts)
+        elif vpath is not None:
+            vclip, kind = vpath, "video"
+            used_pexels.add(vkey)
+            n_video += len(parts)
+        else:
+            n_card += len(parts)
+        log(f"Beat {i + 1} ('{query}'): {kind} (vscore={vnorm}, pscore={pbest}).")
         for j, part in enumerate(parts):
             clip, seek = None, None
-            query = (b.get("query", "") if use_beat
-                     else random.choice(niche.AMBIENT_QUERIES))
-            stock = pexels_clip(query, used_pexels, mood=niche.USE_MOOD)
-            if stock is not None:
-                clip, seek = stock, _stock_offset(stock, j, len(parts))
-            if clip is None:
-                try:
-                    clip = cloudflare_image(part, query, still_n, anchor,
-                                            niche.image_prompt)
-                except Exception as e:
-                    warn(f"Beat {i + 1}.{j + 1} Cloudflare fallback failed ({e}).")
+            if vclip is not None:
+                clip, seek = vclip, _stock_offset(vclip, j, len(parts))
+            elif photolist:
+                clip, seek = photolist[j][0] if j < len(photolist) else photolist[0][0], None
             if clip is None:
                 warn(f"Beat {i + 1}.{j + 1} ('{query}'): no stock, using title card.")
                 clip = beat_card(still_n, part)
             clips.append((clip, seek, i))
             still_n += 1
-    log(f"Visuals: {len(clips)} cuts for {len(beats)} beats.")
+    log(f"Visuals: {len(clips)} cuts for {len(beats)} beats "
+        f"({n_video} video, {n_photo} photo, {n_card} card).")
     return clips
 
 
 # Glob patterns for per-run FFmpeg intermediates. The pexels_*.mp4 cache
 # is intentionally NOT listed: re-downloads waste time/bandwidth on re-runs.
 INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png",
-                         "cf_*.jpg", "bed.mp3", "concat.txt", "video_only.mp4",
+                         "bed.mp3", "concat.txt", "video_only.mp4",
                          "tts_*")
 
 
@@ -1066,6 +1368,49 @@ def _has_drawtext() -> bool:
     return _HAS_DRAWTEXT
 
 
+# Mystery #1 twist (visual-only): the #1 beat stays heavily blurred for the
+# first ~2s of its screen time, then snaps clear at the reveal. Gemini TTS
+# gives beat-level SRT only, so the exact reveal word time is unknown — the
+# window is min(2s, half the beat). Applied at the FINAL mux (absolute
+# timeline, like the leaderboard), so per-segment clocks and cuts are untouched.
+MYSTERY_BLUR_MAX_SECS = 2.0
+
+
+def _mystery_blur_filter(beats: list[dict], durations: list[float]) -> str:
+    """boxblur snippet with trailing comma for the #1 beat's reveal, or "".
+
+    Finds the beat labeled "1", blurs [start, start+min(2s, dur/2)] on the
+    finished timeline, then snaps clear. "" when N/A (no labeled beat,
+    bad/zero durations) so the mux is byte-identical to the no-twist render.
+    """
+    try:
+        idx = next(i for i, b in enumerate(beats or [])
+                   if str((b or {}).get("label", "")) == "1")
+    except StopIteration:
+        return ""
+    starts: list[float] = []
+    t = 0.0
+    for d in durations or []:
+        starts.append(t)
+        try:
+            t += max(0.0, float(d))
+        except (TypeError, ValueError):
+            return ""
+    if idx >= len(starts) or idx >= len(durations or []):
+        return ""
+    try:
+        dur = max(0.0, float(durations[idx]))
+    except (TypeError, ValueError):
+        return ""
+    blur_len = min(MYSTERY_BLUR_MAX_SECS, dur / 2)
+    if blur_len <= 0.1:
+        return ""
+    start = starts[idx]
+    log(f"Mystery #1 blur: beat {idx + 1} blurred "
+        f"{start:.2f}s->{start + blur_len:.2f}s (beat dur {dur:.2f}s), clear after.")
+    return (f"boxblur=20:5:enable='between(t,{start:.2f},{start + blur_len:.2f})',")
+
+
 # ---------- 4. Render with FFmpeg (CPU only) ----------
 def _run_ffmpeg(cmd, step: str):
     """Run ffmpeg quietly, but log stderr tail on failure (else it stays hidden)."""
@@ -1109,13 +1454,15 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
                          # cover-crop: any input aspect fills 1080x1920 undistorted
                          "-vf", f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,"
                                 f"crop={W * 2}:{H * 2},{zb},fps=30",
-                         "-t", str(seg_dur), "-pix_fmt", "yuv420p", "-c:v", "libx264",
-                         "-preset", "veryfast", str(seg)], f"segment-{i}-kenburns")
+                          "-t", str(seg_dur), "-pix_fmt", "yuv420p", "-c:v", "libx264",
+                          "-preset", "veryfast", "-crf", "20", "-maxrate", "12M",
+                          "-bufsize", "24M", str(seg)], f"segment-{i}-kenburns")
         elif c.suffix == ".png":
             _run_ffmpeg(["ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", str(c),
                          "-t", str(seg_dur), "-vf", f"scale={W}:{H},fps=30",
-                         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
-                         str(seg)], f"segment-{i}-slide")
+                          "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+                          "-crf", "20", "-maxrate", "12M", "-bufsize", "24M",
+                          str(seg)], f"segment-{i}-slide")
         else:
             # Stock halves seek into different footage; loop guards short stock
             # so a segment can never run dry and truncate the narration.
@@ -1125,16 +1472,18 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
             cmd += ["-stream_loop", "-1", "-i", str(c),
                     "-t", str(seg_dur),
                     "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30",
-                    "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
-                    "-an", str(seg)]
+                     "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+                     "-crf", "20", "-maxrate", "12M", "-bufsize", "24M",
+                     "-an", str(seg)]
             _run_ffmpeg(cmd, f"segment-{i}-clip")
         segs.append(seg)
     concat = ASSETS / "concat.txt"
     concat.write_text("".join(f"file '{s.resolve()}'\n" for s in segs))
     video_only = ASSETS / "video_only.mp4"
     _run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                 "-i", str(concat), "-c:v", "libx264", "-preset", "veryfast",
-                 "-pix_fmt", "yuv420p", str(video_only)], "concat")
+                  "-i", str(concat), "-c:v", "libx264", "-preset", "veryfast",
+                  "-crf", "20", "-maxrate", "12M", "-bufsize", "24M",
+                  "-pix_fmt", "yuv420p", str(video_only)], "concat")
     # Mux narration + bed + tiny bottom captions + niche overlay.
     # Bed is mixed quietly under the voice (normalize=0 keeps narration full).
     # The overlay lives here (not per-segment): only the finished timeline has
@@ -1142,18 +1491,43 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
     vf_subs = _subtitles_vf(srt)
     board = niche.board_filter(beats or [], items or [], durations,
                                _rank_font, _has_drawtext, title)
-    vchain = (f"[0:v]{board}{vf_subs},format=yuv420p[vout]" if vf_subs
-              else f"[0:v]{board}format=yuv420p[vout]")
+    blur = _mystery_blur_filter(beats or [], durations)
     achain = "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+
+    def _mux_cmd(blur_s: str, board_s: str, subs_s):
+        v = (f"[0:v]{blur_s}{board_s}{subs_s},format=yuv420p[vout]" if subs_s
+             else f"[0:v]{blur_s}{board_s}format=yuv420p[vout]")
+        return ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
+                "-filter_complex", f"{v};{achain}",
+                "-map", "[vout]", "-map", "[aout]",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+                "-maxrate", "12M", "-bufsize", "24M", "-c:a", "aac", "-b:a", "128k",
+                "-ar", "44100", "-movflags", "+faststart", "-shortest", str(out_path)]
+
+    vchain = (f"[0:v]{blur}{board}{vf_subs},format=yuv420p[vout]" if vf_subs
+              else f"[0:v]{blur}{board}format=yuv420p[vout]")
     cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
            "-filter_complex", f"{vchain};{achain}",
            "-map", "[vout]", "-map", "[aout]",
-           "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-           "-shortest", str(out_path)]
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+           "-maxrate", "12M", "-bufsize", "24M", "-c:a", "aac", "-b:a", "128k",
+           "-ar", "44100", "-movflags", "+faststart", "-shortest", str(out_path)]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         stderr = e.stderr or ""
+        if blur and "boxblur" in stderr:
+            warn("mystery #1 blur filter failed, rendering without blur.")
+            blur = ""
+            cmd = _mux_cmd(blur, board, vf_subs)
+            try:
+                _run_ffmpeg(cmd, "mux-no-blur")
+            except subprocess.CalledProcessError as e_nb:
+                e = e_nb
+                stderr = e_nb.stderr or ""
+            else:
+                log(f"Rendered {out_path} ({out_path.stat().st_size // 1024} KB)")
+                return
         # NOTE: check drawtext first. The filtergraph dump names both filters,
         # so a subtitles check would always win when board+subs are present
         # and retry with a still-broken board. "No such filter" also points
@@ -1163,32 +1537,18 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
         subs_failed = bool(vf_subs and "subtitles" in stderr)
         if board_failed:
             warn("niche overlay filter failed, rendering without it.")
-            no_board = (f"[0:v]{vf_subs},format=yuv420p[vout]" if vf_subs
-                        else "[0:v]format=yuv420p[vout]")
-            cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                   "-filter_complex", f"{no_board};{achain}",
-                   "-map", "[vout]", "-map", "[aout]",
-                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                   "-shortest", str(out_path)]
+            cmd = _mux_cmd(blur, "", vf_subs)
             try:
                 _run_ffmpeg(cmd, "mux-no-board")
             except subprocess.CalledProcessError:
                 if not subs_failed:
                     raise
                 warn("subtitles filter also failed, rendering plain.")
-                cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                       "-filter_complex", f"[0:v]format=yuv420p[vout];{achain}",
-                       "-map", "[vout]", "-map", "[aout]",
-                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                       "-shortest", str(out_path)]
+                cmd = _mux_cmd(blur, "", None)
                 _run_ffmpeg(cmd, "mux-plain")
         elif subs_failed:
             warn("subtitles filter failed, rendering without burned captions.")
-            cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                   "-filter_complex", f"[0:v]{board}format=yuv420p[vout];{achain}",
-                   "-map", "[vout]", "-map", "[aout]",
-                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                   "-shortest", str(out_path)]
+            cmd = _mux_cmd(blur, board, None)
             try:
                 _run_ffmpeg(cmd, "mux-no-subs")
             except subprocess.CalledProcessError as e2:
@@ -1196,22 +1556,12 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
                 if not (board and ("drawtext" in stderr2 or "No such filter" in stderr2)):
                     raise
                 warn("niche overlay filter also failed, rendering without it.")
-                no_board = (f"[0:v]{vf_subs},format=yuv420p[vout]" if vf_subs
-                            else "[0:v]format=yuv420p[vout]")
-                cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                       "-filter_complex", f"{no_board};{achain}",
-                       "-map", "[vout]", "-map", "[aout]",
-                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                       "-shortest", str(out_path)]
+                cmd = _mux_cmd(blur, "", vf_subs)
                 try:
                     _run_ffmpeg(cmd, "mux-no-board")
                 except subprocess.CalledProcessError:
                     warn("subtitles filter also failed, rendering plain.")
-                    cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                           "-filter_complex", f"[0:v]format=yuv420p[vout];{achain}",
-                           "-map", "[vout]", "-map", "[aout]",
-                           "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                           "-shortest", str(out_path)]
+                    cmd = _mux_cmd(blur, "", None)
                     _run_ffmpeg(cmd, "mux-plain")
         else:
             tail = (e.stderr or "").strip().splitlines()[-20:]
@@ -1420,8 +1770,25 @@ def buffer_tiktok_upload(video: Path, meta: dict):
 
 def run(niche):
     """One full Short for the given niche module. Entry point for pipeline.py."""
+    global RUN_VOICE, RUN_TONE
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem = OUT / f"{stamp}_short"
+    # Voice for this run (default single Charon; a multi-voice pool alternates
+    # via history entry-count parity, date-stamp day parity when unavailable).
+    # Body tone alternates on history parity (even -> energetic, odd -> deep)
+    # unless GEMINI_TTS_STYLE is explicitly set, which wins for the body.
+    try:
+        _hist_len: int | None = len(load_history())
+    except Exception:
+        _hist_len = None
+    RUN_VOICE, _voice_why = pick_run_voice(_hist_len, stamp)
+    if GEMINI_TTS_STYLE_EXPLICIT:
+        RUN_TONE = None
+        _tone_desc = "override (GEMINI_TTS_STYLE explicitly set, alternation skipped)"
+    else:
+        RUN_TONE, _tone_why = pick_run_tone(_hist_len, stamp)
+        _tone_desc = f"{RUN_TONE} ({_tone_why})"
+    log(f"TTS run voice={RUN_VOICE} ({_voice_why}, pool={GEMINI_TTS_VOICES}); tone={_tone_desc}")
     # Non-secret effective config so Actions logs show what actually ran.
     if TTS_ENGINE == "gemini":
         tts_desc = (f"gemini(models={GEMINI_TTS_MODELS},voices={GEMINI_TTS_VOICES})"
@@ -1430,9 +1797,7 @@ def run(niche):
         tts_desc = f"edge(voice={VOICE})"
     log(f"Config: mode={niche.MODE} tts={tts_desc} rate={TTS_RATE} pitch={TTS_PITCH} niche='{niche.NICHE_LABEL}' visibility={VISIBILITY} "
         f"min/max={MIN_AUDIO_SEC:g}/{MAX_AUDIO_SEC:g}s models={GEMINI_MODELS} "
-        f"cf_model={CF_IMAGE_MODEL} "
         f"keys: gemini_keys={len(GEMINI_KEYS)} pexels={bool(PEXELS_KEY)} "
-        f"cf={bool(CF_ACCOUNT_ID and CF_API_TOKEN)} "
         f"yt={(bool(os.getenv('YT_CLIENT_ID')) and bool(os.getenv('YT_CLIENT_SECRET')) and bool(os.getenv('YT_REFRESH_TOKEN')))} "
         f"buffer={bool(BUFFER_API_KEY)}")  # key presence only, never the key itself
     meta, slots = gen_script(niche)
@@ -1454,7 +1819,7 @@ def run(niche):
         # roughly constant, so each clip covers its own story moment).
         total_words = sum(len(b["text"].split()) for b in beats) or 1
         durations = [dur * len(b["text"].split()) / total_words for b in beats]
-    bed = make_bed(dur)
+    bed, bed_name = make_bed(dur, _hist_len)
     out_mp4 = stem.with_suffix(".mp4")
     try:
         render(clips, mp3, bed, srt, durations, out_mp4, niche,
@@ -1471,6 +1836,7 @@ def run(niche):
              "niche": niche.MODE,
              "tags": meta.get("tags", [])[:10],
              "narration": meta.get("narration", ""),
+             "bed": bed_name,
              "videoId": video_id,
              "tiktokBufferPostId": tiktok_post_id}
     if isinstance(slots, dict):

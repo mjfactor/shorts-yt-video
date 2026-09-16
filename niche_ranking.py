@@ -144,9 +144,13 @@ AI_TOPIC_TRIES = 2  # proposal rounds before giving up to the pool
 
 
 def _recent_topic_names(history: list[dict]) -> set:
-    """Casefolded topics from recent same-niche history entries."""
+    """Casefolded topics from the full enforced history window (same niche).
+
+    Programmatic freshness gates scan DEDUP_WINDOW (110); only the quoted
+    prompt block stays at HISTORY_PROMPT_N (advisory bans, token sanity).
+    """
     return {str(h.get("topic", "")).casefold()
-            for h in (history or [])[-C.HISTORY_PROMPT_N:]
+            for h in (history or [])[-C.DEDUP_WINDOW:]
             if h.get("niche", "horror") == MODE}
 
 
@@ -204,6 +208,21 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
             problems.append("fewer than 5 subjects")
         if any(len(i.split()) > 4 or len(i) > 40 for i in items):
             problems.append("unfilmable subject names")
+        if not problems:
+            # Subject pre-check: >=2 hinted items (casefolded) intersecting
+            # ANY single recent entry's items rejects the round, within the
+            # existing AI_TOPIC_TRIES. Enforced vs the item window (last 30),
+            # not the full topic window — common animals false-positive.
+            hint_set = {i.casefold() for i in items}
+            for h in (history or [])[-C.DEDUP_ITEM_WINDOW:]:
+                if h.get("niche", "horror") != MODE:
+                    continue
+                old_items = {str(i).strip().casefold()
+                             for i in (h.get("items") or []) if str(i).strip()}
+                if hint_set and old_items and len(hint_set & old_items) >= 2:
+                    problems.append(
+                        f"subjects already ranked in '{h.get('title', '?')}'")
+                    break
         if problems:
             C.log(f"AI topic rejected ({'; '.join(problems)}), "
                   f"round {round_no}/{AI_TOPIC_TRIES}.")
@@ -228,7 +247,7 @@ def build_prompt(history: list[dict]):
     topic, hint = propose_topic(history)
     source = "ai" if topic else "pool"
     if topic is None:
-        topic = C._pick_avoiding(TOPICS, recent_topics)
+        topic = C._pick_avoiding(TOPICS, recent_topics, history)
     slots = {"topic": topic, "topic_source": source}
     C.log(f"Ranking topic ({source}): {topic}")
     prompt = (
@@ -249,37 +268,15 @@ def build_prompt(history: list[dict]):
     return prompt, slots
 
 
-def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
-    """Offline Top-5 countdown (~2 min). Topic avoids recent history."""
-    history = history or []
-    recent_topics = {str(h.get("topic", "")).casefold()
-                     for h in history[-C.HISTORY_PROMPT_N:]
-                     if h.get("niche", "horror") == MODE}
-    topic = C._pick_avoiding(TOPICS, recent_topics)
-    # Fixed fallback set: largest animals (evergreen, stock-friendly).
-    topic = "largest animals on Earth" if "largest animals on earth" not in recent_topics else topic
-    items = ["Saltwater Crocodile", "Hippopotamus", "Giraffe",
-             "African Bush Elephant", "Blue Whale"]
-    narration = (
-        "These are the 5 largest animals on Earth. And number 1 is so huge, it is bigger than a passenger jet. "
-        "Stay until the end, because you will not believe how big it gets. "
-        "At number 5, the saltwater crocodile. Over 6 meters long, with jaws that crush bone like paper. "
-        "It waits without moving for hours. Then it explodes out of the water in half a second. "
-        "Number 4, the hippopotamus. Nearly 2 tonnes of muscle hiding under the river surface. "
-        "It looks slow and lazy. It is not slow. A hippo can outrun a human on land. "
-        "Number 3, the giraffe. Almost 6 meters tall, towering over every land animal alive. "
-        "Its heart alone weighs as much as a grown man, just to pump blood all the way up that neck. "
-        "Number 2, the African bush elephant. Over 6 tonnes. The heaviest animal walking the Earth today. "
-        "One step shakes the ground. One charge flattens trees like grass. "
-        "And number 1, the blue whale. Nearly 30 meters long. Over 100 tonnes. "
-        "Its heart is the size of a small car. Its call travels across entire oceans. "
-        "Nothing alive today even comes close. Comment which giant shocked you most, and follow for the next top 5."
-    )
+def _build_fallback_meta(variant: dict) -> tuple[dict, dict]:
+    """Assemble a (meta, slots) pair from one fallback variant dict.
+
+    Same shape as a validated script: 7 beats (hook, #5..#1, closer) split
+    word-even across the narration, each with a stock-filmable query.
+    """
+    narration = variant["narration"]
     words = narration.split()
-    beat_queries = ["crocodile eyes water surface", "hippopotamus river africa",
-                    "giraffe savanna walking", "african elephant walking dust",
-                    "blue whale underwater", "blue whale tail ocean",
-                    "ocean waves aerial"]
+    queries = variant["beat_queries"]
     # 7 beats: hook, #5..#1, closer — split word-even across them.
     per = max(1, -(-len(words) // 7))
     rank_labels = ["", "5", "4", "3", "2", "1", ""]
@@ -287,17 +284,143 @@ def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
     for i in range(7):
         chunk = " ".join(words[i * per:(i + 1) * per])
         if chunk:
-            beats.append({"text": chunk, "query": beat_queries[i],
+            beats.append({"text": chunk, "query": queries[i],
                           "label": rank_labels[i]})
-    slots = {"topic": topic}
+    slots = {"topic": variant["topic"]}
     return {
-        "title": "\U0001F981 Top 5 Largest Animals on Earth #shorts",
+        "title": variant["title"],
         "narration": narration,
-        "description": "\U0001F42C The 5 largest animals on Earth, ranked \U0001F30A. #shorts #animals #top5",
-        "tags": ["shorts", "top5", "animals", "ranking", "countdown"],
-        "items": items,
+        "description": variant["description"],
+        "tags": list(variant["tags"]),
+        "items": list(variant["items"]),
         "beats": beats,
     }, slots
+
+
+# Offline fallback rotation: three self-consistent hard-coded videos (each
+# passes _validate_script). Topics are pool topics so history comparisons
+# work; items are distinct, famous, correctly ordered, stock-filmable.
+_FALLBACK_VARIANTS = (
+    {
+        "topic": "largest animals on Earth",
+        "items": ["Saltwater Crocodile", "Hippopotamus", "Giraffe",
+                  "African Bush Elephant", "Blue Whale"],
+        "title": "\U0001F981 Top 5 Largest Animals on Earth #shorts",
+        "description": "\U0001F42C The 5 largest animals on Earth, ranked \U0001F30A. #shorts #animals #top5",
+        "tags": ["shorts", "top5", "animals", "ranking", "countdown"],
+        "narration": (
+            "These are the 5 largest animals on Earth. And number 1 is so huge, it is bigger than a passenger jet. "
+            "Stay until the end, because you will not believe how big it gets. "
+            "At number 5, the saltwater crocodile. Over 6 meters long, with jaws that crush bone like paper. "
+            "It waits without moving for hours. Then it explodes out of the water in half a second. "
+            "Number 4, the hippopotamus. Nearly 2 tonnes of muscle hiding under the river surface. "
+            "It looks slow and lazy. It is not slow. A hippo can outrun a human on land. "
+            "Number 3, the giraffe. Almost 6 meters tall, towering over every land animal alive. "
+            "Its heart alone weighs as much as a grown man, just to pump blood all the way up that neck. "
+            "Number 2, the African bush elephant. Over 6 tonnes. The heaviest animal walking the Earth today. "
+            "One step shakes the ground. One charge flattens trees like grass. "
+            "And number 1, the blue whale. Nearly 30 meters long. Over 100 tonnes. "
+            "Its heart is the size of a small car. Its call travels across entire oceans. "
+            "Nothing alive today even comes close. Comment which giant shocked you most, and follow for the next top 5."
+        ),
+        "beat_queries": ["crocodile eyes water surface", "saltwater crocodile water",
+                         "hippopotamus river africa", "giraffe savanna walking",
+                         "african elephant walking dust", "blue whale underwater",
+                         "ocean waves aerial"],
+    },
+    {
+        "topic": "tallest waterfalls in the world",
+        "items": ["Niagara Falls", "Iguazu Falls", "Victoria Falls",
+                  "Yosemite Falls", "Angel Falls"],
+        "title": "\U0001F30A Top 5 Tallest Waterfalls in the World #shorts",
+        "description": "\U0001F30A The 5 tallest waterfalls in the world, ranked \U0001F30A. #shorts #waterfalls #top5",
+        "tags": ["shorts", "top5", "waterfalls", "ranking", "countdown"],
+        "narration": (
+            "These are the 5 tallest waterfalls in the world. And number 1 drops so far, the water turns to mist before it lands. "
+            "Stay until the end, because the top spot falls nearly a full kilometer straight down. "
+            "At number 5, Niagara Falls. About 50 meters of pure thunder on the border of two countries. "
+            "Millions of visitors stand in its spray every year. It never stops, day or night. "
+            "Number 4, Iguazu Falls. Over 80 meters tall and wider than a city block. "
+            "Hundreds of separate cascades crash through the jungle. The locals call it the Devil's Throat. "
+            "Number 3, Victoria Falls. Over 100 meters of falling Zambezi River. "
+            "The spray rises so high it makes its own rain. You can hear it from kilometers away. "
+            "Number 2, Yosemite Falls. Nearly 740 meters down a granite cliff in California. "
+            "In spring the snowmelt turns it into a roaring giant. By late summer it slows to a silver thread. "
+            "And number 1, Angel Falls. Nearly 1000 meters straight off a tabletop mountain in Venezuela. "
+            "The water falls so far it drifts away as clouds. Nothing on Earth drops further. "
+            "Comment which waterfall you would visit first, and follow for the next top 5."
+        ),
+        "beat_queries": ["waterfall aerial jungle", "niagara falls aerial",
+                         "iguazu falls devil throat", "victoria falls zimbabwe",
+                         "yosemite falls california", "angel falls venezuela",
+                         "waterfall rainbow mist"],
+    },
+    {
+        "topic": "tallest buildings in the world",
+        "items": ["Eiffel Tower", "Empire State", "Taipei 101",
+                  "Shanghai Tower", "Burj Khalifa"],
+        "title": "\U0001F3D9\uFE0F Top 5 Tallest Buildings in the World #shorts",
+        "description": "\U0001F3D9\uFE0F The 5 tallest buildings in the world, ranked \U0001F30A. #shorts #buildings #top5",
+        "tags": ["shorts", "top5", "buildings", "ranking", "countdown"],
+        "narration": (
+            "These are the 5 tallest buildings in the world. And number 1 is so tall, planes have to fly around it. "
+            "Stay until the end, because the top spot reaches nearly a full kilometer into the sky. "
+            "At number 5, the Eiffel Tower. About 330 meters tall, standing over Paris for more than a century. "
+            "It was once the tallest structure on Earth. And it still stops traffic every single day. "
+            "Number 4, the Empire State. Over 440 meters of New York legend. "
+            "It held the world record for decades. Its lights change color for every holiday. "
+            "Number 3, Taipei 101. Over 500 meters tall, built to survive earthquakes and typhoons. "
+            "It looks like a stack of bamboo boxes. Engineers call it one of the safest towers ever built. "
+            "Number 2, the Shanghai Tower. Over 630 meters of twisting glass. "
+            "It turns a full rotation as it climbs. From the top, the whole city looks like a model. "
+            "And number 1, the Burj Khalifa. Nearly 830 meters tall. Over 160 floors. "
+            "Its elevators are among the fastest on the planet. Nothing built by humans stands taller. "
+            "Comment which tower you would climb first, and follow for the next top 5."
+        ),
+        "beat_queries": ["city skyline night aerial", "eiffel tower paris day",
+                         "empire state building night", "taipei 101 taiwan",
+                         "shanghai tower skyscraper", "burj khalifa dubai",
+                         "dubai skyline sunset"],
+    },
+)
+
+
+def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
+    """Offline Top-5 countdown (~2 min). Least-recently-aired variant wins.
+
+    Never airs the identical topic+items as the immediately previous video:
+    if the least-recent variant matches the last entry exactly, the next
+    variant is taken instead. Variety without Gemini, no repeats back to back.
+    """
+    history = history or []
+
+    def _last_pos(topic_cf: str) -> int:
+        pos = -1
+        for i, h in enumerate(history):
+            if (h.get("niche", "horror") == MODE
+                    and str(h.get("topic", "")).casefold() == topic_cf):
+                pos = i  # newest last: larger = more recent; -1 = never aired
+        return pos
+
+    ranked = sorted(_FALLBACK_VARIANTS,
+                    key=lambda v: _last_pos(v["topic"].casefold()))
+    last = history[-1] if history else {}
+    last_key = (str(last.get("topic", "")).casefold(),
+                tuple(sorted(str(i).strip().casefold()
+                             for i in (last.get("items") or []))))
+    chosen = ranked[0]
+    for variant in ranked:
+        vkey = (variant["topic"].casefold(),
+                tuple(sorted(i.casefold() for i in variant["items"])))
+        if vkey != last_key:
+            chosen = variant
+            break
+    if chosen is ranked[0]:
+        C.log(f"Offline fallback: '{chosen['topic']}' (least-recent variant).")
+    else:
+        C.log(f"Offline fallback: least-recent variant repeats last video, "
+              f"using '{chosen['topic']}' instead.")
+    return _build_fallback_meta(chosen)
 
 
 def validate_extra(data: dict) -> dict:
@@ -361,9 +484,12 @@ def sanitize_title(title: str, slots: dict | None = None) -> str:
     return t[:100].strip() or "Top 5 Countdown"
 
 
-def similarity_reason(data: dict, slots: dict, recent: list[dict]):
+def similarity_reason(data: dict, slots: dict, recent: list[dict],
+                      item_recent: list[dict] | None = None):
     """Repeat reason for same-topic, shared ranked items, or banned title
-    hook, else None."""
+    hook, else None. `recent` is the full-window list for the topic gate;
+    `item_recent` (defaults to `recent`) is the last-30 list for the
+    shared-items gate, so common animals don't false-positive across 110."""
     title = str(data.get("title", "")).casefold()
     for hook in BANNED_TITLE_HOOKS:
         if hook in title:
@@ -371,9 +497,10 @@ def similarity_reason(data: dict, slots: dict, recent: list[dict]):
     if str(slots.get("topic", "")).casefold() in {
             str(h.get("topic", "")).casefold() for h in recent}:
         return f"topic '{slots.get('topic')}' already used"
+    scope = item_recent if item_recent is not None else recent
     new_items = {str(i).strip().casefold()
                  for i in (data.get("items") or []) if str(i).strip()}
-    for h in recent:
+    for h in scope:
         old_items = {str(i).strip().casefold()
                      for i in (h.get("items") or []) if str(i).strip()}
         if new_items and old_items and len(new_items & old_items) >= 2:
@@ -386,31 +513,6 @@ def history_fields(slots: dict, meta: dict) -> dict:
     return {"topic": slots.get("topic", ""),
             "topicSource": slots.get("topic_source", "pool"),
             "items": list(meta.get("items", [])[:10])}
-
-
-def beat_anchor(beats: list[dict]) -> str:
-    """Ranking stills are standalone subjects — no continuity anchor."""
-    return ""
-
-
-def image_prompt(beat_text: str, query: str, anchor: str = "") -> str:
-    """One vibrant subject photo for a countdown beat (CF fallback)."""
-    core = C._clean_beat_text(beat_text, limit=700)
-    return (
-        "Create one single vertical 9:16 vibrant cinematic wildlife/nature "
-        "photograph for this exact countdown beat. Show one clear subject only: "
-        "the main animal, object, or place, the visible action, and the location. "
-        "Use the visual search cue as the scene anchor. "
-        "Make the subject obvious at a glance, with realistic anatomy, natural "
-        "daylight or golden-hour lighting, strong foreground subject, and a "
-        "readable silhouette. Do not illustrate abstract words literally. "
-        "No collage, no split screen, no multiple scenes, no text, no subtitles, "
-        "no watermark, no logo, no horror styling, no blood. "
-        f"Narration beat: {core} "
-        f"Visual search cue: {query[:180]}. "
-        "Sharp focus, vivid natural colors, photorealistic, "
-        "vertical composition, subject centered for a YouTube Short."
-    )
 
 
 # Leaderboard geometry (1080x1920 canvas).

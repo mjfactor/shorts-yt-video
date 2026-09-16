@@ -25,12 +25,16 @@ jobs:
       TTS_VOLUME: ${{ vars.TTS_VOLUME || '+0%' }}
       TTS_ENGINE: ${{ vars.TTS_ENGINE || 'gemini' }}
       GEMINI_TTS_VOICES: ${{ vars.GEMINI_TTS_VOICES || 'Charon' }}
-      GEMINI_TTS_STYLE: ${{ vars.GEMINI_TTS_STYLE || '' }}
+      GEMINI_TTS_STYLE: ${{ vars.GEMINI_TTS_STYLE }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
       GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
       GEMINI_API_KEY_4: ${{ secrets.GEMINI_API_KEY_4 }}
+      GEMINI_TIMEOUT: ${{ vars.GEMINI_TIMEOUT || '40' }}
+      GEMINI_TTS_TIMEOUT: ${{ vars.GEMINI_TTS_TIMEOUT || '90' }}
+      GEMINI_TRIES: ${{ vars.GEMINI_TRIES || '2' }}
+      GEMINI_BACKOFF: ${{ vars.GEMINI_BACKOFF || '5' }}
       AI_TOPICS: ${{ vars.AI_TOPICS || 'on' }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
@@ -39,8 +43,6 @@ jobs:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
       BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
       BUFFER_TIKTOK_CHANNEL_ID: ${{ secrets.BUFFER_TIKTOK_CHANNEL_ID }}
       CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
