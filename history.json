@@ -506,5 +506,30 @@
       "Brown Bear",
       "Polar Bear"
     ]
+  },
+  {
+    "date": "2026-09-16_162522",
+    "title": "5 Largest Snakes on Earth 🐍",
+    "niche": "ranking",
+    "tags": [
+      "largest snakes",
+      "green anaconda",
+      "reticulated python",
+      "burmese python",
+      "giant reptiles"
+    ],
+    "narration": "Some slithering giants can grow as long as a city bus, but the heaviest monster of them all silently rules the Amazon river. At number 5... the Amethystine Python. Native to tropical Australia, this sleek hunter can stretch over 16 feet long. It gets its colorful name from shiny scales that glisten like jewels in the sunlight. At number 4... the African Rock Python. Ranking as Africa's largest snake, it regularly grows nearly 20 feet long. This fierce constrictor can easily overpower heavy prey like antelopes and young crocodiles. At number 3... the Burmese Python. These powerful constrictors often grow over 18 feet long and weigh nearly 200 pounds. Deep in the Florida Everglades, they are now active invasive apex predators. At number 2... the Reticulated Python. Holding the official record as the longest snake on Earth, it can stretch over 20 feet long. Its complex skin patterns allow it to blend seamlessly into rainforest trees. And at number 1... the Green Anaconda. Tipping the scales at over 500 pounds, this rainforest titan is easily the heaviest snake on Earth. It spends most of its daily life lurking beneath murky tropical rivers. Which of these giant slithering snakes frightens you the most, and how would you rank them?",
+    "bed": "bgm5.mp3",
+    "videoId": "eIOhjQ5BDj4",
+    "tiktokBufferPostId": "6aaac62985eb6b8fcc2bc2b1",
+    "topic": "largest snakes in the world",
+    "topicSource": "ai",
+    "items": [
+      "Amethystine Python",
+      "African Rock Python",
+      "Burmese Python",
+      "Reticulated Python",
+      "Green Anaconda"
+    ]
   }
 ]
