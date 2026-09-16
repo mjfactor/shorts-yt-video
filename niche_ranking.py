@@ -388,31 +388,6 @@ def history_fields(slots: dict, meta: dict) -> dict:
             "items": list(meta.get("items", [])[:10])}
 
 
-def beat_anchor(beats: list[dict]) -> str:
-    """Ranking stills are standalone subjects — no continuity anchor."""
-    return ""
-
-
-def image_prompt(beat_text: str, query: str, anchor: str = "") -> str:
-    """One vibrant subject photo for a countdown beat (CF fallback)."""
-    core = C._clean_beat_text(beat_text, limit=700)
-    return (
-        "Create one single vertical 9:16 vibrant cinematic wildlife/nature "
-        "photograph for this exact countdown beat. Show one clear subject only: "
-        "the main animal, object, or place, the visible action, and the location. "
-        "Use the visual search cue as the scene anchor. "
-        "Make the subject obvious at a glance, with realistic anatomy, natural "
-        "daylight or golden-hour lighting, strong foreground subject, and a "
-        "readable silhouette. Do not illustrate abstract words literally. "
-        "No collage, no split screen, no multiple scenes, no text, no subtitles, "
-        "no watermark, no logo, no horror styling, no blood. "
-        f"Narration beat: {core} "
-        f"Visual search cue: {query[:180]}. "
-        "Sharp focus, vivid natural colors, photorealistic, "
-        "vertical composition, subject centered for a YouTube Short."
-    )
-
-
 # Leaderboard geometry (1080x1920 canvas).
 _BOARD_X = 60
 _BOARD_Y = 710

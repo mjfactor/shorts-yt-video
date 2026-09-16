@@ -82,19 +82,13 @@ the on-screen banner sanitizer strips any emoji that slips through. Fallback run
 
 Gemini splits each countdown into 7 beats (hook, #5–#1, closer). Per beat,
 in video order: **Pexels clip** searched with the beat's OWN query — literal
-matches (`lion walking savanna` for the lion entry), no mood forcing — then
-**Cloudflare Workers AI still** fallback (bright subject photo style) →
-**title card** with the beat's text. A persistent leaderboard (slots 1–5,
+matches (`lion walking savanna` for the lion entry), no mood forcing — else
+a **title card** with the beat's text (stock-footage-or-text-card only, no AI
+imagery). A persistent leaderboard (slots 1–5,
 left side) fills in with each item's name the moment its rank is revealed —
 current rank highlighted red — burned at the final mux via timed FFmpeg
-`drawtext`, so entries populate exactly in sync with the narration. Stills get a **Ken Burns slow zoom**
-(alternating in/out) so they feel like motion. Screen time is weighted by
-beat word count.
-
-Cloudflare setup (fallback only): free account at dash.cloudflare.com
-(email only, no card) → copy Account ID (dashboard sidebar) → My Profile →
-API Tokens → create token with the Workers AI template → secrets
-`CF_ACCOUNT_ID` + `CF_API_TOKEN`.
+`drawtext`, so entries populate exactly in sync with the narration. Screen time
+is weighted by beat word count.
 
 ## Captions + music
 

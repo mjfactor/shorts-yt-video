@@ -25,7 +25,7 @@ Output `out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
 - `concurrency.group: shorts-single`, `cancel-in-progress: false`; `permissions.contents: write` — each run commits `history.json` back, so runs must stay serial
 - Commit-back: `git add history.json` + `chore: record short history [skip ci]` + push (no-op when unchanged). Triggers are schedule/dispatch only, so the push never loops
 - Artifacts: `out/*.json` on `always()` 90d; `out/*.mp4`+`*.mp3`+`*.srt` on `failure()` only 3d (YouTube is permanent storage)
-- New env vars must be wired through workflow `env:` — secrets/vars do not flow automatically. Unset there (code defaults win): `GEMINI_MODELS`, `GEMINI_TTS_MODELS`, `MIN/MAX_AUDIO_SEC`, `CF_IMAGE_MODEL`, `CF_NUM_STEPS`, `STILLS_PER_BEAT`. `TTS_*`/`VISIBILITY`/`GEMINI_TTS_VOICES`/`GEMINI_TTS_STYLE` come from `vars.*`, the rest from `secrets.*`
+- New env vars must be wired through workflow `env:` — secrets/vars do not flow automatically. Unset there (code defaults win): `GEMINI_MODELS`, `GEMINI_TTS_MODELS`, `MIN/MAX_AUDIO_SEC`, `STILLS_PER_BEAT`. `TTS_*`/`VISIBILITY`/`GEMINI_TTS_VOICES`/`GEMINI_TTS_STYLE` come from `vars.*`, the rest from `secrets.*`
 - `run()` calls `gen_audio()` without `topic`, so `pick_tts_style()` is dead code — Gemini TTS always uses `GEMINI_TTS_STYLE`
 - Workflow defaults `GEMINI_TTS_STYLE` to `''` when the var is unset, overriding the code default with no style direction in CI
 
@@ -34,7 +34,7 @@ Output `out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
 - Required for the YouTube path: `GEMINI_API_KEY` (+ optional `GEMINI_API_KEY_2..4` failover — `_fetch_gemini` sticks with the working key, fails over on 429/4xx; 2 keys failing with only 5xx/timeout trips a circuit breaker that skips the rest (endpoint down, not quota); also accepts comma-separated keys), `PEXELS_API_KEY`, `YT_CLIENT_ID`/`YT_CLIENT_SECRET`/`YT_REFRESH_TOKEN`
 - `VISIBILITY` default `private` — keep until the OAuth app passes YouTube audit
 - `GEMINI_MODELS` tried in order, first win; same pattern for `GEMINI_TTS_MODELS`
-- `MIN_AUDIO_SEC=10`/`MAX_AUDIO_SEC=180`; `CF_IMAGE_MODEL` default `@cf/bytedance/stable-diffusion-xl-lightning`; `CF_NUM_STEPS` default 8; `STILLS_PER_BEAT` default 2
+- `MIN_AUDIO_SEC=10`/`MAX_AUDIO_SEC=180`; `STILLS_PER_BEAT` default 2 (cuts per beat for mid-beat stock seeks + card splits)
 - `VOICE` (`en-US-ChristopherNeural`) hardcoded in `core.py`; only `TTS_RATE` (`-5%`) / `TTS_PITCH` (`-10Hz`) / `TTS_VOLUME` (`+0%`) are env-tunable. No custom SSML (Microsoft rejects non-Edge SSML) — voice/punctuation are the expressiveness levers
 - `TTS_ENGINE=gemini` default chain `gemini` → `edge`. `edge` = edge-tts only, word-level SRT. Gemini = per-beat synth, voices alternate per `GEMINI_TTS_VOICES` (one = single narrator, two = man/woman), beat-level SRT (audio-only, no word timings)
 - `OPENROUTER_API_KEY` is wired but reserved — no engine reads it; do not remove
@@ -45,7 +45,7 @@ Output `out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
 ## Graceful degradation (do not break)
 
 - No Gemini key/fail → offline fallback script (~200 words, largest-animals countdown). `_validate_script` raises `ValueError` on bad output; `items` passes through via `validate_extra`
-- No CF creds → `cloudflare_image` returns `None` → `beat_card`. `pexels_clip` returns `None` on no key/fail (warn; partial downloads deleted)
+- Beats with no Pexels match render a Pillow `beat_card` (warn; the only visual fallback — no AI imagery). `pexels_clip` returns `None` on no key/fail (warn; partial downloads deleted)
 - No YouTube creds → skip upload, keep video in `out/`
 - TTS: missing keys skip with warn; any engine failure warns and falls back to edge for the whole narration. Fail-fast on first bad beat — never per-beat retries. `gen_audio()` returns `(mp3, srt, beat_durations|None)`; `run()` rescales measured durations to the muxed total, else word-count weighting
 - `notify_failure()` never raises (keep every send wrapped in try). `make_bed()` fallback is pool → generated drone only — don't add raising paths
@@ -56,8 +56,8 @@ Output `out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
 
 - edge-tts needs `--flag=value` form (`f"--rate={TTS_RATE}"`) — values like `-10%` misparse as new flags when passed as separate args
 - Beats: `meta["beats"]=[{text,query,label}]`, 7 in order (hook, #5–#1, closer); validator caps at 8. `label` is rank digit `"5"`–`"1"` or `""` (digits only). Joined texts == narration (~200–220 words)
-- Visuals per beat in order: Pexels clip (beat's OWN query, literal match, `USE_MOOD=False`; `portrait`, smallest file ≥`PEXELS_MIN_WIDTH` (default 1080p, 1:1 with canvas), cached `assets/pexels_*.mp4`, per-run `used` set skips repeats; 2nd-half cuts seek via `_stock_offset` with `-stream_loop` guard) → Cloudflare still → Pillow `beat_card`. `MOOD_WORDS`/`_mood_query`/`AMBIENT_QUERIES` are dead horror remnants for this niche — do not pass `mood=True`
-- CF prompt is `niche_ranking.image_prompt` (daylight subject photo + cleaned half-beat text; `_split_beat` gives mid-beat cuts different moments, `_clean_beat_text` strips CTA filler). Stills get Ken Burns zoom. Screen time is word-count weighted per beat, split evenly across its cuts. Known conflict: shared CF `negative_prompt` bans `daytime, sunlight, cheerful colors` (`core.py`) while the niche prompt asks for `natural daylight or golden-hour` — check both sides before touching either
+- Visuals per beat in order: Pexels clip (beat's OWN query, literal match, `USE_MOOD=False`; `portrait`, smallest file ≥`PEXELS_MIN_WIDTH` (default 1080p, 1:1 with canvas), cached `assets/pexels_*.mp4`, per-run `used` set skips repeats; 2nd-half cuts seek via `_stock_offset` with `-stream_loop` guard) → Pillow `beat_card`. `MOOD_WORDS`/`_mood_query`/`AMBIENT_QUERIES` are dead horror remnants for this niche — do not pass `mood=True`
+- `_split_beat` gives mid-beat cuts different moments (stock seeks + card text splits). Screen time is word-count weighted per beat, split evenly across its cuts
 - Leaderboard (`niche_ranking.board_filter`) applies at the FINAL mux only (per-segment clocks restart at 0): dim `N.` slots always on, white `N. Name` fill from reveal to end, red highlight during the beat (`enable='between(t,a,b)'`). Needs a font (`_RANK_FONTS`: DejaVu Bold on CI, Arial Bold locally) + `drawtext`, else skipped with `::warning::`; mux falls back to no-board render on drawtext error. Names are ASCII-sanitized, auto-shrunk 66px→40px min, filter-escaped (single-font drawtext has no emoji)
 - Captions: `_srt_to_ass` → ASS (`Alignment=8`, `FontSize=34`, `MarginV=320` — tiny, top-anchored just below the title, above the leaderboard). Burn with plain `subtitles='...'` and NO `force_style` (commas silently yield zero pixels on some builds). Mux falls back to no-subs render with `::warning::`
 - `check_audio_duration()` aborts before render if outside MIN–MAX. Bed = looped `bgm*.mp3` pool at volume 0.20 (repo root wins for CI, `assets/` local fallback, random pick) else generated drone

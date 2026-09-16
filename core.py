@@ -15,8 +15,6 @@ A niche module must provide (see niche_ranking.py for the reference):
     USE_BEAT_QUERY        bool (True: Pexels searches the beat's own query)
     AMBIENT_QUERIES       tuple (used when USE_BEAT_QUERY is False)
     USE_MOOD              bool (force horror mood on Pexels queries)
-    beat_anchor(beats)    -> str (CF still continuity anchor, "" if none)
-    image_prompt(beat_text, query, anchor) -> str (CF fallback prompt)
     history_fields(slots, meta) -> dict (extra history.json entry fields)
     board_filter(beats, items, durations, get_font, has_drawtext, title="") -> str
 
@@ -995,26 +993,10 @@ def beat_card(i: int, text: str) -> Path:
     return p
 
 
-# Optional: Cloudflare Workers AI (free 10k neurons/day, no card) fallback
-# when Pexels has no stock. Account ID + API token with Workers AI
-# permission. Without them, this step is skipped silently.
-CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
-CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
-# SDXL-Lightning: listed at $0.00/step (Beta) + native portrait size, so it
-# beats FLUX on cost. Override back to FLUX if you ever want it:
-# "@cf/black-forest-labs/flux-1-schnell".
-CF_IMAGE_MODEL = os.getenv(
-    "CF_IMAGE_MODEL", "@cf/bytedance/stable-diffusion-xl-lightning")
-# More steps = better prompt adherence (exact moment/action), but each step
-# burns Workers AI neurons out of the 10k/day free allowance. Lightning is a
-# distilled few-step model: below ~8 steps it ignores prompt detail and falls
-# back to generic horror frames; FLUX-schnell adheres better at the same cost
-# in neurons, so prefer switching models over cranking steps past ~20.
-CF_NUM_STEPS = int(os.getenv("CF_NUM_STEPS", "8"))
-# Cuts per beat: 2 stills per beat ≈ 14-16 images/video, cutting mid-beat like
-# real Shorts pacing (~4-7s per still) instead of one static slideshow frame
-# per beat. 1 = old behavior (one still per beat). Costs 2x Cloudflare calls
-# per run — inside the free allowance, which hard-stops instead of billing.
+# Cuts per beat: 2 cuts per beat ≈ 14 clips/video, cutting mid-beat like
+# real Shorts pacing (~4-7s per cut) instead of one static slideshow frame
+# per beat. 1 = old behavior (one clip per beat). Second-half cuts seek into
+# different stock footage (see _stock_offset).
 STILLS_PER_BEAT = int(os.getenv("STILLS_PER_BEAT", "2"))
 
 
@@ -1041,95 +1023,19 @@ def _stock_offset(stock: Path, part_idx: int, parts: int):
     return max(0.0, dur * part_idx / parts)
 
 
-# CTA filler that pollutes image prompts when fed to the model literally
-# ("follow...", "part 2 tomorrow") — the model draws marketing, not story.
-CTA_MARKERS = ("follow", "subscribe", "part 2", "part two", "tomorrow",
-               "don't miss", "dont miss", "comment", "like and")
-
-
-def _clean_beat_text(beat_text: str, limit: int = 350) -> str:
-    """Strip CTA/filler sentences so the image model draws the story beat."""
-    kept = []
-    for sent in beat_text.replace("!", ".").replace("?", ".").split("."):
-        s = sent.strip()
-        if not s:
-            continue
-        if any(m in s.lower() for m in CTA_MARKERS):
-            continue
-        kept.append(s)
-    text = ". ".join(kept).strip()
-    return text[:limit].rstrip() or beat_text[:limit].rstrip()
-
-
-def cloudflare_image(beat_text: str, query: str, i: int, anchor: str,
-                     make_prompt):
-    """Literal still via Workers AI free allowance (no card, no watermark).
-
-    Default model SDXL-Lightning is listed at $0.00/step and takes native
-    1080x1920, so cost is ~zero and no crop is needed. Free plan hard-stops
-    at the 10k neuron cap (no overage billing possible). Returns None when
-    creds are unset; raises on failure for the next fallback.
-    """
-    if not (CF_ACCOUNT_ID and CF_API_TOKEN):
-        return None
-    prompt = make_prompt(beat_text, query, anchor)
-    seed = random.randint(1, 999999)
-    dest = ASSETS / f"cf_beat_{i}_{seed}.jpg"
-
-    def _do():
-        r = requests.post(
-            f"https://api.cloudflare.com/client/v4/accounts/"
-            f"{CF_ACCOUNT_ID}/ai/run/{CF_IMAGE_MODEL}",
-            headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
-            json={"prompt": prompt, "seed": seed, "width": W, "height": H,
-                  "num_steps": CF_NUM_STEPS,
-                  "negative_prompt": (
-                      "blurry, low quality, bad anatomy, extra limbs, duplicate person, "
-                      "collage, split screen, multiple scenes, text, subtitles, watermark, "
-                      "logo, daytime, sunlight, cheerful colors")},
-            timeout=180)
-        r.raise_for_status()
-        ct = r.headers.get("content-type", "")
-        if ct.startswith("image/"):
-            raw = r.content  # SDXL models return raw PNG bytes
-        else:  # FLUX-style JSON envelope with base64
-            try:
-                body = r.json()
-            except Exception:
-                raise ValueError(f"Cloudflare returned undecodable body ({ct})")
-            if not isinstance(body, dict):
-                raise ValueError(f"Cloudflare returned unexpected JSON ({ct})")
-            if not body.get("success", False):
-                raise ValueError(f"Cloudflare error: {body.get('errors')}")
-            b64 = (body.get("result") or {}).get("image", "")
-            if not b64:
-                raise ValueError("Cloudflare returned no image")
-            raw = base64.b64decode(b64)
-        if len(raw) < 10_000:
-            raise ValueError(f"Cloudflare image too small ({len(raw)}b)")
-        dest.write_bytes(raw)
-        return dest
-    dest = retry("Cloudflare image", _do, tries=2, backoff=10)
-    log(f"Beat {i + 1}: CF still generated ({dest.stat().st_size // 1024} KB).")
-    return dest
-
-
 def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
-    """Per beat: STILLS_PER_BEAT cuts (Pexels stock -> CF still -> card).
+    """Per beat: STILLS_PER_BEAT cuts (Pexels stock -> card).
 
     The niche decides the stock policy: ranking searches each beat's OWN
     query (literal item match); horror uses ambient B-roll from
     niche.AMBIENT_QUERIES, deliberately not story-matched. Returns
     [(clip, seek_or_None, beat_idx)]: stock fallbacks seek into different
     footage per half; durations stay per-beat and are split at render time.
+    Beats with no stock render a Pillow title card with the beat's text.
     """
     clips = []
     used_pexels: set = set()
     use_beat = niche.USE_BEAT_QUERY
-    # Continuity anchor from the opening beat so CF fallback stills share one
-    # protagonist/setting instead of each inventing its own (horror only;
-    # ranking stills are standalone subjects).
-    anchor = niche.beat_anchor(beats)
     still_n = 0
     for i, b in enumerate(beats):
         parts = _split_beat(b["text"], STILLS_PER_BEAT)
@@ -1140,12 +1046,6 @@ def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
             stock = pexels_clip(query, used_pexels, mood=niche.USE_MOOD)
             if stock is not None:
                 clip, seek = stock, _stock_offset(stock, j, len(parts))
-            if clip is None:
-                try:
-                    clip = cloudflare_image(part, query, still_n, anchor,
-                                            niche.image_prompt)
-                except Exception as e:
-                    warn(f"Beat {i + 1}.{j + 1} Cloudflare fallback failed ({e}).")
             if clip is None:
                 warn(f"Beat {i + 1}.{j + 1} ('{query}'): no stock, using title card.")
                 clip = beat_card(still_n, part)
@@ -1158,7 +1058,7 @@ def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
 # Glob patterns for per-run FFmpeg intermediates. The pexels_*.mp4 cache
 # is intentionally NOT listed: re-downloads waste time/bandwidth on re-runs.
 INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png",
-                         "cf_*.jpg", "bed.mp3", "concat.txt", "video_only.mp4",
+                         "bed.mp3", "concat.txt", "video_only.mp4",
                          "tts_*")
 
 
@@ -1636,9 +1536,7 @@ def run(niche):
         tts_desc = f"edge(voice={VOICE})"
     log(f"Config: mode={niche.MODE} tts={tts_desc} rate={TTS_RATE} pitch={TTS_PITCH} niche='{niche.NICHE_LABEL}' visibility={VISIBILITY} "
         f"min/max={MIN_AUDIO_SEC:g}/{MAX_AUDIO_SEC:g}s models={GEMINI_MODELS} "
-        f"cf_model={CF_IMAGE_MODEL} "
         f"keys: gemini_keys={len(GEMINI_KEYS)} pexels={bool(PEXELS_KEY)} "
-        f"cf={bool(CF_ACCOUNT_ID and CF_API_TOKEN)} "
         f"yt={(bool(os.getenv('YT_CLIENT_ID')) and bool(os.getenv('YT_CLIENT_SECRET')) and bool(os.getenv('YT_REFRESH_TOKEN')))} "
         f"buffer={bool(BUFFER_API_KEY)}")  # key presence only, never the key itself
     meta, slots = gen_script(niche)
