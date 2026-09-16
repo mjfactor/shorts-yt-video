@@ -1095,23 +1095,25 @@ def pexels_clip(query: str, used: set | None = None, mood: bool = True):
     return dest
 
 
-def _best_photo(query: str, used: set | None = None):
-    """Best literal-match stock photo for one query (read-only on `used`).
+def _best_photos(query: str, used: set | None = None, n: int = 1):
+    """Top-N literal-match stock photos for one query (read-only on `used`).
 
-    Returns (dest|None, score, commit_key|None). `used` is only checked,
-    never mutated — the caller commits the winner's f"photo_{id}" key so a
-    losing candidate never burns its id. Score = 2*alt_hits + url_hits
-    (alt is more descriptive, hence double weight); callers compare it
-    against video raw_score*2. Score 0 when nothing meets the gate.
+    Returns [(dest, score, commit_key)] sorted score desc, then area desc,
+    then aspect-near-9:16 — distinct ids passing the accuracy gate
+    (score >= min(2, len(words)), width >= PEXELS_MIN_WIDTH, has original),
+    skipping ids already in `used` and dupes within this call. `used` is
+    only checked, never mutated; the caller commits the winners' keys.
+    One photo search per query variant (max 3), collecting top-N from the
+    same pages — no extra per-photo API calls. Downloads+caches each hit
+    (assets/pexels_{id}.jpg); a failed download warns, deletes the partial,
+    and skips to the next candidate.
     """
-    if not PEXELS_KEY:
-        return None, 0, None
+    if n <= 0 or not PEXELS_KEY:
+        return []
     try:
         words = _query_words(query)
         threshold = min(2, len(words)) if len(words) > 1 else 1
-        best_photo = None
-        best_score = -1
-        best_rank = None
+        pool: dict = {}
         for variant in _query_variants(query):
             def _search(variant=variant):
                 r = requests.get(
@@ -1127,6 +1129,8 @@ def _best_photo(query: str, used: set | None = None):
             r = retry("Pexels photo search", _search, tries=3, backoff=5)
             for p in r.json().get("photos", []):
                 pid = p.get("id")
+                if pid in pool:
+                    continue
                 if used is not None and f"photo_{pid}" in used:
                     continue
                 alt = p.get("alt", "")
@@ -1149,32 +1153,46 @@ def _best_photo(query: str, used: set | None = None):
                 else:
                     rank = 1.0
                 area = (w or 0) * (h or 0)
-                key = (score, area, -rank)
-                if best_rank is None or key > best_rank:
-                    best_rank = key
-                    best_score = score
-                    best_photo = p
-            if best_photo is not None and best_score >= threshold:
-                break  # most specific variant already met the gate
-        if best_photo is None:
-            return None, 0, None
-        dest = ASSETS / f"pexels_{best_photo['id']}.jpg"
-        if not dest.exists():
-            def _download(url=best_photo["src"]["original"], dest=dest):
-                with requests.get(url, stream=True, timeout=120) as d:
-                    d.raise_for_status()
-                    with open(dest, "wb") as f:
-                        shutil.copyfileobj(d.raw, f)
-            try:
-                retry("Pexels photo download", _download, tries=2, backoff=5)
-            except Exception:
-                if dest.exists():
-                    dest.unlink()  # never keep a partial file
-                raise
-        return dest, best_score, f"photo_{best_photo['id']}"
+                pool[pid] = (p, score, area, rank)
+            if len(pool) >= n:
+                break  # most specific variant(s) already filled the set
+        if not pool:
+            return []
+        ranked = sorted(pool.values(), key=lambda t: (-t[1], -t[2], t[3]))
+        out = []
+        for (p, score, _area, _rank) in ranked[:max(1, n)]:
+            dest = ASSETS / f"pexels_{p['id']}.jpg"
+            if not dest.exists():
+                def _download(url=p["src"]["original"], dest=dest):
+                    with requests.get(url, stream=True, timeout=120) as d:
+                        d.raise_for_status()
+                        with open(dest, "wb") as f:
+                            shutil.copyfileobj(d.raw, f)
+                try:
+                    retry("Pexels photo download", _download, tries=2, backoff=5)
+                except Exception as e:
+                    if dest.exists():
+                        dest.unlink()  # never keep a partial file
+                    warn(f"Pexels photo download failed for '{query}' ({e}).")
+                    continue
+            out.append((dest, score, f"photo_{p['id']}"))
+        return out
     except Exception as e:
         warn(f"Pexels photo failed for '{query}' ({e}).")
-    return None, 0, None
+    return []
+
+
+def _best_photo(query: str, used: set | None = None):
+    """Best literal-match stock photo for one query (read-only on `used`).
+
+    Returns (dest|None, score, commit_key|None). `used` is only checked,
+    never mutated — the caller commits the winner's f"photo_{id}" key so a
+    losing candidate never burns its id. Score = 2*alt_hits + url_hits
+    (alt is more descriptive, hence double weight); callers compare it
+    against video raw_score*2. Score 0 when nothing meets the gate.
+    """
+    res = _best_photos(query, used, 1)
+    return res[0] if res else (None, 0, None)
 
 
 def pexels_photo(query: str, used: set | None = None):
@@ -1203,11 +1221,11 @@ def beat_card(i: int, text: str) -> Path:
     return p
 
 
-# Cuts per beat: 2 cuts per beat ≈ 14 clips/video, cutting mid-beat like
+# Cuts per beat: 3 cuts per beat ≈ 21 clips/video, cutting mid-beat like
 # real Shorts pacing (~4-7s per cut) instead of one static slideshow frame
 # per beat. 1 = old behavior (one clip per beat). Second-half cuts seek into
 # different stock footage (see _stock_offset).
-STILLS_PER_BEAT = int(os.getenv("STILLS_PER_BEAT", "2"))
+STILLS_PER_BEAT = int(os.getenv("STILLS_PER_BEAT", "3"))
 
 
 def _split_beat(text: str, n: int) -> list[str]:
@@ -1234,18 +1252,19 @@ def _stock_offset(stock: Path, part_idx: int, parts: int):
 
 
 def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
-    """Per beat: STILLS_PER_BEAT cuts (Pexels video vs photo -> card).
+    """Per beat: STILLS_PER_BEAT cuts (Pexels video vs photos -> card).
 
     The niche decides the stock policy: ranking searches each beat's OWN
     query (literal item match); horror uses ambient B-roll from
     niche.AMBIENT_QUERIES, deliberately not story-matched. Returns
-    [(clip, seek_or_None, beat_idx)]: ONE clip is resolved per beat and
-    reused across its cuts (2nd-half cuts seek via _stock_offset; photos
-    get seek None and Ken Burns at render). Video and photo compete head
-    to head on normalized accuracy (video raw slug score * 2 vs photo
-    2*alt + url); higher wins, ties go to video (motion preferred), both
-    missing renders a Pillow title card. Durations stay per-beat and are
-    split at render time.
+    [(clip, seek_or_None, beat_idx)]. Video and photos compete head to
+    head at beat level on normalized accuracy (video raw slug score * 2
+    vs best-photo 2*alt + url); higher wins, ties go to video (motion
+    preferred). A video win reuses ONE clip across the beat's cuts (later
+    cuts seek via _stock_offset for continuity); a photo win emits one
+    DISTINCT photo per cut (cycling plist[0] only when Pexels returned
+    fewer than parts), each Ken Burns'd at render. Both missing renders
+    Pillow title cards. Durations stay per-beat, split at render time.
     """
     clips = []
     used_pexels: set = set()
@@ -1256,30 +1275,31 @@ def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
         parts = _split_beat(b["text"], STILLS_PER_BEAT)
         query = (b.get("query", "") if use_beat
                  else random.choice(niche.AMBIENT_QUERIES))
-        # _best_* only read `used`; the winner's key is committed below so
-        # the loser never burns its id for later beats.
+        # _best_* only read `used`; the winner's key(s) are committed below
+        # so losers never burn their ids for later beats.
         vpath, vraw, vkey = _best_video(query, used_pexels, mood=niche.USE_MOOD)
-        ppath, praw, pkey = _best_photo(query, used_pexels)
+        plist = _best_photos(query, used_pexels, len(parts))
         vnorm = vraw * 2
-        stock, is_photo, kind = None, False, "card"
-        if vpath is not None and (ppath is None or vnorm >= praw):
-            stock, is_photo, kind = vpath, False, "video"
+        pbest = plist[0][1] if plist else 0
+        vclip, photolist, kind = None, [], "card"
+        if plist and (vpath is None or pbest > vnorm):
+            photolist, kind = plist, f"{len(parts)}xphoto"
+            for (_, _, k) in plist:
+                used_pexels.add(k)
+            n_photo += len(parts)
+        elif vpath is not None:
+            vclip, kind = vpath, "video"
             used_pexels.add(vkey)
-            n_video += 1
-        elif ppath is not None:
-            stock, is_photo, kind = ppath, True, "photo"
-            used_pexels.add(pkey)
-            n_photo += 1
+            n_video += len(parts)
         else:
-            n_card += 1
-        log(f"Beat {i + 1} ('{query}'): {kind} (vscore={vnorm}, pscore={praw}).")
+            n_card += len(parts)
+        log(f"Beat {i + 1} ('{query}'): {kind} (vscore={vnorm}, pscore={pbest}).")
         for j, part in enumerate(parts):
             clip, seek = None, None
-            if stock is not None:
-                if is_photo:
-                    clip, seek = stock, None
-                else:
-                    clip, seek = stock, _stock_offset(stock, j, len(parts))
+            if vclip is not None:
+                clip, seek = vclip, _stock_offset(vclip, j, len(parts))
+            elif photolist:
+                clip, seek = photolist[j][0] if j < len(photolist) else photolist[0][0], None
             if clip is None:
                 warn(f"Beat {i + 1}.{j + 1} ('{query}'): no stock, using title card.")
                 clip = beat_card(still_n, part)
