@@ -92,17 +92,27 @@ GEMINI_TTS_MODELS = [m.strip() for m in
                      os.getenv("GEMINI_TTS_MODELS",
                                "gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts").split(",")
                      if m.strip()]
-# One voice = classic single narrator; two = man/woman alternation per beat
-# (e.g. "Charon,Kore"). 30 prebuilt voices, see AI Studio voice library.
+# One voice per run, alternating between runs (default pool "Charon,Kore":
+# even history count -> Charon, odd -> Kore; a single configured voice
+# disables alternation). 30 prebuilt voices, see AI Studio library.
 GEMINI_TTS_VOICES = ([v.strip() for v in
-                      os.getenv("GEMINI_TTS_VOICES", "Charon").split(",")
-                      if v.strip()] or ["Charon"])
+                      os.getenv("GEMINI_TTS_VOICES", "Charon,Kore").split(",")
+                      if v.strip()] or ["Charon", "Kore"])
 DEFAULT_GEMINI_TTS_STYLE = (
-    "Read in a premium, cinematic documentary voice with confident pacing, "
-    "subtle drama, and a sense of wonder. Clear, polished, and authoritative, "
-    "with strong emphasis on reveal moments."
+    "Read in a single energetic countdown-narrator voice with clear pacing, "
+    "confident delivery, and lively momentum. Polished and engaging, "
+    "with strong emphasis on each reveal."
 )
-GEMINI_TTS_STYLE = os.getenv("GEMINI_TTS_STYLE", DEFAULT_GEMINI_TTS_STYLE)
+# Opening hook (beat 0) gets extra punch: the first 2 seconds decide retention.
+GEMINI_TTS_HOOK_PREFIX = (
+    "For this opening hook only, deliver with super-energetic, bright, "
+    "attention-grabbing punch, as if the first two seconds decide whether "
+    "the viewer stays. "
+)
+# Empty/whitespace env counts as unset so a CI empty string never kills direction.
+GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE") or "").strip() or DEFAULT_GEMINI_TTS_STYLE
+# Single voice selected for this run by pick_run_voice() (None = not yet picked).
+RUN_VOICE: str | None = None
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -481,16 +491,42 @@ def _gen_audio_edge(narration: str, mp3: Path, srt: Path):
           tries=3, backoff=10)
 
 
-def _gemini_tts_beat(text: str, voice: str, topic: str = "") -> tuple[bytes, int]:
+def pick_run_voice(history_len: int | None, stamp: str = "") -> tuple[str, str]:
+    """One voice for the whole run, alternating between runs.
+
+    Pool is GEMINI_TTS_VOICES (default Charon,Kore). A single configured
+    voice disables alternation. Otherwise deterministic: history entry count
+    parity (even -> pool[0], odd -> pool[1]); when history is unavailable
+    (None), fall back to the stamp's day-of-month parity. Returns
+    (voice, reason) so run() can log why this voice was picked.
+    """
+    pool = GEMINI_TTS_VOICES or ["Charon", "Kore"]
+    if len(pool) == 1:
+        return pool[0], "single voice configured (no alternation)"
+    if history_len is not None:
+        return pool[history_len % len(pool)], f"history parity (entries={history_len})"
+    try:
+        day = int(stamp[8:10])
+    except (ValueError, IndexError):
+        day = datetime.datetime.now().day
+    return pool[day % len(pool)], "date-stamp day parity (history unavailable)"
+
+
+def _gemini_tts_beat(text: str, voice: str, topic: str = "",
+                     is_hook: bool = False) -> tuple[bytes, int]:
     """One beat of raw PCM audio via Gemini TTS. Returns (pcm, sample_rate).
 
     Tries GEMINI_TTS_MODELS in order; raises when all fail. The caller falls
     back to edge-tts for the WHOLE narration on any failure — per-beat
-    retries would multiply a total outage by the beat count.
+    retries would multiply a total outage by the beat count. Beat text is
+    always sent verbatim; only the delivery prefix varies (hook punch on
+    beat 0, base countdown style otherwise).
     """
     if not GEMINI_KEYS:
         raise ValueError("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it)")
-    prompt = f"{pick_tts_style(topic, text) if topic else GEMINI_TTS_STYLE} Say the following text:\n\n{text}"
+    base_style = pick_tts_style(topic, text) if topic else GEMINI_TTS_STYLE
+    prefix = GEMINI_TTS_HOOK_PREFIX if is_hook else ""
+    prompt = f"{prefix}{base_style} Say the following text:\n\n{text}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -556,9 +592,15 @@ def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
 
 
 def _gemini_synth(i: int, beat: dict, topic: str = ""):
-    """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure."""
-    voice = GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
-    pcm, rate = _gemini_tts_beat(beat["text"], voice, topic)
+    """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure.
+
+    Single voice per run (RUN_VOICE picked in run()); beat 0 gets the hook
+    delivery punch, beats 1-6 keep the base countdown style. Beat text is
+    verbatim; SRT/validation/fallback untouched.
+    """
+    voice = RUN_VOICE or (GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
+                          if GEMINI_TTS_VOICES else "Charon")
+    pcm, rate = _gemini_tts_beat(beat["text"], voice, topic, is_hook=(i == 0))
     raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
     seg = ASSETS / f"tts_beat_{i}.mp3"
     raw_pcm.write_bytes(pcm)
@@ -1420,8 +1462,17 @@ def buffer_tiktok_upload(video: Path, meta: dict):
 
 def run(niche):
     """One full Short for the given niche module. Entry point for pipeline.py."""
+    global RUN_VOICE
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem = OUT / f"{stamp}_short"
+    # Single voice for this run: strict alternation from the pool via history
+    # entry-count parity, date-stamp day parity when history is unavailable.
+    try:
+        _hist_len: int | None = len(load_history())
+    except Exception:
+        _hist_len = None
+    RUN_VOICE, _voice_why = pick_run_voice(_hist_len, stamp)
+    log(f"TTS run voice={RUN_VOICE} ({_voice_why}, pool={GEMINI_TTS_VOICES})")
     # Non-secret effective config so Actions logs show what actually ran.
     if TTS_ENGINE == "gemini":
         tts_desc = (f"gemini(models={GEMINI_TTS_MODELS},voices={GEMINI_TTS_VOICES})"
