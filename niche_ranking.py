@@ -426,8 +426,8 @@ _BOARD_MIN_FONT_SIZE = 40
 def _clean_board_text(name: str, limit: int = _BOARD_NAME_LEN) -> str:
     """Short ASCII-only board label (drawtext uses one font, no emoji)."""
     import re
-    normalized = (name or "").replace("—", " - ").replace("–", " - ")
-    keep = re.sub(r"[^A-Za-z0-9 .'&,!?()\-]", "", normalized)
+    normalized = (name or "").replace("—", " - ").replace("–", " - ").replace("'", "")
+    keep = re.sub(r"[^A-Za-z0-9 .&,!?()\-]", "", normalized)
     keep = re.sub(r"\s+", " ", keep).strip()
     if len(keep) <= limit:
         return keep
@@ -436,9 +436,15 @@ def _clean_board_text(name: str, limit: int = _BOARD_NAME_LEN) -> str:
 
 
 def _escape_drawtext(text: str) -> str:
-    """Escape a value for drawtext filter syntax (order matters)."""
+    """Escape a value for drawtext filter syntax (order matters).
+
+    A literal single quote inside text='...' must close the quote, add an
+    escaped quote, and reopen: ' -> '\\'' (e.g. Crime d'Amour ->
+    'Crime d'\\''Amour'). Plain \\' unbalances the quoting and splits the
+    filtergraph at the next comma (No such filter: '26.62').
+    """
     return (text.replace("\\", "\\\\").replace(":", "\\:")
-                 .replace(",", "\\,").replace("'", "\\'"))
+                 .replace(",", "\\,").replace("'", "'\\''"))
 
 
 def _board_font_size(text: str, font_path: str) -> int:

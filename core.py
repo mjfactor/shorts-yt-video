@@ -704,7 +704,7 @@ def _subtitles_vf(srt: Path):
     except Exception as e:
         warn(f"ASS conversion failed ({e}), burning raw SRT.")
         target = srt
-    esc = (str(target.resolve()).replace("\\", "/").replace("'", "\\'").replace(":", "\\:").replace(",", "\\,"))
+    esc = (str(target.resolve()).replace("\\", "/").replace("'", "'\\''").replace(":", "\\:").replace(",", "\\,"))
     # Plain path, no force_style: commas in force_style break some builds.
     return f"subtitles='{esc}'"
 
@@ -1153,24 +1153,66 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        if vf_subs and "subtitles" in (e.stderr or ""):
+        stderr = e.stderr or ""
+        # NOTE: check drawtext first. The filtergraph dump names both filters,
+        # so a subtitles check would always win when board+subs are present
+        # and retry with a still-broken board. "No such filter" also points
+        # at the board: an unbalanced quote splits the graph at the next
+        # comma (e.g. No such filter: '26.62' from enable's between(t,a,b)).
+        board_failed = bool(board and ("drawtext" in stderr or "No such filter" in stderr))
+        subs_failed = bool(vf_subs and "subtitles" in stderr)
+        if board_failed:
+            warn("niche overlay filter failed, rendering without it.")
+            no_board = (f"[0:v]{vf_subs},format=yuv420p[vout]" if vf_subs
+                        else "[0:v]format=yuv420p[vout]")
+            cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
+                   "-filter_complex", f"{no_board};{achain}",
+                   "-map", "[vout]", "-map", "[aout]",
+                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+                   "-shortest", str(out_path)]
+            try:
+                _run_ffmpeg(cmd, "mux-no-board")
+            except subprocess.CalledProcessError:
+                if not subs_failed:
+                    raise
+                warn("subtitles filter also failed, rendering plain.")
+                cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
+                       "-filter_complex", f"[0:v]format=yuv420p[vout];{achain}",
+                       "-map", "[vout]", "-map", "[aout]",
+                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+                       "-shortest", str(out_path)]
+                _run_ffmpeg(cmd, "mux-plain")
+        elif subs_failed:
             warn("subtitles filter failed, rendering without burned captions.")
             cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
                    "-filter_complex", f"[0:v]{board}format=yuv420p[vout];{achain}",
                    "-map", "[vout]", "-map", "[aout]",
                    "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
                    "-shortest", str(out_path)]
-            _run_ffmpeg(cmd, "mux-no-subs")
-        elif board and "drawtext" in (e.stderr or ""):
-            warn("niche overlay filter failed, rendering without it.")
-            plain = (f"[0:v]{vf_subs},format=yuv420p[vout]" if vf_subs
-                     else "[0:v]format=yuv420p[vout]")
-            cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                   "-filter_complex", f"{plain};{achain}",
-                   "-map", "[vout]", "-map", "[aout]",
-                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                   "-shortest", str(out_path)]
-            _run_ffmpeg(cmd, "mux-no-board")
+            try:
+                _run_ffmpeg(cmd, "mux-no-subs")
+            except subprocess.CalledProcessError as e2:
+                stderr2 = e2.stderr or ""
+                if not (board and ("drawtext" in stderr2 or "No such filter" in stderr2)):
+                    raise
+                warn("niche overlay filter also failed, rendering without it.")
+                no_board = (f"[0:v]{vf_subs},format=yuv420p[vout]" if vf_subs
+                            else "[0:v]format=yuv420p[vout]")
+                cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
+                       "-filter_complex", f"{no_board};{achain}",
+                       "-map", "[vout]", "-map", "[aout]",
+                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+                       "-shortest", str(out_path)]
+                try:
+                    _run_ffmpeg(cmd, "mux-no-board")
+                except subprocess.CalledProcessError:
+                    warn("subtitles filter also failed, rendering plain.")
+                    cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
+                           "-filter_complex", f"[0:v]format=yuv420p[vout];{achain}",
+                           "-map", "[vout]", "-map", "[aout]",
+                           "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+                           "-shortest", str(out_path)]
+                    _run_ffmpeg(cmd, "mux-plain")
         else:
             tail = (e.stderr or "").strip().splitlines()[-20:]
             log(f"ffmpeg failed at mux (exit {e.returncode}):")
