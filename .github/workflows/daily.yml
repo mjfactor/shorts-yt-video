@@ -31,6 +31,10 @@ jobs:
       GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
       GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
       GEMINI_API_KEY_4: ${{ secrets.GEMINI_API_KEY_4 }}
+      GEMINI_TIMEOUT: ${{ vars.GEMINI_TIMEOUT || '40' }}
+      GEMINI_TTS_TIMEOUT: ${{ vars.GEMINI_TTS_TIMEOUT || '90' }}
+      GEMINI_TRIES: ${{ vars.GEMINI_TRIES || '2' }}
+      GEMINI_BACKOFF: ${{ vars.GEMINI_BACKOFF || '5' }}
       AI_TOPICS: ${{ vars.AI_TOPICS || 'on' }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}

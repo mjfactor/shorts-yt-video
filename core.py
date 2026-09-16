@@ -64,10 +64,29 @@ def _parse_gemini_keys() -> list[str]:
 GEMINI_KEYS = _parse_gemini_keys()
 GEMINI_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else ""  # first key; back-compat
 _GEMINI_KEY_IDX = 0  # working key; advances on quota rejection
+
+
+def _env_int(name: str, default: int) -> int:
+    """Env int with safe fallback to default on missing/blank/garbage."""
+    try:
+        return int((os.getenv(name, "") or "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
+# Failover pacing: short timeout + few tries so a dead endpoint fails over
+# fast instead of burning minutes per dead model. GEMINI_TIMEOUT is the text
+# path (script/topic); TTS voice calls run longer, so GEMINI_TTS_TIMEOUT
+# (60-120 guidance) is used only by the per-beat TTS path. Bad values fall
+# back to the defaults below.
+GEMINI_TIMEOUT = max(1, _env_int("GEMINI_TIMEOUT", 40))
+GEMINI_TTS_TIMEOUT = max(1, _env_int("GEMINI_TTS_TIMEOUT", 90))
+GEMINI_TRIES = max(1, _env_int("GEMINI_TRIES", 2))
+GEMINI_BACKOFF = max(0, _env_int("GEMINI_BACKOFF", 5))
 # Tried in order; first working model wins. Override via GEMINI_MODELS="model-a,model-b".
 GEMINI_MODELS = [m.strip() for m in
                  os.getenv("GEMINI_MODELS",
-                            "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
+                            "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
                  if m.strip()]
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
 # Minimum Pexels file width to prefer (default 1080: 1:1 with the 1080x1920
@@ -387,13 +406,25 @@ def _validate_script(data, niche) -> dict:
     return out
 
 
-def _fetch_gemini(url: str, payload: dict, tries: int = 3, backoff: int = 5):
+def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
+                  backoff: int | None = None, timeout: int | None = None):
     """POST to Gemini with key rotation + retries. `url` is keyless.
 
-    Sticks with the working key; a quota/invalid-key rejection (429 or other
-    4xx) fails over to the next key immediately, while transient 5xx/network
-    errors retry with backoff first. Raises the last error when all keys fail.
+    Sticks with the working key; invalid-key rejections (other 4xx) fail
+    over to the next key immediately, as does a connect/read timeout (a
+    timing-out endpoint won't heal in one backoff — fast 5xx responses may
+    still retry). HTTP 429 is per-project quota, so it backs off with
+    jitter on the SAME key instead of rotating (key-hopping would deepen
+    exhaustion); 429 retries count toward the key's tries. Raises the last
+    error when all keys fail. Defaults come from the GEMINI_TIMEOUT (text)
+    / GEMINI_TTS_TIMEOUT (voice), GEMINI_TRIES, GEMINI_BACKOFF env tunables.
     """
+    if tries is None:
+        tries = GEMINI_TRIES
+    if backoff is None:
+        backoff = GEMINI_BACKOFF
+    if timeout is None:
+        timeout = GEMINI_TIMEOUT
     global _GEMINI_KEY_IDX
     if not GEMINI_KEYS:
         raise ValueError("GEMINI_API_KEY missing")
@@ -407,19 +438,36 @@ def _fetch_gemini(url: str, payload: dict, tries: int = 3, backoff: int = 5):
         key_server_only = True  # stays True unless this key sees a 4xx rejection
         for attempt in range(1, tries + 1):
             try:
-                r = requests.post(keyed, json=payload, timeout=60)
+                r = requests.post(keyed, json=payload, timeout=timeout)
                 r.raise_for_status()
                 _GEMINI_KEY_IDX = idx  # stick with the working key
                 return r.json()
             except Exception as e:
                 last_err = e
                 status = _http_status(e)
+                if status == 429:
+                    # Per-project quota: rotating keys deepens exhaustion, so
+                    # back off with jitter on the SAME key; the retry counts
+                    # toward this key's tries, then normal failover applies.
+                    key_server_only = False
+                    if attempt == tries:
+                        break
+                    wait = backoff * attempt + random.uniform(0, 1)
+                    log(f"Gemini key {idx + 1}/{n} rate-limited (429, "
+                        f"attempt {attempt}/{tries}), backing off {wait:.1f}s...")
+                    time.sleep(wait)
+                    continue
                 if status is not None and 400 <= status < 500 and status != 408:
                     key_server_only = False
                     if k < n - 1:
                         log(f"Gemini key {idx + 1}/{n} rejected (HTTP {status}), "
                             "failing over to next key...")
                     break  # 4xx won't heal with retries — try next key
+                if isinstance(e, requests.exceptions.Timeout):
+                    if k < n - 1:
+                        log(f"Gemini key {idx + 1}/{n} timed out "
+                            f"(attempt {attempt}/{tries}), failing over to next key...")
+                    break  # timeouts won't heal in one backoff — try next key
                 if attempt == tries:
                     break
                 wait = backoff * attempt
@@ -582,7 +630,7 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "",
         try:
             url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                    f"{model}:generateContent")
-            raw = _fetch_gemini(url, payload)
+            raw = _fetch_gemini(url, payload, timeout=GEMINI_TTS_TIMEOUT)
             parts = raw["candidates"][0]["content"].get("parts", [])
             inline = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
             if not inline or not inline.get("data"):
