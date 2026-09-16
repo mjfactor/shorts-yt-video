@@ -965,58 +965,200 @@ def _mood_query(q: str) -> str:
     return f"{q} dark"
 
 
+_QUERY_STOPWORDS = frozenset({
+    "a", "an", "the", "in", "on", "of", "at", "to", "for",
+    "with", "from", "and", "or", "is", "are", "its", "it",
+})
+
+
+def _query_words(q: str) -> list[str]:
+    """Lowercase alphanum tokens minus stopwords."""
+    return [w for w in re.findall(r"[a-z0-9]+", (q or "").lower())
+            if w not in _QUERY_STOPWORDS]
+
+
+def _query_variants(q: str) -> list[str]:
+    """Full query + drop-last-word backoff until 2 words remain (max 3)."""
+    full = (q or "").strip()
+    if not full:
+        return []
+    words = full.split()
+    if len(words) <= 2:
+        return [full]
+    variants = [full]
+    while len(words) > 2 and len(variants) < 3:
+        words = words[:-1]
+        variants.append(" ".join(words))
+    seen: list[str] = []
+    for v in variants:
+        if v not in seen:
+            seen.append(v)
+    return seen
+
+
+def _score_text(haystack, words: list[str]) -> int:
+    """Count of query words present as substrings in haystack."""
+    h = (haystack or "").lower()
+    return sum(1 for w in words if w and w in h)
+
+
 def pexels_clip(query: str, used: set | None = None, mood: bool = True):
     """First unused stock clip for one query. Returns None (no key/fail/empty).
 
     `used` holds Pexels video ids already shown in this run, so similar
     queries can't repeat the same clip twice in one story. `mood=False`
     skips the horror-mood forcing (ranking niche wants literal matches).
+
+    Accuracy gate: each candidate video is scored by how many query words
+    appear in its URL slug; only clips meeting
+    min(2, len(words)) (multi-word) or 1 (single-word) are accepted, so a
+    wrong-animal clip returns None and lets the photo fallback try instead.
+    Tries up to 3 query backoff variants (full -> drop-last-word).
     """
     if not PEXELS_KEY:
         return None
     try:
-        def _search():
-            r = requests.get(
-                "https://api.pexels.com/videos/search",
-                headers={"Authorization": PEXELS_KEY},
-                params={"query": _mood_query(query) if mood else query,
-                        "per_page": 4,
-                        "orientation": "portrait", "size": "medium"},
-                timeout=30,
-            )
-            r.raise_for_status()
-            return r
-        r = retry("Pexels search", _search, tries=3, backoff=5)
-        for v in r.json().get("videos", []):
-            if used is not None and v.get("id") in used:
-                continue  # same story must not show the same clip twice
-            # Sharp-but-bounded: smallest file clearing PEXELS_MIN_WIDTH
-            # (default 1080p, 1:1 with the canvas). Falls back to whatever
-            # exists so clips with only SD files still play.
-            cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
-                           key=lambda f: f.get("width", 0))
-            big_enough = [f for f in cands if f.get("width", 0) >= PEXELS_MIN_WIDTH]
-            pick = (big_enough or cands)
-            if not pick:
-                continue
-            dest = ASSETS / f"pexels_{v['id']}.mp4"
-            if not dest.exists():
-                def _download(url=pick[0]["link"], dest=dest):
-                    with requests.get(url, stream=True, timeout=120) as d:
-                        d.raise_for_status()
-                        with open(dest, "wb") as f:
-                            shutil.copyfileobj(d.raw, f)
-                try:
-                    retry("Pexels download", _download, tries=2, backoff=5)
-                except Exception:
-                    if dest.exists():
-                        dest.unlink()  # never keep a partial file
-                    raise
-            if used is not None:
-                used.add(v["id"])
-            return dest
+        words = _query_words(query)
+        threshold = min(2, len(words)) if len(words) > 1 else 1
+        best_video = None
+        best_pick_file = None
+        best_score = -1
+        for variant in _query_variants(query):
+            def _search(variant=variant):
+                r = requests.get(
+                    "https://api.pexels.com/videos/search",
+                    headers={"Authorization": PEXELS_KEY},
+                    params={"query": _mood_query(variant) if mood else variant,
+                            "per_page": 8,
+                            "orientation": "portrait", "size": "medium"},
+                    timeout=30,
+                )
+                r.raise_for_status()
+                return r
+            r = retry("Pexels search", _search, tries=3, backoff=5)
+            for v in r.json().get("videos", []):
+                if used is not None and v.get("id") in used:
+                    continue  # same story must not show the same clip twice
+                score = _score_text(v.get("url", ""), words)
+                if score < threshold:
+                    continue
+                # Sharp-but-bounded: smallest file clearing PEXELS_MIN_WIDTH
+                # (default 1080p, 1:1 with the canvas). Falls back to whatever
+                # exists so clips with only SD files still play.
+                cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
+                               key=lambda f: f.get("width", 0))
+                big_enough = [f for f in cands if f.get("width", 0) >= PEXELS_MIN_WIDTH]
+                pick = (big_enough or cands)
+                if not pick:
+                    continue
+                if score > best_score:
+                    best_score = score
+                    best_video = v
+                    best_pick_file = pick[0]
+            if best_video is not None and best_score >= threshold:
+                break  # earliest (most specific) variant already met the gate
+        if best_video is None or best_pick_file is None:
+            return None
+        dest = ASSETS / f"pexels_{best_video['id']}.mp4"
+        if not dest.exists():
+            def _download(url=best_pick_file["link"], dest=dest):
+                with requests.get(url, stream=True, timeout=120) as d:
+                    d.raise_for_status()
+                    with open(dest, "wb") as f:
+                        shutil.copyfileobj(d.raw, f)
+            try:
+                retry("Pexels download", _download, tries=2, backoff=5)
+            except Exception:
+                if dest.exists():
+                    dest.unlink()  # never keep a partial file
+                raise
+        if used is not None:
+            used.add(best_video["id"])
+        return dest
     except Exception as e:
         warn(f"Pexels failed for '{query}' ({e}).")
+    return None
+
+
+def pexels_photo(query: str, used: set | None = None):
+    """Best literal-match stock photo for one query (Ken Burns at render).
+
+    Returns an assets/pexels_{id}.jpg Path (the .jpg suffix triggers the
+    render() Ken Burns branch) or None. `used` keys photos as f"photo_{id}"
+    so they never collide with video ids in the shared per-run set.
+    """
+    if not PEXELS_KEY:
+        return None
+    try:
+        words = _query_words(query)
+        threshold = min(2, len(words)) if len(words) > 1 else 1
+        best_photo = None
+        best_score = -1
+        best_rank = None
+        for variant in _query_variants(query):
+            def _search(variant=variant):
+                r = requests.get(
+                    "https://api.pexels.com/v1/search",
+                    headers={"Authorization": PEXELS_KEY},
+                    params={"query": variant,
+                            "per_page": 10,
+                            "orientation": "portrait", "size": "large"},
+                    timeout=30,
+                )
+                r.raise_for_status()
+                return r
+            r = retry("Pexels photo search", _search, tries=3, backoff=5)
+            for p in r.json().get("photos", []):
+                pid = p.get("id")
+                if used is not None and f"photo_{pid}" in used:
+                    continue
+                alt = p.get("alt", "")
+                url = p.get("url", "")
+                score = (2 * _score_text(alt, words)
+                         + _score_text(url, words))
+                if score < threshold:
+                    continue
+                w = p.get("width", 0) or 0
+                if w and w < PEXELS_MIN_WIDTH:
+                    continue
+                src = p.get("src", {})
+                if not src.get("original"):
+                    continue
+                h = p.get("height", 0) or 0
+                # Prefer true-portrait near 9:16 on ties (smaller rank wins).
+                if w and h:
+                    aspect = w / h
+                    rank = abs(aspect - 9 / 16)
+                else:
+                    rank = 1.0
+                area = (w or 0) * (h or 0)
+                key = (score, area, -rank)
+                if best_rank is None or key > best_rank:
+                    best_rank = key
+                    best_score = score
+                    best_photo = p
+            if best_photo is not None and best_score >= threshold:
+                break  # most specific variant already met the gate
+        if best_photo is None:
+            return None
+        dest = ASSETS / f"pexels_{best_photo['id']}.jpg"
+        if not dest.exists():
+            def _download(url=best_photo["src"]["original"], dest=dest):
+                with requests.get(url, stream=True, timeout=120) as d:
+                    d.raise_for_status()
+                    with open(dest, "wb") as f:
+                        shutil.copyfileobj(d.raw, f)
+            try:
+                retry("Pexels photo download", _download, tries=2, backoff=5)
+            except Exception:
+                if dest.exists():
+                    dest.unlink()  # never keep a partial file
+                raise
+        if used is not None:
+            used.add(f"photo_{best_photo['id']}")
+        return dest
+    except Exception as e:
+        warn(f"Pexels photo failed for '{query}' ({e}).")
     return None
 
 
@@ -1064,14 +1206,16 @@ def _stock_offset(stock: Path, part_idx: int, parts: int):
 
 
 def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
-    """Per beat: STILLS_PER_BEAT cuts (Pexels stock -> card).
+    """Per beat: STILLS_PER_BEAT cuts (Pexels video -> photo -> card).
 
     The niche decides the stock policy: ranking searches each beat's OWN
     query (literal item match); horror uses ambient B-roll from
     niche.AMBIENT_QUERIES, deliberately not story-matched. Returns
-    [(clip, seek_or_None, beat_idx)]: stock fallbacks seek into different
-    footage per half; durations stay per-beat and are split at render time.
-    Beats with no stock render a Pillow title card with the beat's text.
+    [(clip, seek_or_None, beat_idx)]: ONE clip is resolved per beat and
+    reused across its cuts (2nd-half cuts seek via _stock_offset; photos
+    get seek None and Ken Burns at render). Photos are the middle layer;
+    beats with no stock or photo render a Pillow title card.
+    Durations stay per-beat and are split at render time.
     """
     clips = []
     used_pexels: set = set()
@@ -1079,13 +1223,21 @@ def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
     still_n = 0
     for i, b in enumerate(beats):
         parts = _split_beat(b["text"], STILLS_PER_BEAT)
+        query = (b.get("query", "") if use_beat
+                 else random.choice(niche.AMBIENT_QUERIES))
+        stock = pexels_clip(query, used_pexels, mood=niche.USE_MOOD)
+        is_photo = False
+        if stock is None:
+            photo = pexels_photo(query, used_pexels)
+            if photo is not None:
+                stock, is_photo = photo, True
         for j, part in enumerate(parts):
             clip, seek = None, None
-            query = (b.get("query", "") if use_beat
-                     else random.choice(niche.AMBIENT_QUERIES))
-            stock = pexels_clip(query, used_pexels, mood=niche.USE_MOOD)
             if stock is not None:
-                clip, seek = stock, _stock_offset(stock, j, len(parts))
+                if is_photo:
+                    clip, seek = stock, None
+                else:
+                    clip, seek = stock, _stock_offset(stock, j, len(parts))
             if clip is None:
                 warn(f"Beat {i + 1}.{j + 1} ('{query}'): no stock, using title card.")
                 clip = beat_card(still_n, part)
