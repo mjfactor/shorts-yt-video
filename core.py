@@ -92,25 +92,24 @@ GEMINI_TTS_MODELS = [m.strip() for m in
                      os.getenv("GEMINI_TTS_MODELS",
                                "gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts").split(",")
                      if m.strip()]
-# One voice per run, alternating between runs (default pool "Charon,Kore":
-# even history count -> Charon, odd -> Kore; a single configured voice
-# disables alternation). 30 prebuilt voices, see AI Studio library.
+# Single narrator voice (default "Charon"); tone alternates between runs
+# instead (even history count -> energetic, odd -> deep). A comma-separated
+# pool still alternates voices per run. 30 prebuilt voices, see AI Studio library.
 GEMINI_TTS_VOICES = ([v.strip() for v in
-                      os.getenv("GEMINI_TTS_VOICES", "Charon,Kore").split(",")
-                      if v.strip()] or ["Charon", "Kore"])
+                      os.getenv("GEMINI_TTS_VOICES", "Charon").split(",")
+                      if v.strip()] or ["Charon"])
 DEFAULT_GEMINI_TTS_STYLE = (
     "Read in a single energetic countdown-narrator voice with clear pacing, "
     "confident delivery, and lively momentum. Polished and engaging, "
     "with strong emphasis on each reveal."
 )
-# Lazy/deadpan alternate body style for per-run tone alternation (see
-# pick_run_tone): chill and laid-back, can barely be bothered, dry humor
-# and low energy — but always clear and intelligible.
-LAZY_GEMINI_TTS_STYLE = (
-    "Read in a chill, laid-back, deadpan countdown-narrator voice, like "
-    "someone who can barely be bothered but still speaks clearly. Low "
-    "energy, dry humor, relaxed pacing, with understated emphasis on "
-    "each reveal."
+# Deep-voice alternate body style for per-run tone alternation (see
+# pick_run_tone): low, resonant, authoritative countdown delivery —
+# confident and weighty, never horror.
+DEEP_GEMINI_TTS_STYLE = (
+    "Read in a deep, resonant countdown-narrator voice with slow confident "
+    "pacing and weighty authority. Commanding and polished, with powerful "
+    "emphasis on each reveal."
 )
 # Opening hook (beat 0) gets extra punch: the first 2 seconds decide retention.
 GEMINI_TTS_HOOK_PREFIX = (
@@ -125,7 +124,7 @@ GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE") or "").strip() or DEFAULT_GEMI
 GEMINI_TTS_STYLE_EXPLICIT = bool((os.getenv("GEMINI_TTS_STYLE") or "").strip())
 # Single voice selected for this run by pick_run_voice() (None = not yet picked).
 RUN_VOICE: str | None = None
-# Delivery tone for this run ("energetic" | "lazy" | None), picked by
+# Delivery tone for this run ("energetic" | "deep" | None), picked by
 # pick_run_tone(); None means an explicit GEMINI_TTS_STYLE won instead.
 RUN_TONE: str | None = None
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
@@ -507,15 +506,15 @@ def _gen_audio_edge(narration: str, mp3: Path, srt: Path):
 
 
 def pick_run_voice(history_len: int | None, stamp: str = "") -> tuple[str, str]:
-    """One voice for the whole run, alternating between runs.
+    """Voice for the whole run (default single Charon, no voice alternation).
 
-    Pool is GEMINI_TTS_VOICES (default Charon,Kore). A single configured
-    voice disables alternation. Otherwise deterministic: history entry count
-    parity (even -> pool[0], odd -> pool[1]); when history is unavailable
-    (None), fall back to the stamp's day-of-month parity. Returns
-    (voice, reason) so run() can log why this voice was picked.
+    Pool is GEMINI_TTS_VOICES; multiple configured voices alternate
+    deterministically: history entry count parity (even -> pool[0],
+    odd -> pool[1]); when history is unavailable (None), fall back to the
+    stamp's day-of-month parity. Returns (voice, reason) so run() can log
+    why this voice was picked.
     """
-    pool = GEMINI_TTS_VOICES or ["Charon", "Kore"]
+    pool = GEMINI_TTS_VOICES or ["Charon"]
     if len(pool) == 1:
         return pool[0], "single voice configured (no alternation)"
     if history_len is not None:
@@ -530,20 +529,20 @@ def pick_run_voice(history_len: int | None, stamp: str = "") -> tuple[str, str]:
 def pick_run_tone(history_len: int | None, stamp: str = "") -> tuple[str, str]:
     """Body delivery tone for the whole run, alternating between runs.
 
-    Same cadence and selector input as pick_run_voice: even history entry
-    count -> "energetic", odd -> "lazy" (so even runs pair Charon+energetic,
-    odd runs Kore+lazy); when history is unavailable (None), fall back to
+    Same history-parity cadence as voice selection: even history entry
+    count -> "energetic", odd -> "deep" (Charon+energetic one run,
+    Charon+deep the next); when history is unavailable (None), fall back to
     the stamp's day-of-month parity. Returns (tone, reason) for logging.
     An explicit non-blank GEMINI_TTS_STYLE skips this entirely (see run()).
     """
     if history_len is not None:
-        tone = "energetic" if history_len % 2 == 0 else "lazy"
+        tone = "energetic" if history_len % 2 == 0 else "deep"
         return tone, f"history parity (entries={history_len})"
     try:
         day = int(stamp[8:10])
     except (ValueError, IndexError):
         day = datetime.datetime.now().day
-    tone = "energetic" if day % 2 == 0 else "lazy"
+    tone = "energetic" if day % 2 == 0 else "deep"
     return tone, "date-stamp day parity (history unavailable)"
 
 
@@ -563,12 +562,12 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "",
         base_style = pick_tts_style(topic, text)
     elif GEMINI_TTS_STYLE_EXPLICIT:
         base_style = GEMINI_TTS_STYLE
-    elif (RUN_TONE or "energetic") == "lazy":
-        base_style = LAZY_GEMINI_TTS_STYLE
+    elif (RUN_TONE or "energetic") == "deep":
+        base_style = DEEP_GEMINI_TTS_STYLE
     else:
         base_style = GEMINI_TTS_STYLE
-    # Hook keeps its punchy prefix on every tone: a loud hook dropping into
-    # a deadpan lazy body is the joke, and retention needs the first 2s.
+    # Hook keeps its punchy prefix on every tone: a bright hook dropping into
+    # a deep weighty body is the contrast, and retention needs the first 2s.
     prefix = GEMINI_TTS_HOOK_PREFIX if is_hook else ""
     prompt = f"{prefix}{base_style} Say the following text:\n\n{text}"
     payload = {
@@ -797,10 +796,11 @@ def _subtitles_vf(srt: Path):
 
 # Optional override: put your own loopable track(s) at bgm.mp3 (repo root,
 # e.g. from the YouTube Audio Library) or assets/bgm.mp3 (local only).
-# Numbered tracks (bgm1.mp3, bgm2.mp3, bgm3.mp3) are picked at random each
-# run so videos don't all sound identical. Random, not strict rotation:
-# bed choice is intentionally stateless (history.json tracks stories, not
-# music) — but with 3 tracks repeats are rare and harmless.
+# Numbered tracks (bgm1.mp3..bgm9.mp3) play in strict rotation: run() passes
+# its history entry count as the slot, so track = pool[slot % len(pool)]
+# over the sorted pool — every track plays before any repeats, and no two
+# back-to-back runs share a bed. slot=None (history unreadable) falls back
+# to a random pick, preserving the old stateless behavior for that edge case.
 def _bgm_pool() -> list:
     """Available custom bed tracks. Repo-root bgm*.mp3 wins (CI-visible);
     assets/bgm*.mp3 is the local-only fallback. Sorted for stable logs."""
@@ -810,13 +810,26 @@ def _bgm_pool() -> list:
     return [p for p in pool if p.is_file()]
 
 
-def make_bed(duration: float) -> Path:
-    """Background audio matching narration length. Never fails the run."""
+def make_bed(duration: float, slot: int | None = None) -> tuple[Path, str | None]:
+    """Background audio matching narration length. Never fails the run.
+
+    Returns (bed_mp3, track_filename|None): the filename (drone -> None) is
+    recorded in history so rotation stays auditable. A numeric slot picks
+    pool[slot % len(pool)] (strict rotation over the sorted pool); slot=None
+    keeps the legacy random pick.
+    """
     bed = ASSETS / "bed.mp3"
     pool = _bgm_pool()
-    custom = random.choice(pool) if pool else None
+    custom = None
+    if pool:
+        if slot is not None:
+            idx = slot % len(pool)
+            custom = pool[idx]
+            log(f"Bed: track {idx + 1}/{len(pool)} {custom.name} by rotation")
+        else:
+            custom = random.choice(pool)
+            log(f"Bed: looping custom track {custom} (1 of {len(pool)} in pool)")
     if custom is not None:
-        log(f"Bed: looping custom track {custom} (1 of {len(pool)} in pool)")
         _run_ffmpeg(["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(custom),
                      "-t", str(duration), "-af", "volume=0.20",
                      "-c:a", "libmp3lame", str(bed)], "bed-loop")
@@ -842,7 +855,7 @@ def make_bed(duration: float) -> Path:
                      "-filter_complex", fc, "-map", "[aout]",
                      "-t", str(duration),
                      "-c:a", "libmp3lame", str(bed)], "bed-drone")
-    return bed
+    return bed, (custom.name if custom is not None else None)
 
 
 def audio_duration(path: Path) -> float:
@@ -1551,9 +1564,9 @@ def run(niche):
     global RUN_VOICE, RUN_TONE
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem = OUT / f"{stamp}_short"
-    # Single voice for this run: strict alternation from the pool via history
-    # entry-count parity, date-stamp day parity when history is unavailable.
-    # Body tone alternates on the same parity (even -> energetic, odd -> lazy)
+    # Voice for this run (default single Charon; a multi-voice pool alternates
+    # via history entry-count parity, date-stamp day parity when unavailable).
+    # Body tone alternates on history parity (even -> energetic, odd -> deep)
     # unless GEMINI_TTS_STYLE is explicitly set, which wins for the body.
     try:
         _hist_len: int | None = len(load_history())
@@ -1599,7 +1612,7 @@ def run(niche):
         # roughly constant, so each clip covers its own story moment).
         total_words = sum(len(b["text"].split()) for b in beats) or 1
         durations = [dur * len(b["text"].split()) / total_words for b in beats]
-    bed = make_bed(dur)
+    bed, bed_name = make_bed(dur, _hist_len)
     out_mp4 = stem.with_suffix(".mp4")
     try:
         render(clips, mp3, bed, srt, durations, out_mp4, niche,
@@ -1616,6 +1629,7 @@ def run(niche):
              "niche": niche.MODE,
              "tags": meta.get("tags", [])[:10],
              "narration": meta.get("narration", ""),
+             "bed": bed_name,
              "videoId": video_id,
              "tiktokBufferPostId": tiktok_post_id}
     if isinstance(slots, dict):
