@@ -9,7 +9,7 @@ A niche module must provide (see niche_ranking.py for the reference):
     fallback_script(history) -> (meta, slots)
     validate_extra(data)  -> dict merged into validated meta ({} if none)
     sanitize_title(title, slots) -> str (channel title format enforcement)
-    similarity_reason(data, slots, recent) -> str | None
+    similarity_reason(data, slots, recent, item_recent=None) -> str | None
     format_history_line(h) -> str
     AVOID_INTRO, AVOID_OUTRO   str (history avoidance prompt wrapper)
     USE_BEAT_QUERY        bool (True: Pexels searches the beat's own query)
@@ -268,8 +268,16 @@ def retry(name: str, func, tries: int = 3, backoff: int = 5, fatal=()) -> Any:
 # and forces fresh slots, plus a similarity gate retries when Gemini repeats
 # a recent entry anyway. Never fails the run.
 HISTORY_PATH = Path("history.json")
-HISTORY_KEEP = 50  # entries stored on disk
-HISTORY_PROMPT_N = 20  # recent entries quoted in the prompt
+HISTORY_KEEP = 110  # entries stored on disk (100 videos + headroom)
+HISTORY_PROMPT_N = 20  # recent entries quoted in the prompt (advisory bans only)
+# Hard programmatic freshness gates scan the FULL kept history below, not
+# just the 20 quoted above: the prompt block stays small for token sanity
+# (advisory), while DEDUP_WINDOW enforces no-repeat topics across 100 videos.
+DEDUP_WINDOW = HISTORY_KEEP
+# Shared-items (>=2) gate looks back this far only: across 110 videos common
+# animals would false-positive constantly, so items enforce vs the last 30
+# while the topic gate enforces vs the full window.
+DEDUP_ITEM_WINDOW = 30
 SIMILARITY_RETRIES = 2  # extra script attempts after a too-similar draft
 
 
@@ -311,10 +319,29 @@ def history_block(history: list[dict], mode: str, fmt, intro: str, outro: str) -
     return intro + "\n".join(fmt(h) for h in recent) + "\n" + outro
 
 
-def _pick_avoiding(pool: tuple, recent: set):
-    """Random pool pick excluding recently used values (falls back to random)."""
-    fresh = [v for v in pool if v not in recent]
-    return random.choice(fresh) if fresh else random.choice(pool)
+def _pick_avoiding(pool: tuple, recent: set, history: list[dict] | None = None):
+    """Pool pick excluding recently used values (case-insensitive both sides).
+
+    Fresh candidates are chosen at random. When the pool is exhausted (every
+    topic aired within the window), falls back to least-recently-used: the
+    pool topic whose last airing is oldest (or never aired), using `history`
+    (newest-last, like load_history); without history, legacy random pick.
+    """
+    folded = {str(v).casefold() for v in recent}
+    fresh = [v for v in pool if str(v).casefold() not in folded]
+    if fresh:
+        return random.choice(fresh)
+    if history:
+        last_seen: dict[str, int] = {}
+        for pos, h in enumerate(history):
+            t = str(h.get("topic", "")).casefold()
+            if t:
+                last_seen[t] = pos  # newest last: larger pos = more recent
+        def _recency(v) -> int:
+            return last_seen.get(str(v).casefold(), -1)  # never aired first
+        oldest = min(_recency(v) for v in pool)
+        return random.choice([v for v in pool if _recency(v) == oldest])
+    return random.choice(pool)
 
 
 def _story_signature(text: str) -> set:
@@ -328,20 +355,27 @@ def _story_signature(text: str) -> set:
 
 
 def similar_to_history(data: dict, slots: dict, history: list[dict], niche):
-    """Return a repeat reason if the draft is too close to history, else None."""
-    recent = [h for h in history[-HISTORY_PROMPT_N:]
+    """Return a repeat reason if the draft is too close to history, else None.
+
+    Title + topic gates enforce vs the full DEDUP_WINDOW (no repeat across
+    100 videos); the shared-items and story-overlap gates enforce vs the
+    recent DEDUP_ITEM_WINDOW only (exact matches don't false-positive).
+    """
+    window = [h for h in history[-DEDUP_WINDOW:]
               if h.get("niche", "horror") == niche.MODE]
-    if not recent:
+    if not window:
         return None
-    recent_titles = {str(h.get("title", "")).strip().casefold() for h in recent}
+    recent_titles = {str(h.get("title", "")).strip().casefold() for h in window}
     if str(data.get("title", "")).strip().casefold() in recent_titles:
         return "title already used"
-    reason = niche.similarity_reason(data, slots, recent)
+    item_window = [h for h in history[-DEDUP_ITEM_WINDOW:]
+                   if h.get("niche", "horror") == niche.MODE]
+    reason = niche.similarity_reason(data, slots, window, item_window)
     if reason is not None:
         return reason
     new_sig = _story_signature(
         f"{data.get('title', '')} {data.get('narration', '')}")
-    for h in recent:
+    for h in item_window:
         old_sig = _story_signature(
             f"{h.get('title', '')} {h.get('narration', '')}")
         if not old_sig or not new_sig:
@@ -526,7 +560,13 @@ def gen_script(niche):
             data["title"] = niche.sanitize_title(data.get("title", ""), slots)
             return data, slots
     warn("Gemini unavailable: using standalone fallback script.")
-    return niche.fallback_script(history)
+    meta, slots = niche.fallback_script(history)
+    # Verdict for the record only: with no Gemini there is nothing to
+    # regenerate with, so a hit still airs (warn, never raise).
+    reason = similar_to_history(meta, slots, history, niche)
+    if reason is not None:
+        warn(f"Offline fallback repeats history ({reason}), airing anyway.")
+    return meta, slots
 
 
 # ---------- 2. Audio (edge-tts default, free, no key; Gemini TTS pilot) ----------
