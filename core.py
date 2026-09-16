@@ -103,6 +103,15 @@ DEFAULT_GEMINI_TTS_STYLE = (
     "confident delivery, and lively momentum. Polished and engaging, "
     "with strong emphasis on each reveal."
 )
+# Lazy/deadpan alternate body style for per-run tone alternation (see
+# pick_run_tone): chill and laid-back, can barely be bothered, dry humor
+# and low energy — but always clear and intelligible.
+LAZY_GEMINI_TTS_STYLE = (
+    "Read in a chill, laid-back, deadpan countdown-narrator voice, like "
+    "someone who can barely be bothered but still speaks clearly. Low "
+    "energy, dry humor, relaxed pacing, with understated emphasis on "
+    "each reveal."
+)
 # Opening hook (beat 0) gets extra punch: the first 2 seconds decide retention.
 GEMINI_TTS_HOOK_PREFIX = (
     "For this opening hook only, deliver with super-energetic, bright, "
@@ -111,8 +120,14 @@ GEMINI_TTS_HOOK_PREFIX = (
 )
 # Empty/whitespace env counts as unset so a CI empty string never kills direction.
 GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE") or "").strip() or DEFAULT_GEMINI_TTS_STYLE
+# True when the user explicitly set a non-blank style: it wins for the body
+# and per-run tone alternation is skipped that run.
+GEMINI_TTS_STYLE_EXPLICIT = bool((os.getenv("GEMINI_TTS_STYLE") or "").strip())
 # Single voice selected for this run by pick_run_voice() (None = not yet picked).
 RUN_VOICE: str | None = None
+# Delivery tone for this run ("energetic" | "lazy" | None), picked by
+# pick_run_tone(); None means an explicit GEMINI_TTS_STYLE won instead.
+RUN_TONE: str | None = None
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -512,6 +527,26 @@ def pick_run_voice(history_len: int | None, stamp: str = "") -> tuple[str, str]:
     return pool[day % len(pool)], "date-stamp day parity (history unavailable)"
 
 
+def pick_run_tone(history_len: int | None, stamp: str = "") -> tuple[str, str]:
+    """Body delivery tone for the whole run, alternating between runs.
+
+    Same cadence and selector input as pick_run_voice: even history entry
+    count -> "energetic", odd -> "lazy" (so even runs pair Charon+energetic,
+    odd runs Kore+lazy); when history is unavailable (None), fall back to
+    the stamp's day-of-month parity. Returns (tone, reason) for logging.
+    An explicit non-blank GEMINI_TTS_STYLE skips this entirely (see run()).
+    """
+    if history_len is not None:
+        tone = "energetic" if history_len % 2 == 0 else "lazy"
+        return tone, f"history parity (entries={history_len})"
+    try:
+        day = int(stamp[8:10])
+    except (ValueError, IndexError):
+        day = datetime.datetime.now().day
+    tone = "energetic" if day % 2 == 0 else "lazy"
+    return tone, "date-stamp day parity (history unavailable)"
+
+
 def _gemini_tts_beat(text: str, voice: str, topic: str = "",
                      is_hook: bool = False) -> tuple[bytes, int]:
     """One beat of raw PCM audio via Gemini TTS. Returns (pcm, sample_rate).
@@ -524,7 +559,16 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "",
     """
     if not GEMINI_KEYS:
         raise ValueError("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it)")
-    base_style = pick_tts_style(topic, text) if topic else GEMINI_TTS_STYLE
+    if topic:
+        base_style = pick_tts_style(topic, text)
+    elif GEMINI_TTS_STYLE_EXPLICIT:
+        base_style = GEMINI_TTS_STYLE
+    elif (RUN_TONE or "energetic") == "lazy":
+        base_style = LAZY_GEMINI_TTS_STYLE
+    else:
+        base_style = GEMINI_TTS_STYLE
+    # Hook keeps its punchy prefix on every tone: a loud hook dropping into
+    # a deadpan lazy body is the joke, and retention needs the first 2s.
     prefix = GEMINI_TTS_HOOK_PREFIX if is_hook else ""
     prompt = f"{prefix}{base_style} Say the following text:\n\n{text}"
     payload = {
@@ -1108,6 +1152,49 @@ def _has_drawtext() -> bool:
     return _HAS_DRAWTEXT
 
 
+# Mystery #1 twist (visual-only): the #1 beat stays heavily blurred for the
+# first ~2s of its screen time, then snaps clear at the reveal. Gemini TTS
+# gives beat-level SRT only, so the exact reveal word time is unknown — the
+# window is min(2s, half the beat). Applied at the FINAL mux (absolute
+# timeline, like the leaderboard), so per-segment clocks and cuts are untouched.
+MYSTERY_BLUR_MAX_SECS = 2.0
+
+
+def _mystery_blur_filter(beats: list[dict], durations: list[float]) -> str:
+    """boxblur snippet with trailing comma for the #1 beat's reveal, or "".
+
+    Finds the beat labeled "1", blurs [start, start+min(2s, dur/2)] on the
+    finished timeline, then snaps clear. "" when N/A (no labeled beat,
+    bad/zero durations) so the mux is byte-identical to the no-twist render.
+    """
+    try:
+        idx = next(i for i, b in enumerate(beats or [])
+                   if str((b or {}).get("label", "")) == "1")
+    except StopIteration:
+        return ""
+    starts: list[float] = []
+    t = 0.0
+    for d in durations or []:
+        starts.append(t)
+        try:
+            t += max(0.0, float(d))
+        except (TypeError, ValueError):
+            return ""
+    if idx >= len(starts) or idx >= len(durations or []):
+        return ""
+    try:
+        dur = max(0.0, float(durations[idx]))
+    except (TypeError, ValueError):
+        return ""
+    blur_len = min(MYSTERY_BLUR_MAX_SECS, dur / 2)
+    if blur_len <= 0.1:
+        return ""
+    start = starts[idx]
+    log(f"Mystery #1 blur: beat {idx + 1} blurred "
+        f"{start:.2f}s->{start + blur_len:.2f}s (beat dur {dur:.2f}s), clear after.")
+    return (f"boxblur=20:5:enable='between(t,{start:.2f},{start + blur_len:.2f})',")
+
+
 # ---------- 4. Render with FFmpeg (CPU only) ----------
 def _run_ffmpeg(cmd, step: str):
     """Run ffmpeg quietly, but log stderr tail on failure (else it stays hidden)."""
@@ -1184,9 +1271,20 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
     vf_subs = _subtitles_vf(srt)
     board = niche.board_filter(beats or [], items or [], durations,
                                _rank_font, _has_drawtext, title)
-    vchain = (f"[0:v]{board}{vf_subs},format=yuv420p[vout]" if vf_subs
-              else f"[0:v]{board}format=yuv420p[vout]")
+    blur = _mystery_blur_filter(beats or [], durations)
     achain = "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+
+    def _mux_cmd(blur_s: str, board_s: str, subs_s):
+        v = (f"[0:v]{blur_s}{board_s}{subs_s},format=yuv420p[vout]" if subs_s
+             else f"[0:v]{blur_s}{board_s}format=yuv420p[vout]")
+        return ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
+                "-filter_complex", f"{v};{achain}",
+                "-map", "[vout]", "-map", "[aout]",
+                "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
+                "-shortest", str(out_path)]
+
+    vchain = (f"[0:v]{blur}{board}{vf_subs},format=yuv420p[vout]" if vf_subs
+              else f"[0:v]{blur}{board}format=yuv420p[vout]")
     cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
            "-filter_complex", f"{vchain};{achain}",
            "-map", "[vout]", "-map", "[aout]",
@@ -1196,6 +1294,18 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         stderr = e.stderr or ""
+        if blur and "boxblur" in stderr:
+            warn("mystery #1 blur filter failed, rendering without blur.")
+            blur = ""
+            cmd = _mux_cmd(blur, board, vf_subs)
+            try:
+                _run_ffmpeg(cmd, "mux-no-blur")
+            except subprocess.CalledProcessError as e_nb:
+                e = e_nb
+                stderr = e_nb.stderr or ""
+            else:
+                log(f"Rendered {out_path} ({out_path.stat().st_size // 1024} KB)")
+                return
         # NOTE: check drawtext first. The filtergraph dump names both filters,
         # so a subtitles check would always win when board+subs are present
         # and retry with a still-broken board. "No such filter" also points
@@ -1205,32 +1315,18 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
         subs_failed = bool(vf_subs and "subtitles" in stderr)
         if board_failed:
             warn("niche overlay filter failed, rendering without it.")
-            no_board = (f"[0:v]{vf_subs},format=yuv420p[vout]" if vf_subs
-                        else "[0:v]format=yuv420p[vout]")
-            cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                   "-filter_complex", f"{no_board};{achain}",
-                   "-map", "[vout]", "-map", "[aout]",
-                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                   "-shortest", str(out_path)]
+            cmd = _mux_cmd(blur, "", vf_subs)
             try:
                 _run_ffmpeg(cmd, "mux-no-board")
             except subprocess.CalledProcessError:
                 if not subs_failed:
                     raise
                 warn("subtitles filter also failed, rendering plain.")
-                cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                       "-filter_complex", f"[0:v]format=yuv420p[vout];{achain}",
-                       "-map", "[vout]", "-map", "[aout]",
-                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                       "-shortest", str(out_path)]
+                cmd = _mux_cmd(blur, "", None)
                 _run_ffmpeg(cmd, "mux-plain")
         elif subs_failed:
             warn("subtitles filter failed, rendering without burned captions.")
-            cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                   "-filter_complex", f"[0:v]{board}format=yuv420p[vout];{achain}",
-                   "-map", "[vout]", "-map", "[aout]",
-                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                   "-shortest", str(out_path)]
+            cmd = _mux_cmd(blur, board, None)
             try:
                 _run_ffmpeg(cmd, "mux-no-subs")
             except subprocess.CalledProcessError as e2:
@@ -1238,22 +1334,12 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
                 if not (board and ("drawtext" in stderr2 or "No such filter" in stderr2)):
                     raise
                 warn("niche overlay filter also failed, rendering without it.")
-                no_board = (f"[0:v]{vf_subs},format=yuv420p[vout]" if vf_subs
-                            else "[0:v]format=yuv420p[vout]")
-                cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                       "-filter_complex", f"{no_board};{achain}",
-                       "-map", "[vout]", "-map", "[aout]",
-                       "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                       "-shortest", str(out_path)]
+                cmd = _mux_cmd(blur, "", vf_subs)
                 try:
                     _run_ffmpeg(cmd, "mux-no-board")
                 except subprocess.CalledProcessError:
                     warn("subtitles filter also failed, rendering plain.")
-                    cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
-                           "-filter_complex", f"[0:v]format=yuv420p[vout];{achain}",
-                           "-map", "[vout]", "-map", "[aout]",
-                           "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                           "-shortest", str(out_path)]
+                    cmd = _mux_cmd(blur, "", None)
                     _run_ffmpeg(cmd, "mux-plain")
         else:
             tail = (e.stderr or "").strip().splitlines()[-20:]
@@ -1462,17 +1548,25 @@ def buffer_tiktok_upload(video: Path, meta: dict):
 
 def run(niche):
     """One full Short for the given niche module. Entry point for pipeline.py."""
-    global RUN_VOICE
+    global RUN_VOICE, RUN_TONE
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem = OUT / f"{stamp}_short"
     # Single voice for this run: strict alternation from the pool via history
     # entry-count parity, date-stamp day parity when history is unavailable.
+    # Body tone alternates on the same parity (even -> energetic, odd -> lazy)
+    # unless GEMINI_TTS_STYLE is explicitly set, which wins for the body.
     try:
         _hist_len: int | None = len(load_history())
     except Exception:
         _hist_len = None
     RUN_VOICE, _voice_why = pick_run_voice(_hist_len, stamp)
-    log(f"TTS run voice={RUN_VOICE} ({_voice_why}, pool={GEMINI_TTS_VOICES})")
+    if GEMINI_TTS_STYLE_EXPLICIT:
+        RUN_TONE = None
+        _tone_desc = "override (GEMINI_TTS_STYLE explicitly set, alternation skipped)"
+    else:
+        RUN_TONE, _tone_why = pick_run_tone(_hist_len, stamp)
+        _tone_desc = f"{RUN_TONE} ({_tone_why})"
+    log(f"TTS run voice={RUN_VOICE} ({_voice_why}, pool={GEMINI_TTS_VOICES}); tone={_tone_desc}")
     # Non-secret effective config so Actions logs show what actually ran.
     if TTS_ENGINE == "gemini":
         tts_desc = (f"gemini(models={GEMINI_TTS_MODELS},voices={GEMINI_TTS_VOICES})"
