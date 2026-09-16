@@ -1002,21 +1002,19 @@ def _score_text(haystack, words: list[str]) -> int:
     return sum(1 for w in words if w and w in h)
 
 
-def pexels_clip(query: str, used: set | None = None, mood: bool = True):
-    """First unused stock clip for one query. Returns None (no key/fail/empty).
+def _best_video(query: str, used: set | None = None, mood: bool = True):
+    """Best literal-match stock video for one query (read-only on `used`).
 
-    `used` holds Pexels video ids already shown in this run, so similar
-    queries can't repeat the same clip twice in one story. `mood=False`
-    skips the horror-mood forcing (ranking niche wants literal matches).
-
-    Accuracy gate: each candidate video is scored by how many query words
-    appear in its URL slug; only clips meeting
-    min(2, len(words)) (multi-word) or 1 (single-word) are accepted, so a
-    wrong-animal clip returns None and lets the photo fallback try instead.
-    Tries up to 3 query backoff variants (full -> drop-last-word).
+    Returns (dest|None, raw_score, commit_key|None). `used` is only checked,
+    never mutated — the caller commits the winner's key so a losing candidate
+    never burns its id. raw_score counts query words in the URL slug; the
+    caller normalizes with *2 for fair comparison against photo scores
+    (photo alt hits already count double, so a 2-word video slug match = 4
+    lines up with a 2-word photo alt match = 4). Score 0 when no candidate
+    meets the accuracy gate (min(2, len(words)) multi-word, 1 single-word).
     """
     if not PEXELS_KEY:
-        return None
+        return None, 0, None
     try:
         words = _query_words(query)
         threshold = min(2, len(words)) if len(words) > 1 else 1
@@ -1058,7 +1056,7 @@ def pexels_clip(query: str, used: set | None = None, mood: bool = True):
             if best_video is not None and best_score >= threshold:
                 break  # earliest (most specific) variant already met the gate
         if best_video is None or best_pick_file is None:
-            return None
+            return None, 0, None
         dest = ASSETS / f"pexels_{best_video['id']}.mp4"
         if not dest.exists():
             def _download(url=best_pick_file["link"], dest=dest):
@@ -1072,23 +1070,42 @@ def pexels_clip(query: str, used: set | None = None, mood: bool = True):
                 if dest.exists():
                     dest.unlink()  # never keep a partial file
                 raise
-        if used is not None:
-            used.add(best_video["id"])
-        return dest
+        return dest, best_score, best_video["id"]
     except Exception as e:
         warn(f"Pexels failed for '{query}' ({e}).")
-    return None
+    return None, 0, None
 
 
-def pexels_photo(query: str, used: set | None = None):
-    """Best literal-match stock photo for one query (Ken Burns at render).
+def pexels_clip(query: str, used: set | None = None, mood: bool = True):
+    """First unused stock clip for one query. Returns None (no key/fail/empty).
 
-    Returns an assets/pexels_{id}.jpg Path (the .jpg suffix triggers the
-    render() Ken Burns branch) or None. `used` keys photos as f"photo_{id}"
-    so they never collide with video ids in the shared per-run set.
+    `used` holds Pexels video ids already shown in this run, so similar
+    queries can't repeat the same clip twice in one story. `mood=False`
+    skips the horror-mood forcing (ranking niche wants literal matches).
+
+    Accuracy gate: each candidate video is scored by how many query words
+    appear in its URL slug; only clips meeting
+    min(2, len(words)) (multi-word) or 1 (single-word) are accepted, so a
+    wrong-animal clip returns None and lets the photo fallback try instead.
+    Tries up to 3 query backoff variants (full -> drop-last-word).
+    """
+    dest, _score, key = _best_video(query, used, mood)
+    if dest is not None and key is not None and used is not None:
+        used.add(key)
+    return dest
+
+
+def _best_photo(query: str, used: set | None = None):
+    """Best literal-match stock photo for one query (read-only on `used`).
+
+    Returns (dest|None, score, commit_key|None). `used` is only checked,
+    never mutated — the caller commits the winner's f"photo_{id}" key so a
+    losing candidate never burns its id. Score = 2*alt_hits + url_hits
+    (alt is more descriptive, hence double weight); callers compare it
+    against video raw_score*2. Score 0 when nothing meets the gate.
     """
     if not PEXELS_KEY:
-        return None
+        return None, 0, None
     try:
         words = _query_words(query)
         threshold = min(2, len(words)) if len(words) > 1 else 1
@@ -1140,7 +1157,7 @@ def pexels_photo(query: str, used: set | None = None):
             if best_photo is not None and best_score >= threshold:
                 break  # most specific variant already met the gate
         if best_photo is None:
-            return None
+            return None, 0, None
         dest = ASSETS / f"pexels_{best_photo['id']}.jpg"
         if not dest.exists():
             def _download(url=best_photo["src"]["original"], dest=dest):
@@ -1154,12 +1171,23 @@ def pexels_photo(query: str, used: set | None = None):
                 if dest.exists():
                     dest.unlink()  # never keep a partial file
                 raise
-        if used is not None:
-            used.add(f"photo_{best_photo['id']}")
-        return dest
+        return dest, best_score, f"photo_{best_photo['id']}"
     except Exception as e:
         warn(f"Pexels photo failed for '{query}' ({e}).")
-    return None
+    return None, 0, None
+
+
+def pexels_photo(query: str, used: set | None = None):
+    """Best literal-match stock photo for one query (Ken Burns at render).
+
+    Returns an assets/pexels_{id}.jpg Path (the .jpg suffix triggers the
+    render() Ken Burns branch) or None. `used` keys photos as f"photo_{id}"
+    so they never collide with video ids in the shared per-run set.
+    """
+    dest, _score, key = _best_photo(query, used)
+    if dest is not None and key is not None and used is not None:
+        used.add(key)
+    return dest
 
 
 def beat_card(i: int, text: str) -> Path:
@@ -1206,31 +1234,45 @@ def _stock_offset(stock: Path, part_idx: int, parts: int):
 
 
 def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
-    """Per beat: STILLS_PER_BEAT cuts (Pexels video -> photo -> card).
+    """Per beat: STILLS_PER_BEAT cuts (Pexels video vs photo -> card).
 
     The niche decides the stock policy: ranking searches each beat's OWN
     query (literal item match); horror uses ambient B-roll from
     niche.AMBIENT_QUERIES, deliberately not story-matched. Returns
     [(clip, seek_or_None, beat_idx)]: ONE clip is resolved per beat and
     reused across its cuts (2nd-half cuts seek via _stock_offset; photos
-    get seek None and Ken Burns at render). Photos are the middle layer;
-    beats with no stock or photo render a Pillow title card.
-    Durations stay per-beat and are split at render time.
+    get seek None and Ken Burns at render). Video and photo compete head
+    to head on normalized accuracy (video raw slug score * 2 vs photo
+    2*alt + url); higher wins, ties go to video (motion preferred), both
+    missing renders a Pillow title card. Durations stay per-beat and are
+    split at render time.
     """
     clips = []
     used_pexels: set = set()
     use_beat = niche.USE_BEAT_QUERY
     still_n = 0
+    n_video = n_photo = n_card = 0
     for i, b in enumerate(beats):
         parts = _split_beat(b["text"], STILLS_PER_BEAT)
         query = (b.get("query", "") if use_beat
                  else random.choice(niche.AMBIENT_QUERIES))
-        stock = pexels_clip(query, used_pexels, mood=niche.USE_MOOD)
-        is_photo = False
-        if stock is None:
-            photo = pexels_photo(query, used_pexels)
-            if photo is not None:
-                stock, is_photo = photo, True
+        # _best_* only read `used`; the winner's key is committed below so
+        # the loser never burns its id for later beats.
+        vpath, vraw, vkey = _best_video(query, used_pexels, mood=niche.USE_MOOD)
+        ppath, praw, pkey = _best_photo(query, used_pexels)
+        vnorm = vraw * 2
+        stock, is_photo, kind = None, False, "card"
+        if vpath is not None and (ppath is None or vnorm >= praw):
+            stock, is_photo, kind = vpath, False, "video"
+            used_pexels.add(vkey)
+            n_video += 1
+        elif ppath is not None:
+            stock, is_photo, kind = ppath, True, "photo"
+            used_pexels.add(pkey)
+            n_photo += 1
+        else:
+            n_card += 1
+        log(f"Beat {i + 1} ('{query}'): {kind} (vscore={vnorm}, pscore={praw}).")
         for j, part in enumerate(parts):
             clip, seek = None, None
             if stock is not None:
@@ -1243,7 +1285,8 @@ def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
                 clip = beat_card(still_n, part)
             clips.append((clip, seek, i))
             still_n += 1
-    log(f"Visuals: {len(clips)} cuts for {len(beats)} beats.")
+    log(f"Visuals: {len(clips)} cuts for {len(beats)} beats "
+        f"({n_video} video, {n_photo} photo, {n_card} card).")
     return clips
 
 
@@ -1391,13 +1434,15 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
                          # cover-crop: any input aspect fills 1080x1920 undistorted
                          "-vf", f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,"
                                 f"crop={W * 2}:{H * 2},{zb},fps=30",
-                         "-t", str(seg_dur), "-pix_fmt", "yuv420p", "-c:v", "libx264",
-                         "-preset", "veryfast", str(seg)], f"segment-{i}-kenburns")
+                          "-t", str(seg_dur), "-pix_fmt", "yuv420p", "-c:v", "libx264",
+                          "-preset", "veryfast", "-crf", "20", "-maxrate", "12M",
+                          "-bufsize", "24M", str(seg)], f"segment-{i}-kenburns")
         elif c.suffix == ".png":
             _run_ffmpeg(["ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", str(c),
                          "-t", str(seg_dur), "-vf", f"scale={W}:{H},fps=30",
-                         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
-                         str(seg)], f"segment-{i}-slide")
+                          "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+                          "-crf", "20", "-maxrate", "12M", "-bufsize", "24M",
+                          str(seg)], f"segment-{i}-slide")
         else:
             # Stock halves seek into different footage; loop guards short stock
             # so a segment can never run dry and truncate the narration.
@@ -1407,16 +1452,18 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
             cmd += ["-stream_loop", "-1", "-i", str(c),
                     "-t", str(seg_dur),
                     "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps=30",
-                    "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
-                    "-an", str(seg)]
+                     "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+                     "-crf", "20", "-maxrate", "12M", "-bufsize", "24M",
+                     "-an", str(seg)]
             _run_ffmpeg(cmd, f"segment-{i}-clip")
         segs.append(seg)
     concat = ASSETS / "concat.txt"
     concat.write_text("".join(f"file '{s.resolve()}'\n" for s in segs))
     video_only = ASSETS / "video_only.mp4"
     _run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                 "-i", str(concat), "-c:v", "libx264", "-preset", "veryfast",
-                 "-pix_fmt", "yuv420p", str(video_only)], "concat")
+                  "-i", str(concat), "-c:v", "libx264", "-preset", "veryfast",
+                  "-crf", "20", "-maxrate", "12M", "-bufsize", "24M",
+                  "-pix_fmt", "yuv420p", str(video_only)], "concat")
     # Mux narration + bed + tiny bottom captions + niche overlay.
     # Bed is mixed quietly under the voice (normalize=0 keeps narration full).
     # The overlay lives here (not per-segment): only the finished timeline has
@@ -1433,16 +1480,18 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
         return ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
                 "-filter_complex", f"{v};{achain}",
                 "-map", "[vout]", "-map", "[aout]",
-                "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-                "-shortest", str(out_path)]
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+                "-maxrate", "12M", "-bufsize", "24M", "-c:a", "aac", "-b:a", "128k",
+                "-ar", "44100", "-movflags", "+faststart", "-shortest", str(out_path)]
 
     vchain = (f"[0:v]{blur}{board}{vf_subs},format=yuv420p[vout]" if vf_subs
               else f"[0:v]{blur}{board}format=yuv420p[vout]")
     cmd = ["ffmpeg", "-y", "-i", str(video_only), "-i", str(audio), "-i", str(bed),
            "-filter_complex", f"{vchain};{achain}",
            "-map", "[vout]", "-map", "[aout]",
-           "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac",
-           "-shortest", str(out_path)]
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+           "-maxrate", "12M", "-bufsize", "24M", "-c:a", "aac", "-b:a", "128k",
+           "-ar", "44100", "-movflags", "+faststart", "-shortest", str(out_path)]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
