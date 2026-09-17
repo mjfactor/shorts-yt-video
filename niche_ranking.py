@@ -66,6 +66,19 @@ TOPICS = (
     "fastest dog breeds in the world",
     "most popular pets in the world",
     "largest insects in the world",
+    "smallest wild cats in the world",
+    "longest living dog breeds in the world",
+    "smartest birds in the world",
+    "strangest deep sea creatures in the world",
+    "largest spiders in the world",
+    "most venomous spiders in the world",
+    "largest farm animals in the world",
+    "most colorful frogs in the world",
+    "most colorful snakes in the world",
+    "longest migrations in the animal kingdom",
+    "largest rodents in the world",
+    "fastest insects in the world",
+    "biggest crabs in the world",
     # Geography and nature.
     "tallest waterfalls in the world",
     "largest lakes in the world",
@@ -82,6 +95,14 @@ TOPICS = (
     "longest coastlines in the world",
     "most famous beaches in the world",
     "most dangerous roads in the world",
+    "largest caves in the world",
+    "most famous cliffs in the world",
+    "most famous mountains in the world",
+    "largest forests in the world",
+    "most famous geysers in the world",
+    "most famous islands in the world",
+    "largest bays in the world",
+    "most visited national parks in the world",
     # Structures, cities, landmarks.
     "longest bridges in the world",
     "largest castles in the world",
@@ -98,6 +119,15 @@ TOPICS = (
     "largest aquariums in the world",
     "oldest buildings on Earth",
     "biggest shipwrecks in history",
+    "most famous towers in the world",
+    "largest palaces in the world",
+    "largest churches in the world",
+    "most famous mosques in the world",
+    "largest libraries in the world",
+    "most famous markets in the world",
+    "most famous fountains in the world",
+    "most famous lighthouses in the world",
+    "longest walls in the world",
     # Vehicles and machines.
     "largest cargo airplanes ever built",
     "fastest fighter jets ever built",
@@ -106,12 +136,32 @@ TOPICS = (
     "fastest trains in the world",
     "largest yachts in the world",
     "largest submarines ever built",
+    "most popular pickup trucks in the world",
+    "largest container ships in the world",
+    "biggest rockets ever built",
+    "most famous tanks in history",
+    "most famous cable cars in the world",
+    "most famous race tracks in the world",
+    "largest sailing ships in the world",
     # Space, sports, food.
     "largest planets in the solar system",
     "biggest moons in the solar system",
     "most popular sports in the world",
     "hottest chili peppers in the world",
     "most expensive fruits in the world",
+    "brightest stars in the night sky",
+    "most famous constellations in the night sky",
+    "most famous space missions in history",
+    "largest telescopes in the world",
+    "most popular cheeses in the world",
+    "most popular breads in the world",
+    "most popular coffee drinks in the world",
+    "most popular street foods in the world",
+    "most popular desserts in the world",
+    "largest theme parks in the world",
+    "largest zoos in the world",
+    # More variety: recurring light celebrations (filmable, no dates).
+    "most famous festivals of lights in the world",
 )
 
 AVOID_INTRO = ("Already-used countdowns — do NOT reuse any of these topics, "
@@ -261,8 +311,8 @@ def build_prompt(history: list[dict]):
         "Description: exactly 2 sentences, include 1-2 fitting emojis and 3 hashtags, but emojis are metadata-only and never burned into the video. "
         "Tags: array of exactly 5 plain-ASCII strings, no emoji. "
         "Items: array of exactly 5 ranked item names, number 5 first and number 1 last. Keep each name short, 1-3 words, unique, and readable on screen. "
-        "Beats: array of exactly 7 objects in video order: hook, number 5, number 4, number 3, number 2, number 1, closer. Each object must be {\"text\": <exact narration chunk>, \"query\": <literal stock-video search phrase for that subject>, \"label\": <\"\" for hook and closer, or \"5\", \"4\", \"3\", \"2\", \"1\" for the five ranked beats>}. "
-        "Hard validation rules: (1) the 7 beat texts joined in order must equal the full narration exactly, (2) each of the 5 items must appear in the narration, (3) all 5 item names must be unique, (4) the chosen topic and ranked items must differ from recent history, (5) facts must be broadly known and safe; do not invent precise dates, records, or statistics. Example valid beat object: {'text': 'At number 5, the saltwater crocodile. Over 6 meters long.', 'query': 'saltwater crocodile water surface', 'label': '5'}. "
+        "Beats: array of exactly 7 objects in video order: hook, number 5, number 4, number 3, number 2, number 1, closer. Each object must be {\"text\": <exact narration chunk>, \"query\": <short searchable stock query, 2-4 words, MUST start with the exact ranked item name plus at most one habitat noun>, \"label\": <\"\" for hook and closer, or \"5\", \"4\", \"3\", \"2\", \"1\" for the five ranked beats>}. "
+        "Hard validation rules: (1) the 7 beat texts joined in order must equal the full narration exactly, (2) each of the 5 items must appear in the narration, (3) all 5 item names must be unique, (4) the chosen topic and ranked items must differ from recent history, (5) facts must be broadly known and safe; do not invent precise dates, records, or statistics. Example valid beat object: {'text': 'At number 5, the saltwater crocodile. Over 6 meters long.', 'query': 'saltwater crocodile water', 'label': '5'}. "
         "Do not include markdown, notes, or any extra keys. Output only the JSON object."
     )
     return prompt, slots

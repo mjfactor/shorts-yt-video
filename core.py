@@ -968,6 +968,8 @@ def _mood_query(q: str) -> str:
 _QUERY_STOPWORDS = frozenset({
     "a", "an", "the", "in", "on", "of", "at", "to", "for",
     "with", "from", "and", "or", "is", "are", "its", "it",
+    "cinematic", "close", "creeping", "slowly", "swimming",
+    "underwater", "slithering", "wild",
 })
 
 
@@ -1002,7 +1004,82 @@ def _score_text(haystack, words: list[str]) -> int:
     return sum(1 for w in words if w and w in h)
 
 
-def _best_video(query: str, used: set | None = None, mood: bool = True):
+def _item_require_words(item: str) -> list[str]:
+    """Distinctive item words a stock candidate must mention (lowercased).
+
+    Long (>=6-char) words are distinctive ('anaconda' beats 'green'); when
+    the item has no long word, any word qualifies. Never raises.
+    """
+    try:
+        tokens = re.findall(r"[a-z0-9]+", (item or "").lower())
+        long = [w for w in tokens if len(w) >= 6]
+        return long or tokens
+    except Exception:
+        return []
+
+
+def _meets_require(haystack: str, require: list[str] | None) -> bool:
+    """True when no gate applies or any require word is a substring."""
+    if not require:
+        return True
+    h = (haystack or "").lower()
+    return any(w and w in h for w in require)
+
+
+def _family_query_for_item(item: str) -> tuple[str, list[str]]:
+    """(query, require) guessing the subject family from an item name.
+
+    Generic, no species dictionary: ranking items are '<adjective> <family>'
+    shaped, so the last word is the family guess ('Green Anaconda' ->
+    'anaconda', 'Burmese Python' -> 'python', 'Bald Eagle' -> 'eagle',
+    'Eiffel Tower' -> 'tower'); single-word items use that word.
+    Returns ("", []) when the item has no usable word. Never raises.
+    """
+    try:
+        tokens = re.findall(r"[a-z0-9]+", (item or "").lower())
+        if not tokens:
+            return "", []
+        fam = tokens[-1]
+        return fam, [fam]
+    except Exception:
+        return "", []
+
+
+def _topic_query_for_topic(topic: str) -> tuple[str, list[str]]:
+    """(query, require) for the topic's generic subject noun, or ("", []).
+
+    Generic, no dictionary: the first plural (trailing-s) content word past
+    stopwords is the subject in virtually every pool topic ('heaviest
+    snakes in the world' -> 'snakes', 'tallest buildings ...' ->
+    'buildings'). Topics without one ('largest fish in the ocean') return
+    ("", []) and skip the topic tier. The query is the SINGULAR form so
+    singular alts still meet the scorer's threshold ('snake' matches both
+    'snake' and 'snakes' alts); require covers both spellings. Never raises.
+    """
+    try:
+        tokens = [w for w in re.findall(r"[a-z0-9]+", (topic or "").lower())
+                  if w not in _QUERY_STOPWORDS]
+        plural = ""
+        for w in tokens:
+            if len(w) >= 4 and w.endswith("s") and not w.endswith("ss"):
+                plural = w
+                break
+        if not plural:
+            return "", []
+        if plural.endswith("ies") and len(plural) > 4:
+            singular = plural[:-3] + "y"
+        elif plural.endswith(("ses", "xes", "ches", "shes")) and len(plural) > 4:
+            singular = plural[:-2]
+        else:
+            singular = plural[:-1]
+        require = [plural] + ([singular] if singular and singular != plural else [])
+        return singular, require
+    except Exception:
+        return "", []
+
+
+def _best_video(query: str, used: set | None = None, mood: bool = True,
+                require: list[str] | None = None):
     """Best literal-match stock video for one query (read-only on `used`).
 
     Returns (dest|None, raw_score, commit_key|None). `used` is only checked,
@@ -1012,6 +1089,9 @@ def _best_video(query: str, used: set | None = None, mood: bool = True):
     (photo alt hits already count double, so a 2-word video slug match = 4
     lines up with a 2-word photo alt match = 4). Score 0 when no candidate
     meets the accuracy gate (min(2, len(words)) multi-word, 1 single-word).
+    `require` is an optional item-gate word list: candidates whose URL slug
+    lacks every require word are skipped (wrong-species guard), falling back
+    to no video rather than a mismatch.
     """
     if not PEXELS_KEY:
         return None, 0, None
@@ -1037,6 +1117,8 @@ def _best_video(query: str, used: set | None = None, mood: bool = True):
             for v in r.json().get("videos", []):
                 if used is not None and v.get("id") in used:
                     continue  # same story must not show the same clip twice
+                if not _meets_require(v.get("url", ""), require):
+                    continue  # item gate: wrong species, never score it
                 score = _score_text(v.get("url", ""), words)
                 if score < threshold:
                     continue
@@ -1095,14 +1177,17 @@ def pexels_clip(query: str, used: set | None = None, mood: bool = True):
     return dest
 
 
-def _best_photos(query: str, used: set | None = None, n: int = 1):
+def _best_photos(query: str, used: set | None = None, n: int = 1,
+                 require: list[str] | None = None):
     """Top-N literal-match stock photos for one query (read-only on `used`).
 
-    Returns [(dest, score, commit_key)] sorted score desc, then area desc,
+    Returns [(dest, score, commit_key, alt)] sorted score desc, then area desc,
     then aspect-near-9:16 — distinct ids passing the accuracy gate
     (score >= min(2, len(words)), width >= PEXELS_MIN_WIDTH, has original),
     skipping ids already in `used` and dupes within this call. `used` is
     only checked, never mutated; the caller commits the winners' keys.
+    `require` is an optional item-gate word list: candidates whose alt+url
+    lack every require word are skipped (wrong-species guard).
     One photo search per query variant (max 3), collecting top-N from the
     same pages — no extra per-photo API calls. Downloads+caches each hit
     (assets/pexels_{id}.jpg); a failed download warns, deletes the partial,
@@ -1135,6 +1220,8 @@ def _best_photos(query: str, used: set | None = None, n: int = 1):
                     continue
                 alt = p.get("alt", "")
                 url = p.get("url", "")
+                if not _meets_require(f"{alt} {url}", require):
+                    continue  # item gate: wrong species, never score it
                 score = (2 * _score_text(alt, words)
                          + _score_text(url, words))
                 if score < threshold:
@@ -1175,24 +1262,25 @@ def _best_photos(query: str, used: set | None = None, n: int = 1):
                         dest.unlink()  # never keep a partial file
                     warn(f"Pexels photo download failed for '{query}' ({e}).")
                     continue
-            out.append((dest, score, f"photo_{p['id']}"))
+            out.append((dest, score, f"photo_{p['id']}", p.get("alt", "")))
         return out
     except Exception as e:
         warn(f"Pexels photo failed for '{query}' ({e}).")
     return []
 
 
-def _best_photo(query: str, used: set | None = None):
+def _best_photo(query: str, used: set | None = None,
+                require: list[str] | None = None):
     """Best literal-match stock photo for one query (read-only on `used`).
 
-    Returns (dest|None, score, commit_key|None). `used` is only checked,
+    Returns (dest|None, score, commit_key|None, alt). `used` is only checked,
     never mutated — the caller commits the winner's f"photo_{id}" key so a
     losing candidate never burns its id. Score = 2*alt_hits + url_hits
     (alt is more descriptive, hence double weight); callers compare it
     against video raw_score*2. Score 0 when nothing meets the gate.
     """
-    res = _best_photos(query, used, 1)
-    return res[0] if res else (None, 0, None)
+    res = _best_photos(query, used, 1, require)
+    return res[0] if res else (None, 0, None, "")
 
 
 def pexels_photo(query: str, used: set | None = None):
@@ -1202,7 +1290,7 @@ def pexels_photo(query: str, used: set | None = None):
     render() Ken Burns branch) or None. `used` keys photos as f"photo_{id}"
     so they never collide with video ids in the shared per-run set.
     """
-    dest, _score, key = _best_photo(query, used)
+    dest, _score, key, *_rest = _best_photo(query, used)
     if dest is not None and key is not None and used is not None:
         used.add(key)
     return dest
@@ -1251,7 +1339,8 @@ def _stock_offset(stock: Path, part_idx: int, parts: int):
     return max(0.0, dur * part_idx / parts)
 
 
-def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
+def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
+                      topic: str = "") -> list[tuple]:
     """Per beat: STILLS_PER_BEAT cuts (Pexels video vs photos -> card).
 
     The niche decides the stock policy: ranking searches each beat's OWN
@@ -1260,40 +1349,88 @@ def visuals_for_beats(beats: list[dict], niche) -> list[tuple]:
     [(clip, seek_or_None, beat_idx)]. Video and photos compete head to
     head at beat level on normalized accuracy (video raw slug score * 2
     vs best-photo 2*alt + url); higher wins, ties go to video (motion
-    preferred). A video win reuses ONE clip across the beat's cuts (later
-    cuts seek via _stock_offset for continuity); a photo win emits one
-    DISTINCT photo per cut (cycling plist[0] only when Pexels returned
-    fewer than parts), each Ken Burns'd at render. Both missing renders
-    Pillow title cards. Durations stay per-beat, split at render time.
+    preferred). Labeled beats (#5..#1, positionally zipped with `items`
+    like board_filter) search in tiers: exact (beat query + distinctive
+    item word: long >=6-char word, else any word) -> family (item's last
+    word as the family guess, e.g. 'Green Anaconda' -> 'anaconda', gated
+    on that word, so a close relative fills in) -> topic (the topic's
+    generic plural noun, e.g. 'snakes', gated on both spellings) ->
+    Pillow title card. Wrong-family stock never airs at any tier; the
+    card is the last resort only. Unlabeled beats (hook/closer) keep the
+    single ungated search. A video win reuses ONE clip across the beat's
+    cuts (later cuts seek via _stock_offset for continuity); a photo win
+    emits one DISTINCT photo per cut (cycling plist[0] only when Pexels
+    returned fewer than parts), each Ken Burns'd at render. Both missing
+    renders Pillow title cards. Durations stay per-beat, split at render
+    time. Fallback tiers only run on a miss, so extra Pexels searches are
+    bounded (~2 per empty tier, never on a hit).
     """
     clips = []
     used_pexels: set = set()
     use_beat = niche.USE_BEAT_QUERY
+    # Labeled beats in reveal order (#5 first) zip positionally with items
+    # (#5 -> items[0] ... #1 -> items[4]); hook/closer stay ungated.
+    labeled = [(idx, str(b.get("label", "")))
+               for idx, b in enumerate(beats or [])
+               if str(b.get("label", "")).isdigit()]
+    names = list(items or [])
+    gate_for: dict = {}
+    fam_for: dict = {}
+    for (beat_idx, _lab), name in zip(labeled, names + [""] * len(labeled)):
+        gate_for[beat_idx] = _item_require_words(name) if name else []
+        fam_for[beat_idx] = _family_query_for_item(name) if name else ("", [])
+    tquery, trequire = _topic_query_for_topic(topic)
     still_n = 0
     n_video = n_photo = n_card = 0
     for i, b in enumerate(beats):
         parts = _split_beat(b["text"], STILLS_PER_BEAT)
         query = (b.get("query", "") if use_beat
                  else random.choice(niche.AMBIENT_QUERIES))
+        tiered = bool(use_beat and gate_for.get(i))
+        require = gate_for.get(i)
         # _best_* only read `used`; the winner's key(s) are committed below
         # so losers never burn their ids for later beats.
-        vpath, vraw, vkey = _best_video(query, used_pexels, mood=niche.USE_MOOD)
-        plist = _best_photos(query, used_pexels, len(parts))
+        vpath, vraw, vkey = _best_video(query, used_pexels, mood=niche.USE_MOOD,
+                                        require=require)
+        plist = _best_photos(query, used_pexels, len(parts), require)
+        tier, eff_query = "exact", query
+        if tiered and vpath is None and not plist:
+            fquery, frequire = fam_for.get(i, ("", []))
+            if fquery and frequire:
+                fpath, fraw, fkey = _best_video(
+                    fquery, used_pexels, mood=niche.USE_MOOD, require=frequire)
+                fplist = _best_photos(fquery, used_pexels, len(parts), frequire)
+                if fpath is not None or fplist:
+                    vpath, vraw, vkey, plist = fpath, fraw, fkey, fplist
+                    tier, eff_query = "family", fquery
+        if tiered and tier == "exact" and vpath is None and not plist and tquery:
+            tpath, traw, tkey = _best_video(
+                tquery, used_pexels, mood=niche.USE_MOOD, require=trequire)
+            tplist = _best_photos(tquery, used_pexels, len(parts), trequire)
+            if tpath is not None or tplist:
+                vpath, vraw, vkey, plist = tpath, traw, tkey, tplist
+                tier, eff_query = "topic", tquery
         vnorm = vraw * 2
         pbest = plist[0][1] if plist else 0
         vclip, photolist, kind = None, [], "card"
+        winner, alt_snip = "none", ""
         if plist and (vpath is None or pbest > vnorm):
             photolist, kind = plist, f"{len(parts)}xphoto"
-            for (_, _, k) in plist:
+            for (_, _, k, *_rest) in plist:
                 used_pexels.add(k)
             n_photo += len(parts)
+            winner = plist[0][2]
+            alt_snip = f" alt='{(plist[0][3] if len(plist[0]) > 3 else '')[:60]}'"
         elif vpath is not None:
             vclip, kind = vpath, "video"
             used_pexels.add(vkey)
             n_video += len(parts)
+            winner = f"video_{vkey}"
         else:
             n_card += len(parts)
-        log(f"Beat {i + 1} ('{query}'): {kind} (vscore={vnorm}, pscore={pbest}).")
+            tier = "card"
+        via = f"->{eff_query}" if eff_query != query else ""
+        log(f"Beat {i + 1} ('{query}'{via}): {kind} tier={tier} winner={winner}{alt_snip} (vscore={vnorm}, pscore={pbest}).")
         for j, part in enumerate(parts):
             clip, seek = None, None
             if vclip is not None:
@@ -1448,7 +1585,7 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
                 zb = (f"zoompan=z='min(zoom+0.0015,1.3)':d={frames}:"
                       f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H}")
             else:
-                zb = (f"zoompan=z='if(eq(in,1),1.3,max(zoom-0.0015,1.0))':d={frames}:"
+                zb = (f"zoompan=z='if(eq(on,1),1.3,max(zoom-0.0015,1.0))':d={frames}:"
                       f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H}")
             _run_ffmpeg(["ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", str(c),
                          # cover-crop: any input aspect fills 1080x1920 undistorted
@@ -1808,7 +1945,8 @@ def run(niche):
     dur = audio_duration(mp3)
     check_audio_duration(dur, len(meta["narration"].split()))
     beats = meta["beats"]
-    clips = visuals_for_beats(beats, niche)
+    clips = visuals_for_beats(beats, niche, list(meta.get("items", [])),
+                              (slots or {}).get("topic", ""))
     if beat_durs and len(beat_durs) == len(beats) and sum(beat_durs) > 0:
         # Measured per-beat TTS timings (Gemini path): rescale to the real
         # muxed total so concat rounding can't drift visuals off the voice.
