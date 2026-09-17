@@ -6,6 +6,7 @@ Delete this file + its NICHES line in pipeline.py to drop the niche.
 """
 import json
 import os
+import random
 import re
 
 import core as C
@@ -290,6 +291,51 @@ def _items_hint_line(hint: list[str] | None) -> str:
             f"any that does not fit): {', '.join(hint)}. ")
 
 
+# Rotating hook templates: one is picked per run (random.choice) and spliced
+# into the Narration clause, so openers stop sounding samey. Every template
+# teases #1 WITHOUT naming it, avoids all BANNED_TITLE_HOOKS phrasing,
+# runs ~15-30 words, and stays spoken-aloud fifth-grade level. Examples are
+# style examples only — each carries a do-not-copy guard because Gemini
+# otherwise repeats example sentences verbatim.
+HOOK_STYLES = (
+    ("stakes",
+     "Open with STAKES + SCALE: state one rounded size, weight, or height "
+     "claim about number 1 as a comparison to something familiar "
+     "(weighing over X, heavier or taller than Y combined), without naming "
+     "it. Style example only, do not repeat this example sentence: "
+     "'Number 1 weighs over 100 tonnes, heavier than 20 elephants combined. "
+     "And it is still growing.'"),
+    ("contrarian",
+     "Open by busting a common MYTH: say what everyone thinks holds the "
+     "record, then reveal it is not even close, without naming number 1. "
+     "Style example only, do not repeat this example sentence: 'Everyone "
+     "thinks the lion is the strongest hunter alive. It is not even close "
+     "to number 1.'"),
+    ("sensory",
+     "Open with a SENSORY close-up: one vivid sound, sight, or size image "
+     "tied to number 1, something a viewer can picture or hear, without "
+     "naming it. Style example only, do not repeat this example sentence: "
+     "'Imagine teeth the size of bananas, and a roar heard kilometers away. "
+     "That is number 1 waiting.'"),
+    ("record",
+     "Open by framing number 1 as an unbeaten RECORD: nothing alive or "
+     "built today comes close, without naming it. Style example only, do "
+     "not repeat this example sentence: 'Nothing alive today comes close "
+     "to number 1. It stands nearly 30 meters tall, taller than 5 houses.'"),
+)
+
+# Stale openers that already aired to death (see history.json). Prompt-level
+# ban only — never open with these; no raising validation, so a draft that
+# slips through never breaks the run.
+WEAK_OPENERS = (
+    "these are the 5",
+    "human beings love",
+    "deep beneath our feet",
+    "nature hides",
+    "push human engineering to",
+)
+
+
 def build_prompt(history: list[dict]):
     """Gemini prompt for a Top-5 countdown (~2 min). Returns (prompt, slots)."""
     history = history or []
@@ -299,6 +345,8 @@ def build_prompt(history: list[dict]):
     if topic is None:
         topic = C._pick_avoiding(TOPICS, recent_topics, history)
     slots = {"topic": topic, "topic_source": source}
+    hook_style, hook_direction = random.choice(HOOK_STYLES)
+    slots["hook_style"] = hook_style
     C.log(f"Ranking topic ({source}): {topic}")
     prompt = (
         f"Write a Top-5 countdown YouTube Shorts script about the {topic}. "
@@ -307,7 +355,10 @@ def build_prompt(history: list[dict]):
         f"{_items_hint_line(hint)}"
         "Return ONLY valid JSON with exactly these keys: title, narration, description, tags, items, beats. "
         "Title: plain ranked-list format, must start with '5' and state exactly what is ranked. Example valid titles: '5 Largest Animals on Earth' or '5 Most Expensive Things Ever Sold'. Keep it under 60 characters, no question hook, no curiosity-gap phrasing, no 'which' or 'where' setup, no 'Number 1...' suffix, no clickbait. Do not use any banned title hooks such as 'Number 1 Is Terrifying', 'Number One Is Terrifying', '#1 Is Terrifying', 'Will Shock You', or 'You Won't Believe'. One emoji is allowed only at the very start or end, but the on-screen banner still shows the same title without the emoji. "
-        "Narration: 200-220 words, present tense, fifth-grade reading level, short punchy sentences, one clear idea per sentence, no emojis, spoken aloud. Structure: 1-2 sentence hook teasing number 1 without naming it; then the countdown from number 5 to number 1, each entry naming the item and 1-2 rounded, widely known facts using approximate language like 'about', 'over', or 'nearly'; then a 1-sentence closer asking viewers to comment their own ranking. Use commas and ellipses for dramatic pauses before each reveal. "
+        "Narration: 200-220 words, present tense, fifth-grade reading level, short punchy sentences, one clear idea per sentence, no emojis, spoken aloud. Structure: 1-2 sentence hook teasing number 1 without naming it, written in this rotating style — "
+        f"{hook_direction} "
+        "The hook must contain ONE concrete stakes claim about number 1 (a rounded number or a size, weight, or height comparison using approximate language like 'about', 'over', or 'nearly'). Never open the narration with any of these stale openers: 'these are the 5', 'human beings love', 'deep beneath our feet', 'nature hides', 'push human engineering to'. "
+        "Then the countdown from number 5 to number 1, each entry naming the item and 1-2 rounded, widely known facts using approximate language like 'about', 'over', or 'nearly'; then a 1-sentence closer asking viewers to comment their own ranking. Use commas and ellipses for dramatic pauses before each reveal. "
         "Description: exactly 2 sentences, include 1-2 fitting emojis and 3 hashtags, but emojis are metadata-only and never burned into the video. "
         "Tags: array of exactly 5 plain-ASCII strings, no emoji. "
         "Items: array of exactly 5 ranked item names, number 5 first and number 1 last. Keep each name short, 1-3 words, unique, and readable on screen. "
@@ -562,6 +613,7 @@ def similarity_reason(data: dict, slots: dict, recent: list[dict],
 def history_fields(slots: dict, meta: dict) -> dict:
     return {"topic": slots.get("topic", ""),
             "topicSource": slots.get("topic_source", "pool"),
+            "hookStyle": slots.get("hook_style", ""),
             "items": list(meta.get("items", [])[:10])}
 
 
