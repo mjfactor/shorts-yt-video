@@ -1448,7 +1448,7 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
                 zb = (f"zoompan=z='min(zoom+0.0015,1.3)':d={frames}:"
                       f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H}")
             else:
-                zb = (f"zoompan=z='if(eq(in,1),1.3,max(zoom-0.0015,1.0))':d={frames}:"
+                zb = (f"zoompan=z='if(eq(on,1),1.3,max(zoom-0.0015,1.0))':d={frames}:"
                       f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H}")
             _run_ffmpeg(["ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", str(c),
                          # cover-crop: any input aspect fills 1080x1920 undistorted
