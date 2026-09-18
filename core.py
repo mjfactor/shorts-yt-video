@@ -126,21 +126,24 @@ GEMINI_TTS_MODELS = [m.strip() for m in
 GEMINI_TTS_VOICES = ([v.strip() for v in
                       os.getenv("GEMINI_TTS_VOICES", "Charon").split(",")
                       if v.strip()] or ["Charon"])
+# Target spoken words-per-minute for Gemini TTS (default 155, calibrated for crisp Shorts pacing).
+# If raw generated speech drags below target, FFmpeg atempo gently speeds it up without pitch distortion.
+GEMINI_TTS_TARGET_WPM = _env_int("GEMINI_TTS_TARGET_WPM", 155)
 DEFAULT_GEMINI_TTS_STYLE = (
-    "Read in a natural, articulate documentary voice with steady pacing, "
-    "confident delivery, and authentic storytelling tone. Polished and engaging, "
-    "with clear, grounded emphasis on each reveal."
+    "Read in a crisp, energetic documentary voice at a brisk, natural YouTube Shorts pace "
+    "(around 150-160 words per minute). Articulate clearly with confident delivery, forward momentum, "
+    "and authentic storytelling tone. Avoid dragging or slurred words."
 )
 # Resonant alternate body style: authoritative countdown delivery, confident and weighty.
 DEEP_GEMINI_TTS_STYLE = (
-    "Read in a resonant, articulate documentary voice with steady, measured "
-    "pacing and grounded authority. Polished and commanding, without dragging "
-    "or sounding detached."
+    "Read in an articulate, authoritative documentary voice with crisp pacing "
+    "(around 150-160 words per minute) and grounded confidence. Polished and commanding, "
+    "without dragging, slurring, or sounding detached."
 )
 # Opening hook (beat 0) gets natural intrigue: draw the viewer in without hysterical hype.
 GEMINI_TTS_HOOK_PREFIX = (
     "For this opening hook only, deliver with sharp intrigue, curiosity, and "
-    "immediate engagement, drawing the viewer in with natural dramatic presence. "
+    "immediate engagement at a brisk pace, drawing the viewer in with natural dramatic presence. "
 )
 # Empty/whitespace env counts as unset so a CI empty string never kills direction.
 GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE") or "").strip() or DEFAULT_GEMINI_TTS_STYLE
@@ -166,45 +169,45 @@ def pick_tts_style(topic: str, text: str, beat_idx: int = -1, total_beats: int =
         "building", "statue", "island", "river", "desert", "volcano", "pyramid"
     ]):
         mood = (
-            "Read in a premium, cinematic documentary voice with steady pacing, "
-            "clear authority, and an authentic sense of scale and wonder."
+            "Read in a premium, cinematic documentary voice at a brisk, engaging pace "
+            "(~155 WPM) with clear authority, crisp articulation, and authentic wonder."
         )
     elif any(k in haystack for k in [
         "deadly", "danger", "horror", "haunted", "ghost", "creature",
         "predator", "attack", "monster", "scary", "venom", "poison", "toxic", "lethal"
     ]):
         mood = (
-            "Read in a tense, gripping documentary narration voice with measured pacing, "
-            "subtle intensity, and strong focus on the sheer danger."
+            "Read in a tense, gripping documentary narration voice at a focused, energetic pace "
+            "(~155 WPM) with subtle intensity, crisp delivery, and sharp momentum."
         )
     elif any(k in haystack for k in [
         "fastest", "speed", "hypercar", "jet", "missile", "mach", "quick", "rapid"
     ]):
         mood = (
-            "Read in a sharp, dynamic documentary voice with crisp articulation, "
-            "forward momentum, and an energetic sense of speed."
+            "Read in a sharp, dynamic documentary voice at a fast, punchy pace "
+            "(~160 WPM) with crisp articulation and forward momentum."
         )
     elif any(k in haystack for k in [
         "animal", "wild", "snake", "shark", "elephant", "cat",
         "dog", "predator", "nature", "wildlife", "bird", "fish"
     ]):
         mood = (
-            "Read in an engaging wildlife documentary voice with crisp pronunciation, "
-            "steady natural cadence, and grounded fascination."
+            "Read in an engaging wildlife documentary voice at a brisk, lively pace "
+            "(~155 WPM) with crisp pronunciation, natural cadence, and alert fascination."
         )
     else:
         mood = (
-            "Read in a calm, confident documentary voice with natural cadence, "
-            "authoritative delivery, and articulate pacing."
+            "Read in a confident, articulate documentary voice at a brisk YouTube Shorts pace "
+            "(~155 WPM) with natural cadence and energetic delivery."
         )
 
     # Dynamic beat-role adaptation: hook intrigue -> countdown momentum -> #1 reveal -> warm closer
     if beat_idx == 0:
-        role = " Hook the listener with intriguing curiosity and immediate presence."
+        role = " Hook the listener with intriguing curiosity, sharp energy, and immediate presence."
     elif 0 < beat_idx < total_beats - 2:
-        role = " Keep a confident countdown momentum, making the facts clear and compelling."
+        role = " Keep a confident countdown momentum, making the facts snappy, clear, and compelling."
     elif beat_idx == total_beats - 2:
-        role = " Give maximum dramatic weight and awe to this final number one reveal."
+        role = " Deliver this final number one reveal with powerful impact and crisp dramatic weight."
     elif beat_idx == total_beats - 1:
         role = " Transition into a warm, conversational, and direct closing tone."
     else:
@@ -754,7 +757,9 @@ def _gemini_synth(i: int, beat: dict, topic: str = "", total_beats: int = 7):
     """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure.
 
     Single voice per run (RUN_VOICE picked in run()); delivery style adapts
-    dynamically to the beat position and topic narration.
+    dynamically to the beat position and topic narration. If generated WPM is
+    below GEMINI_TTS_TARGET_WPM (~150-160 WPM), applies atempo filter to maintain
+    crisp, energetic Shorts pacing without pitch distortion.
     """
     voice = RUN_VOICE or (GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
                           if GEMINI_TTS_VOICES else "Charon")
@@ -763,9 +768,24 @@ def _gemini_synth(i: int, beat: dict, topic: str = "", total_beats: int = 7):
     raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
     seg = ASSETS / f"tts_beat_{i}.mp3"
     raw_pcm.write_bytes(pcm)
-    _run_ffmpeg(["ffmpeg", "-y", "-f", "s16le", "-ar", str(rate), "-ac", "1",
-                 "-i", str(raw_pcm), "-c:a", "libmp3lame", str(seg)],
-                f"tts-beat-{i}-pcm")
+
+    # Calculate spoken WPM of raw PCM (16-bit mono: 2 bytes per sample)
+    bytes_per_sec = rate * 2
+    raw_dur = max(0.1, len(pcm) / bytes_per_sec) if bytes_per_sec > 0 else 1.0
+    words = max(1, len(beat["text"].split()))
+    actual_wpm = (words / raw_dur) * 60.0
+
+    # Target is ~150-160 WPM (default 155). If speaking slower than 145 WPM,
+    # gently speed up with atempo (preserving exact pitch) to reach target WPM.
+    target_wpm = float(GEMINI_TTS_TARGET_WPM)
+    cmd = ["ffmpeg", "-y", "-f", "s16le", "-ar", str(rate), "-ac", "1",
+           "-i", str(raw_pcm)]
+    if target_wpm > 0 and actual_wpm < target_wpm - 5:
+        speed_ratio = min(1.6, max(0.8, target_wpm / actual_wpm))
+        log(f"TTS beat {i + 1} pacing: {actual_wpm:.0f} WPM -> {target_wpm:.0f} WPM (atempo={speed_ratio:.2f}x)")
+        cmd += ["-af", f"atempo={speed_ratio:.2f}"]
+    cmd += ["-c:a", "libmp3lame", str(seg)]
+    _run_ffmpeg(cmd, f"tts-beat-{i}-pcm")
     return voice, seg
 
 
@@ -1443,13 +1463,13 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
                         d.raise_for_status()
                         with open(dest, "wb") as f:
                             shutil.copyfileobj(d.raw, f)
-            try:
-                retry("Pexels photo download", _download, tries=2, backoff=5)
-            except Exception as e:
-                if dest.exists():
-                    dest.unlink()
-                warn(f"Pexels photo download failed for '{query}' ({e}).")
-                continue
+                try:
+                    retry("Pexels photo download", _download, tries=2, backoff=5)
+                except Exception as e:
+                    if dest.exists():
+                        dest.unlink()
+                    warn(f"Pexels photo download failed for '{query}' ({e}).")
+                    continue
             out.append((dest, score, f"photo_{p['id']}", p.get("alt", "")))
         return out
     except Exception as e:
