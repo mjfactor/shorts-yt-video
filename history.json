@@ -659,5 +659,31 @@
       "Louvre Palace",
       "Hofburg Palace"
     ]
+  },
+  {
+    "date": "2026-09-18_221423",
+    "title": "5 Heaviest Land Mammals on Earth 🐘",
+    "niche": "ranking",
+    "tags": [
+      "land mammals",
+      "heaviest animals",
+      "elephants",
+      "rhinos",
+      "wildlife facts"
+    ],
+    "narration": "The number one giant on our planet weighs over six tonnes, heavier than four pickup trucks combined. It rules the wild with pure, unmatched power. Starting at number 5, the Indian Rhinoceros... This armored powerhouse can weigh over two tonnes. It roams grassy floodplains and possesses thick folds of skin that resemble a giant suit of protective armor. At number 4, the White Rhinoceros... Reaching weights of nearly two and a half tonnes, it is the largest rhino species alive. Wide squared lips help it graze across vast open grasslands all day. Taking number 3, the African Forest Elephant... Weighing nearly four tonnes, this secretive giant is smaller than its savanna cousins. It navigates dense tropical rainforests, using straight tusks to move easily through thick jungle brush. At number 2, the Asian Elephant... This intelligent giant can weigh over four tonnes. It spends up to eighteen hours a day eating vegetation, using its incredible trunk to strip leaves and lift heavy tree branches. And at number 1, the African Bush Elephant... Weighing over six tonnes, it is the heaviest land mammal alive. Huge ears help cool its massive body under the blazing African sun. Which of these massive giants is your favorite? Tell us below!",
+    "bed": "bgm2.mp3",
+    "videoId": "6s5ndkCe8xU",
+    "tiktokBufferPostId": null,
+    "topic": "heaviest land mammals on Earth",
+    "topicSource": "ai",
+    "hookStyle": "stakes",
+    "items": [
+      "Indian Rhinoceros",
+      "White Rhinoceros",
+      "African Forest Elephant",
+      "Asian Elephant",
+      "African Bush Elephant"
+    ]
   }
 ]
