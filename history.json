@@ -737,5 +737,31 @@
       "Eclipse",
       "Dubai"
     ]
+  },
+  {
+    "date": "2026-09-18_200642",
+    "title": "5 Largest Deer Species on Earth 🦌",
+    "niche": "ranking",
+    "tags": [
+      "largest deer",
+      "moose",
+      "elk",
+      "deer species",
+      "wildlife"
+    ],
+    "narration": "Picture towering antlers scraping forest branches and massive hooves thundering through deep snow, hiding a giant weighing nearly eight hundred kilograms at the very top. Number 5, Red Deer. This agile animal stands over one meter tall at the shoulder and has impressive branching antlers. Number 4, Sambar Deer. This heavy forest dweller often weighs nearly five hundred kilograms and lives in dense tropical jungles. Number 3, Elk. This loud bugling runner reaches lengths of over two meters and roams vast mountain ranges. Number 2, Reindeer. This hardy arctic traveler grows broad hooves for walking on deep snow and ice. Number 1, Moose. This enormous beast stands taller than a horse and proudly carries massive flat antlers weighing nearly twenty kilograms. Which of these giant animals is your absolute favorite to spot in the wild?",
+    "bed": "bgm5.mp3",
+    "videoId": "dC3LunukDS0",
+    "tiktokBufferPostId": "6aad9bbba4c300df329d3563",
+    "topic": "largest deer species on Earth",
+    "topicSource": "ai",
+    "hookStyle": "sensory",
+    "items": [
+      "Red Deer",
+      "Sambar Deer",
+      "Elk",
+      "Reindeer",
+      "Moose"
+    ]
   }
 ]
