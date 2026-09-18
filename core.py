@@ -126,10 +126,13 @@ GEMINI_TTS_MODELS = [m.strip() for m in
 GEMINI_TTS_VOICES = ([v.strip() for v in
                       os.getenv("GEMINI_TTS_VOICES", "Charon").split(",")
                       if v.strip()] or ["Charon"])
+# Target speech rate in words per minute for Gemini TTS delivery (default 145 WPM -> ~80-85s for 200 words).
+# Calibrated via gentle atempo adjustment. 0 = unadjusted natural speed.
+GEMINI_TTS_TARGET_WPM = _env_int("GEMINI_TTS_TARGET_WPM", 145)
 DEFAULT_GEMINI_TTS_STYLE = (
-    "Read in a natural, articulate documentary voice with steady pacing, "
-    "confident delivery, and authentic storytelling tone. Polished and engaging, "
-    "with clear, grounded emphasis on each reveal."
+    "Read in a natural, articulate documentary voice with steady, engaging "
+    "pacing (~145 words per minute), confident delivery, and authentic storytelling tone. "
+    "Polished and dynamic, with clear, grounded emphasis on each reveal."
 )
 # Resonant alternate body style: authoritative countdown delivery, confident and weighty.
 DEEP_GEMINI_TTS_STYLE = (
@@ -166,23 +169,23 @@ def pick_tts_style(topic: str, text: str, beat_idx: int = -1, total_beats: int =
         "building", "statue", "island", "river", "desert", "volcano", "pyramid"
     ]):
         mood = (
-            "Read in a premium, cinematic documentary voice with steady pacing, "
-            "clear authority, and an authentic sense of scale and wonder."
+            "Read in a premium, cinematic documentary voice with steady, engaging pacing "
+            "(~145 words per minute), clear authority, and an authentic sense of scale and wonder."
         )
     elif any(k in haystack for k in [
         "deadly", "danger", "horror", "haunted", "ghost", "creature",
         "predator", "attack", "monster", "scary", "venom", "poison", "toxic", "lethal"
     ]):
         mood = (
-            "Read in a tense, gripping documentary narration voice with measured pacing, "
-            "subtle intensity, and strong focus on the sheer danger."
+            "Read in a tense, gripping documentary narration voice with measured, engaging pacing "
+            "(~145 words per minute), subtle intensity, and strong focus on the sheer danger."
         )
     elif any(k in haystack for k in [
         "fastest", "speed", "hypercar", "jet", "missile", "mach", "quick", "rapid"
     ]):
         mood = (
             "Read in a sharp, dynamic documentary voice with crisp articulation, "
-            "forward momentum, and an energetic sense of speed."
+            "forward momentum (~145 words per minute), and an energetic sense of speed."
         )
     elif any(k in haystack for k in [
         "animal", "wild", "snake", "shark", "elephant", "cat",
@@ -190,12 +193,12 @@ def pick_tts_style(topic: str, text: str, beat_idx: int = -1, total_beats: int =
     ]):
         mood = (
             "Read in an engaging wildlife documentary voice with crisp pronunciation, "
-            "steady natural cadence, and grounded fascination."
+            "steady engaging cadence (~145 words per minute), and grounded fascination."
         )
     else:
         mood = (
             "Read in a calm, confident documentary voice with natural cadence, "
-            "authoritative delivery, and articulate pacing."
+            "authoritative delivery, and articulate pacing (~145 words per minute)."
         )
 
     # Dynamic beat-role adaptation: hook intrigue -> countdown momentum -> #1 reveal -> warm closer
@@ -754,18 +757,40 @@ def _gemini_synth(i: int, beat: dict, topic: str = "", total_beats: int = 7):
     """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure.
 
     Single voice per run (RUN_VOICE picked in run()); delivery style adapts
-    dynamically to the beat position and topic narration.
+    dynamically to the beat position and topic narration. Calibrates to
+    GEMINI_TTS_TARGET_WPM via gentle atempo adjustment.
     """
     voice = RUN_VOICE or (GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
                           if GEMINI_TTS_VOICES else "Charon")
     pcm, rate = _gemini_tts_beat(beat["text"], voice, topic, is_hook=(i == 0),
                                  beat_idx=i, total_beats=total_beats)
     raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
+    raw_seg = ASSETS / f"tts_beat_{i}_raw.mp3"
     seg = ASSETS / f"tts_beat_{i}.mp3"
     raw_pcm.write_bytes(pcm)
     _run_ffmpeg(["ffmpeg", "-y", "-f", "s16le", "-ar", str(rate), "-ac", "1",
-                 "-i", str(raw_pcm), "-c:a", "libmp3lame", str(seg)],
+                 "-i", str(raw_pcm), "-c:a", "libmp3lame", str(raw_seg)],
                 f"tts-beat-{i}-pcm")
+
+    target_wpm = GEMINI_TTS_TARGET_WPM
+    if target_wpm > 0:
+        words = len(beat["text"].split())
+        raw_dur = audio_duration(raw_seg)
+        if raw_dur > 0 and words > 0:
+            current_wpm = (words / raw_dur) * 60.0
+            factor = target_wpm / current_wpm
+            factor = max(0.85, min(1.35, factor))
+            if abs(factor - 1.0) >= 0.03:
+                _run_ffmpeg(["ffmpeg", "-y", "-i", str(raw_seg),
+                             "-filter:a", f"atempo={factor:.3f}",
+                             "-c:a", "libmp3lame", str(seg)],
+                            f"tts-beat-{i}-atempo")
+                return voice, seg
+
+    if raw_seg.exists():
+        if seg.exists():
+            seg.unlink()
+        raw_seg.rename(seg)
     return voice, seg
 
 
