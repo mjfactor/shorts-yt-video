@@ -1189,47 +1189,113 @@ def _family_query_for_item(item: str, topic: str = "") -> tuple[str, list[str]]:
         return "", []
 
 
-def _topic_query_for_topic(topic: str) -> tuple[str, list[str]]:
-    """(query, require) for the topic's generic subject noun, or ("", []).
+_TOPIC_META_NOUNS = frozenset({
+    "breeds", "breed", "species", "types", "type", "kinds", "kind",
+    "varieties", "variety", "categories", "category",
+})
+_NON_PLURAL_NOUNS = frozenset({
+    "this", "gas", "glass", "grass", "boss", "cross", "crisis", "basis",
+    "status", "circus", "canvas", "apparatus", "series", "species",
+})
+_SUPERLATIVES = {
+    "largest": "large", "biggest": "big", "fastest": "fast", "tallest": "tall",
+    "deepest": "deep", "deadliest": "deadly", "heaviest": "heavy", "wild": "wild",
+    "scariest": "scary", "oldest": "old", "strongest": "strong", "longest": "long",
+    "highest": "high", "smallest": "small", "coldest": "cold", "hottest": "hot",
+    "giant": "giant", "massive": "massive",
+}
 
-    Preserves descriptive qualifiers (e.g. 'wild cats' -> 'wild cat',
-    'fighter jets' -> 'fighter jet') to prevent generic dilution.
+
+def _topic_stock_queries(topic: str) -> list[tuple[str, list[str]]]:
+    """Prioritized list of (query, require) fallback pairs for the topic's subject.
+
+    Overcomes Pexels gaps by extracting the actual underlying subject noun:
+    - Avoids meta-nouns like 'breeds' or 'species' (e.g. 'dog breeds' -> 'dog').
+    - Skips adjectives ending with '-ous' (e.g. 'venomous snakes' -> 'snake').
+    - Maps superlatives to natural stock search terms (e.g. 'largest dogs' -> 'large dog').
     """
     try:
-        tokens = [w for w in re.findall(r"[a-z0-9]+", (topic or "").lower())
-                  if w not in _QUERY_STOPWORDS]
-        plural_idx = -1
-        plural = ""
-        for idx, w in enumerate(tokens):
-            if len(w) >= 4 and w.endswith("s") and not w.endswith("ss"):
-                plural = w
-                plural_idx = idx
+        raw_tokens = re.findall(r"[a-z0-9]+", (topic or "").lower())
+        tokens = [w for w in raw_tokens if w not in _QUERY_STOPWORDS and w not in {
+            "world", "earth", "ever", "all", "time", "history", "top", "5", "five", "most"
+        }]
+        if not tokens:
+            return []
+
+        primary_token = None
+        qualifier = None
+
+        # Check for superlative anywhere in tokens
+        for w in tokens:
+            if w in _SUPERLATIVES:
+                qualifier = _SUPERLATIVES[w]
                 break
-        if not plural:
-            return "", []
-        if plural.endswith("ies") and len(plural) > 4:
-            singular = plural[:-3] + "y"
-        elif plural.endswith(("ses", "xes", "ches", "shes")) and len(plural) > 4:
-            singular = plural[:-2]
+            elif w.endswith(("ous", "ive", "ful")):
+                qualifier = w
+                break
+
+        # Check if there is a meta noun (e.g. 'breeds', 'species')
+        for idx, w in enumerate(tokens):
+            if w in _TOPIC_META_NOUNS and idx > 0:
+                primary_token = tokens[idx - 1]
+                if not qualifier and idx > 1 and tokens[idx - 2] not in _QUERY_STOPWORDS:
+                    qualifier = tokens[idx - 2]
+                break
+
+        # If no meta noun, scan from right to left for plural noun
+        if not primary_token:
+            for idx in range(len(tokens) - 1, -1, -1):
+                w = tokens[idx]
+                if w.endswith("ous") or w in _NON_PLURAL_NOUNS:
+                    continue
+                if len(w) >= 3 and (w.endswith("s") or w in {"aircraft", "sheep", "deer", "fish"}):
+                    primary_token = w
+                    if not qualifier and idx > 0 and tokens[idx - 1] not in _QUERY_STOPWORDS and not tokens[idx - 1].isdigit():
+                        qualifier = tokens[idx - 1]
+                    break
+
+        if not primary_token and tokens:
+            primary_token = tokens[-1]
+            if not qualifier and len(tokens) > 1 and not tokens[-2].isdigit():
+                qualifier = tokens[-2]
+
+        p = primary_token or ""
+        if p.endswith("ies") and len(p) > 4:
+            sing = p[:-3] + "y"
+            plur = p
+        elif p.endswith(("ses", "xes", "ches", "shes")) and len(p) > 4:
+            sing = p[:-2]
+            plur = p
+        elif p.endswith("s") and not p.endswith("ss") and len(p) > 3 and not p.endswith("ous"):
+            sing = p[:-1]
+            plur = p
         else:
-            singular = plural[:-1]
+            sing = p
+            plur = p if p in {"aircraft", "sheep", "deer", "fish"} else (p + "s")
 
-        qualifier = ""
-        if plural_idx > 0:
-            prev = tokens[plural_idx - 1]
-            if prev in {"wild", "sea", "ocean", "marine", "fighter", "cargo", "electric", "classic", "sports"}:
-                qualifier = prev
+        clean_qual = qualifier or ""
+        if clean_qual in _SUPERLATIVES:
+            clean_qual = _SUPERLATIVES[clean_qual]
 
-        if qualifier:
-            q = f"{qualifier} {singular}"
-            require = [f"{qualifier} {plural}", f"{qualifier} {singular}", singular, plural]
-        else:
-            q = singular
-            require = [plural] + ([singular] if singular and singular != plural else [])
+        queries = []
+        if clean_qual and clean_qual not in {"most", "the", sing}:
+            q_desc = f"{clean_qual} {sing}"
+            req_desc = [f"{clean_qual} {plur}", f"{clean_qual} {sing}", plur, sing]
+            queries.append((q_desc, req_desc))
 
-        return q, require
+        q_base = sing
+        req_base = [plur, sing] if plur != sing else [sing]
+        if (q_base, req_base) not in queries:
+            queries.append((q_base, req_base))
+        return queries
     except Exception:
-        return "", []
+        return []
+
+
+def _topic_query_for_topic(topic: str) -> tuple[str, list[str]]:
+    """(query, require) for the topic's generic subject noun, or ("", [])."""
+    queries = _topic_stock_queries(topic)
+    return queries[0] if queries else ("", [])
 
 
 def _best_video(query: str, used: set | None = None, mood: bool = True,
@@ -1495,7 +1561,7 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
     for (beat_idx, _lab), name in zip(labeled, names + [""] * len(labeled)):
         gate_for[beat_idx] = _item_require_words(name) if name else {}
         fam_for[beat_idx] = _family_query_for_item(name, topic) if name else ("", [])
-    tquery, trequire = _topic_query_for_topic(topic)
+    tqueries = _topic_stock_queries(topic)
     still_n = 0
     n_video = n_photo = n_card = 0
     for i, b in enumerate(beats):
@@ -1524,15 +1590,29 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
                 if fpath is not None or fplist:
                     vpath, vraw, vkey, plist = fpath, fraw, fkey, fplist
                     tier, eff_query = "family", fquery
-        if tiered and tier == "exact" and vpath is None and not plist and tquery:
-            tpath, traw, tkey = _best_video(
-                tquery, used_pexels, mood=niche.USE_MOOD, require=trequire,
-                is_wild=is_wild, phrase=tquery)
-            tplist = _best_photos(tquery, used_pexels, len(parts), require=trequire,
-                                  is_wild=is_wild, phrase=tquery)
-            if tpath is not None or tplist:
-                vpath, vraw, vkey, plist = tpath, traw, tkey, tplist
-                tier, eff_query = "topic", tquery
+        if vpath is None and not plist and tqueries:
+            for tq, treq in tqueries:
+                tpath, traw, tkey = _best_video(
+                    tq, used_pexels, mood=niche.USE_MOOD, require=treq,
+                    is_wild=is_wild, phrase=tq)
+                tplist = _best_photos(tq, used_pexels, len(parts), require=treq,
+                                      is_wild=is_wild, phrase=tq)
+                if tpath is not None or tplist:
+                    vpath, vraw, vkey, plist = tpath, traw, tkey, tplist
+                    tier, eff_query = "topic", tq
+                    break
+        # If still no stock for this beat, relax used_pexels to reuse good topic stock
+        if vpath is None and not plist and tqueries:
+            for tq, treq in tqueries:
+                tpath, traw, tkey = _best_video(
+                    tq, used=None, mood=niche.USE_MOOD, require=treq,
+                    is_wild=is_wild, phrase=tq)
+                tplist = _best_photos(tq, used=None, n=len(parts), require=treq,
+                                      is_wild=is_wild, phrase=tq)
+                if tpath is not None or tplist:
+                    vpath, vraw, vkey, plist = tpath, traw, tkey, tplist
+                    tier, eff_query = "topic-reuse", tq
+                    break
         vnorm = vraw * 2
         pbest = plist[0][1] if plist else 0
         vclip, photolist, kind = None, [], "card"
@@ -1550,8 +1630,25 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
             n_video += len(parts)
             winner = f"video_{vkey}"
         else:
-            n_card += len(parts)
-            tier = "card"
+            # Fallback: borrow from previous clips or cached assets so NO plain text title cards air
+            available_visuals = [c for (c, _, _) in clips if c and c.suffix in {".mp4", ".jpg"}]
+            if not available_visuals:
+                available_visuals = list(ASSETS.glob("pexels_*.mp4")) + list(ASSETS.glob("pexels_*.jpg"))
+            if available_visuals:
+                vclip = available_visuals[i % len(available_visuals)]
+                if vclip.suffix == ".mp4":
+                    kind = "video"
+                    n_video += len(parts)
+                    winner = f"reused_{vclip.stem}"
+                else:
+                    photolist = [(vclip, 1, f"reused_{vclip.stem}", "reused visual")]
+                    kind = f"{len(parts)}xphoto"
+                    n_photo += len(parts)
+                    winner = f"reused_{vclip.stem}"
+                tier = "reused"
+            else:
+                n_card += len(parts)
+                tier = "card"
         via = f"->{eff_query}" if eff_query != query else ""
         log(f"Beat {i + 1} ('{query}'{via}): {kind} tier={tier} winner={winner}{alt_snip} (vscore={vnorm}, pscore={pbest}).")
         for j, part in enumerate(parts):
@@ -1561,8 +1658,16 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
             elif photolist:
                 clip, seek = photolist[j][0] if j < len(photolist) else photolist[0][0], None
             if clip is None:
-                warn(f"Beat {i + 1}.{j + 1} ('{query}'): no stock, using title card.")
-                clip = beat_card(still_n, part)
+                available_visuals = [c for (c, _, _) in clips if c and c.suffix in {".mp4", ".jpg"}]
+                if not available_visuals:
+                    available_visuals = list(ASSETS.glob("pexels_*.mp4")) + list(ASSETS.glob("pexels_*.jpg"))
+                if available_visuals:
+                    clip = available_visuals[still_n % len(available_visuals)]
+                    seek = 2.0 * (j + 1) if clip.suffix == ".mp4" else None
+                    warn(f"Beat {i + 1}.{j + 1} ('{query}'): no stock, reusing run visual {clip.name}.")
+                else:
+                    warn(f"Beat {i + 1}.{j + 1} ('{query}'): emergency fallback card.")
+                    clip = beat_card(still_n, part)
             clips.append((clip, seek, i))
             still_n += 1
     log(f"Visuals: {len(clips)} cuts for {len(beats)} beats "
