@@ -633,5 +633,31 @@
       "Black-footed Cat",
       "Rusty-spotted Cat"
     ]
+  },
+  {
+    "date": "2026-09-18_124003",
+    "title": "5 Largest Palaces in the World 👑",
+    "niche": "ranking",
+    "tags": [
+      "palaces",
+      "architecture",
+      "history",
+      "travel",
+      "castles"
+    ],
+    "narration": "The largest palace on Earth covers over two million square feet, making it bigger than thirty-five football fields combined. It contains thousands of beautiful historic rooms. At number 5... the Madrid Royal Palace. This massive Spanish home has over three thousand rooms. It features beautiful royal gardens and priceless classical art. Visitors love the grand armor collection. At number 4... the Caserta Royal Palace. Located in Italy, this giant structure has over one thousand rooms. It has a grand park filled with beautiful giant fountains and cascades. At number 3... Istana Nurul Iman. This is the official home of the Sultan of Brunei. It features over one thousand seven hundred rooms, a massive banquet hall, and huge air-conditioned stables. At number 2... the Louvre Palace. Located in Paris, this former royal home is now a famous art museum. It covers over two hundred thousand square meters of space and holds the famous Mona Lisa. And at number 1... Hofburg Palace. Located in Austria, this giant complex was the center of an empire. It has over two thousand six hundred rooms and serves as the official seat of the president today. Which of these giant historic palaces would you most want to visit first? Tell us in the comments below.",
+    "bed": "bgm1.mp3",
+    "videoId": "b1GgZuGxFAc",
+    "tiktokBufferPostId": "6aad3520defd00b616c15dc6",
+    "topic": "largest palaces in the world",
+    "topicSource": "pool",
+    "hookStyle": "stakes",
+    "items": [
+      "Madrid Royal Palace",
+      "Caserta Royal Palace",
+      "Istana Nurul Iman",
+      "Louvre Palace",
+      "Hofburg Palace"
+    ]
   }
 ]
