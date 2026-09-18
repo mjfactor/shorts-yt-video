@@ -84,8 +84,16 @@ GEMINI_BACKOFF = max(0, _env_int("GEMINI_BACKOFF", 5))
 # Tried in order; first working model wins. Override via GEMINI_MODELS="model-a,model-b".
 GEMINI_MODELS = [m.strip() for m in
                  os.getenv("GEMINI_MODELS",
-                            "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
+                           "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-flash").split(",")
                  if m.strip()]
+
+# Standard safety thresholds calibrated for documentary/ranking facts (avoids false-positive topic blocks)
+_GEMINI_SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+]
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
 # Minimum Pexels file width to prefer (default 1080: 1:1 with the 1080x1920
 # canvas, no upscale softness). Smaller files still play as fallback.
@@ -97,6 +105,8 @@ MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
 TTS_RATE = os.getenv("TTS_RATE", "-5%")
 TTS_PITCH = os.getenv("TTS_PITCH", "-10Hz")
 TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
+# Background music volume (linear scale: 0.08 is subtle/balanced, 0.20 was old loud level):
+BGM_VOLUME = float(os.getenv("BGM_VOLUME", "0.08"))
 # TTS engine chain (default gemini -> edge): "gemini" (per-beat Gemini TTS,
 # voices alternate, beat-level captions since Gemini returns audio only),
 # or "edge" (free edge-tts only, word-level captions). Missing keys skip
@@ -109,30 +119,26 @@ GEMINI_TTS_MODELS = [m.strip() for m in
                      os.getenv("GEMINI_TTS_MODELS",
                                "gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts").split(",")
                      if m.strip()]
-# Single narrator voice (default "Charon"); tone alternates between runs
-# instead (even history count -> energetic, odd -> deep). A comma-separated
-# pool still alternates voices per run. 30 prebuilt voices, see AI Studio library.
+# Single narrator voice (default "Charon"); tone adapts dynamically to content
+# and beat position. A comma-separated pool alternates voices per run.
 GEMINI_TTS_VOICES = ([v.strip() for v in
                       os.getenv("GEMINI_TTS_VOICES", "Charon").split(",")
                       if v.strip()] or ["Charon"])
 DEFAULT_GEMINI_TTS_STYLE = (
-    "Read in a single energetic countdown-narrator voice with clear pacing, "
-    "confident delivery, and lively momentum. Polished and engaging, "
-    "with strong emphasis on each reveal."
+    "Read in a natural, articulate documentary voice with steady pacing, "
+    "confident delivery, and authentic storytelling tone. Polished and engaging, "
+    "with clear, grounded emphasis on each reveal."
 )
-# Deep-voice alternate body style for per-run tone alternation (see
-# pick_run_tone): low, resonant, authoritative countdown delivery —
-# confident and weighty, never horror.
+# Resonant alternate body style: authoritative countdown delivery, confident and weighty.
 DEEP_GEMINI_TTS_STYLE = (
-    "Read in a deep, resonant countdown-narrator voice with slow confident "
-    "pacing and weighty authority. Commanding and polished, with powerful "
-    "emphasis on each reveal."
+    "Read in a resonant, articulate documentary voice with steady, measured "
+    "pacing and grounded authority. Polished and commanding, without dragging "
+    "or sounding detached."
 )
-# Opening hook (beat 0) gets extra punch: the first 2 seconds decide retention.
+# Opening hook (beat 0) gets natural intrigue: draw the viewer in without hysterical hype.
 GEMINI_TTS_HOOK_PREFIX = (
-    "For this opening hook only, deliver with super-energetic, bright, "
-    "attention-grabbing punch, as if the first two seconds decide whether "
-    "the viewer stays. "
+    "For this opening hook only, deliver with sharp intrigue, curiosity, and "
+    "immediate engagement, drawing the viewer in with natural dramatic presence. "
 )
 # Empty/whitespace env counts as unset so a CI empty string never kills direction.
 GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE") or "").strip() or DEFAULT_GEMINI_TTS_STYLE
@@ -141,7 +147,7 @@ GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE") or "").strip() or DEFAULT_GEMI
 GEMINI_TTS_STYLE_EXPLICIT = bool((os.getenv("GEMINI_TTS_STYLE") or "").strip())
 # Single voice selected for this run by pick_run_voice() (None = not yet picked).
 RUN_VOICE: str | None = None
-# Delivery tone for this run ("energetic" | "deep" | None), picked by
+# Delivery tone for this run ("adaptive" | "deep" | None), picked by
 # pick_run_tone(); None means an explicit GEMINI_TTS_STYLE won instead.
 RUN_TONE: str | None = None
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
@@ -149,42 +155,60 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
-def pick_tts_style(topic: str, text: str) -> str:
-    """Choose a narrator style tuned to the topic and storytelling tone."""
+def pick_tts_style(topic: str, text: str, beat_idx: int = -1, total_beats: int = 7) -> str:
+    """Choose a narrator style tuned to the topic, narration content, and beat position."""
     haystack = f"{topic} {text}".lower()
 
     if any(k in haystack for k in [
         "planet", "space", "galaxy", "moon", "star", "ocean", "mountain",
-        "building", "statue", "island", "river", "desert", "volcano"
+        "building", "statue", "island", "river", "desert", "volcano", "pyramid"
     ]):
-        return (
-            "Read in a premium, cinematic documentary voice with confident pacing, "
-            "clear authority, and a sense of scale and wonder. Keep it polished, "
-            "immersive, and slightly dramatic at the ranking reveals."
+        mood = (
+            "Read in a premium, cinematic documentary voice with steady pacing, "
+            "clear authority, and an authentic sense of scale and wonder."
         )
-
-    if any(k in haystack for k in [
+    elif any(k in haystack for k in [
         "deadly", "danger", "horror", "haunted", "ghost", "creature",
-        "predator", "attack", "monster", "scary", "venom"
+        "predator", "attack", "monster", "scary", "venom", "poison", "toxic", "lethal"
     ]):
-        return (
-            "Read in a dark, ominous, high-tension narration voice with restrained horror, "
-            "measured pacing, and strong emphasis on danger and surprise."
+        mood = (
+            "Read in a tense, gripping documentary narration voice with measured pacing, "
+            "subtle intensity, and strong focus on the sheer danger."
+        )
+    elif any(k in haystack for k in [
+        "fastest", "speed", "hypercar", "jet", "missile", "mach", "quick", "rapid"
+    ]):
+        mood = (
+            "Read in a sharp, dynamic documentary voice with crisp articulation, "
+            "forward momentum, and an energetic sense of speed."
+        )
+    elif any(k in haystack for k in [
+        "animal", "wild", "snake", "shark", "elephant", "cat",
+        "dog", "predator", "nature", "wildlife", "bird", "fish"
+    ]):
+        mood = (
+            "Read in an engaging wildlife documentary voice with crisp pronunciation, "
+            "steady natural cadence, and grounded fascination."
+        )
+    else:
+        mood = (
+            "Read in a calm, confident documentary voice with natural cadence, "
+            "authoritative delivery, and articulate pacing."
         )
 
-    if any(k in haystack for k in [
-        "animal", "wild", "snake", "shark", "elephant", "giraffe", "cat",
-        "dog", "predator", "nature"
-    ]):
-        return (
-            "Read in a dramatic but accessible countdown voice with strong emphasis on each reveal, "
-            "clear pacing, and an energetic sense of awe."
-        )
+    # Dynamic beat-role adaptation: hook intrigue -> countdown momentum -> #1 reveal -> warm closer
+    if beat_idx == 0:
+        role = " Hook the listener with intriguing curiosity and immediate presence."
+    elif 0 < beat_idx < total_beats - 2:
+        role = " Keep a confident countdown momentum, making the facts clear and compelling."
+    elif beat_idx == total_beats - 2:
+        role = " Give maximum dramatic weight and awe to this final number one reveal."
+    elif beat_idx == total_beats - 1:
+        role = " Transition into a warm, conversational, and direct closing tone."
+    else:
+        role = ""
 
-    return (
-        "Read in a calm, confident narrator voice with steady pacing, authoritative tone, "
-        "and clean emphasis on each reveal."
-    )
+    return f"{mood}{role}"
 
 W, H = 1080, 1920  # vertical Shorts
 
@@ -472,7 +496,7 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
             try:
                 r = requests.post(keyed, json=payload, timeout=timeout)
                 r.raise_for_status()
-                _GEMINI_KEY_IDX = idx  # stick with the working key
+                _GEMINI_KEY_IDX = (idx + 1) % n  # advance round-robin for fair multi-key quota distribution
                 return r.json()
             except Exception as e:
                 last_err = e
@@ -527,7 +551,15 @@ def gen_script(niche):
     if GEMINI_KEYS:
         for attempt in range(1 + SIMILARITY_RETRIES):
             prompt, slots = niche.build_prompt(history)
-            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.7,
+                    "maxOutputTokens": 4096,
+                },
+                "safetySettings": _GEMINI_SAFETY_SETTINGS,
+            }
             data = None
             for model in GEMINI_MODELS:
                 try:
@@ -613,48 +645,32 @@ def pick_run_voice(history_len: int | None, stamp: str = "") -> tuple[str, str]:
 
 
 def pick_run_tone(history_len: int | None, stamp: str = "") -> tuple[str, str]:
-    """Body delivery tone for the whole run, alternating between runs.
-
-    Same history-parity cadence as voice selection: even history entry
-    count -> "energetic", odd -> "deep" (Charon+energetic one run,
-    Charon+deep the next); when history is unavailable (None), fall back to
-    the stamp's day-of-month parity. Returns (tone, reason) for logging.
-    An explicit non-blank GEMINI_TTS_STYLE skips this entirely (see run()).
-    """
-    if history_len is not None:
-        tone = "energetic" if history_len % 2 == 0 else "deep"
-        return tone, f"history parity (entries={history_len})"
-    try:
-        day = int(stamp[8:10])
-    except (ValueError, IndexError):
-        day = datetime.datetime.now().day
-    tone = "energetic" if day % 2 == 0 else "deep"
-    return tone, "date-stamp day parity (history unavailable)"
+    """Delivery tone for the run. Default is adaptive narration-dependent delivery."""
+    return "adaptive", "narration-dependent dynamic delivery"
 
 
 def _gemini_tts_beat(text: str, voice: str, topic: str = "",
-                     is_hook: bool = False) -> tuple[bytes, int]:
+                     is_hook: bool = False, beat_idx: int = -1,
+                     total_beats: int = 7) -> tuple[bytes, int]:
     """One beat of raw PCM audio via Gemini TTS. Returns (pcm, sample_rate).
 
     Tries GEMINI_TTS_MODELS in order; raises when all fail. The caller falls
     back to edge-tts for the WHOLE narration on any failure — per-beat
     retries would multiply a total outage by the beat count. Beat text is
-    always sent verbatim; only the delivery prefix varies (hook punch on
-    beat 0, base countdown style otherwise).
+    always sent verbatim; delivery style adapts dynamically per beat.
     """
     if not GEMINI_KEYS:
         raise ValueError("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it)")
     if topic:
-        base_style = pick_tts_style(topic, text)
+        base_style = pick_tts_style(topic, text, beat_idx, total_beats)
     elif GEMINI_TTS_STYLE_EXPLICIT:
         base_style = GEMINI_TTS_STYLE
-    elif (RUN_TONE or "energetic") == "deep":
+    elif (RUN_TONE or "adaptive") == "deep":
         base_style = DEEP_GEMINI_TTS_STYLE
     else:
-        base_style = GEMINI_TTS_STYLE
-    # Hook keeps its punchy prefix on every tone: a bright hook dropping into
-    # a deep weighty body is the contrast, and retention needs the first 2s.
-    prefix = GEMINI_TTS_HOOK_PREFIX if is_hook else ""
+        base_style = pick_tts_style("", text, beat_idx, total_beats) if beat_idx >= 0 else DEFAULT_GEMINI_TTS_STYLE
+
+    prefix = (GEMINI_TTS_HOOK_PREFIX if (is_hook or beat_idx == 0) and not topic else "")
     prompt = f"{prefix}{base_style} Say the following text:\n\n{text}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -662,6 +678,7 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "",
             "responseModalities": ["AUDIO"],
             "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
         },
+        "safetySettings": _GEMINI_SAFETY_SETTINGS,
     }
     last_err: Exception | None = None
     for model in GEMINI_TTS_MODELS:
@@ -703,7 +720,13 @@ def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
     parts, cues, durations = [], [], []
     t = 0.0
     for i, b in enumerate(beats):
-        voice, seg = synth(i, b, topic) if topic else synth(i, b)
+        try:
+            voice, seg = synth(i, b, topic=topic, total_beats=len(beats))
+        except TypeError:
+            try:
+                voice, seg = synth(i, b, topic)
+            except TypeError:
+                voice, seg = synth(i, b)
         d = audio_duration(seg)
         parts.append(seg)
         cues.append((t, t + d, " ".join(b["text"].split())))
@@ -720,16 +743,16 @@ def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
     return durations
 
 
-def _gemini_synth(i: int, beat: dict, topic: str = ""):
+def _gemini_synth(i: int, beat: dict, topic: str = "", total_beats: int = 7):
     """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure.
 
-    Single voice per run (RUN_VOICE picked in run()); beat 0 gets the hook
-    delivery punch, beats 1-6 keep the base countdown style. Beat text is
-    verbatim; SRT/validation/fallback untouched.
+    Single voice per run (RUN_VOICE picked in run()); delivery style adapts
+    dynamically to the beat position and topic narration.
     """
     voice = RUN_VOICE or (GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
                           if GEMINI_TTS_VOICES else "Charon")
-    pcm, rate = _gemini_tts_beat(beat["text"], voice, topic, is_hook=(i == 0))
+    pcm, rate = _gemini_tts_beat(beat["text"], voice, topic, is_hook=(i == 0),
+                                 beat_idx=i, total_beats=total_beats)
     raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
     seg = ASSETS / f"tts_beat_{i}.mp3"
     raw_pcm.write_bytes(pcm)
@@ -917,7 +940,7 @@ def make_bed(duration: float, slot: int | None = None) -> tuple[Path, str | None
             log(f"Bed: looping custom track {custom} (1 of {len(pool)} in pool)")
     if custom is not None:
         _run_ffmpeg(["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(custom),
-                     "-t", str(duration), "-af", "volume=0.20",
+                     "-t", str(duration), "-af", f"volume={BGM_VOLUME:.2f}",
                      "-c:a", "libmp3lame", str(bed)], "bed-loop")
     else:
         # Layered dark drone: brown-noise texture (the phone-audible part,
@@ -969,8 +992,57 @@ _QUERY_STOPWORDS = frozenset({
     "a", "an", "the", "in", "on", "of", "at", "to", "for",
     "with", "from", "and", "or", "is", "are", "its", "it",
     "cinematic", "close", "creeping", "slowly", "swimming",
-    "underwater", "slithering", "wild",
+    "underwater", "slithering",
 })
+
+# Scenery/habitat words that can dilute stock queries away from the actual subject
+_GENERIC_HABITAT_WORDS = frozenset({
+    "desert", "forest", "savanna", "savannah", "jungle", "ocean", "water",
+    "river", "sea", "mountain", "mountains", "sky", "underwater", "swamp",
+    "grassland", "plains", "trees", "dunes",
+})
+
+# Domestic/indoor indicators to reject when the topic is wild animals
+_DOMESTIC_DISQUALIFIERS = frozenset({
+    "indoor", "indoors", "sofa", "couch", "living room", "pet", "pets",
+    "sweater", "costume", "leash", "collar", "bedroom", "blanket",
+    "domestic", "housecat", "kitten", "puppy", "furniture",
+    "home", "apartment", "rug", "carpet",
+})
+
+
+def _is_wild_topic(topic: str) -> bool:
+    """True if topic is about wildlife, nature, or wild creatures."""
+    t = (topic or "").lower()
+    wild_words = {
+        "wild", "wildlife", "nature", "predator", "predators", "safari",
+        "jungle", "forest", "ocean", "sea", "marine", "deep sea",
+        "deadliest", "poisonous", "venomous", "carnivore",
+    }
+    return any(w in t for w in wild_words)
+
+
+def _clean_stock_query(q: str, item_name: str = "") -> str:
+    """Strip generic habitat/scenery words from query unless they are part of item_name."""
+    clean_q = (q or "").strip()
+    if not clean_q:
+        return ""
+    item_tokens = set(re.findall(r"[a-z0-9]+", (item_name or "").lower()))
+    words = clean_q.split()
+    kept = []
+    for w in words:
+        wl = re.sub(r"[^a-z0-9]", "", w.lower())
+        if wl in _GENERIC_HABITAT_WORDS and wl not in item_tokens:
+            continue
+        kept.append(w)
+    return " ".join(kept) if kept else clean_q
+
+
+def _has_domestic_disqualifier(haystack: str) -> bool:
+    """Check if text mentions domestic/indoor keywords."""
+    h = (haystack or "").lower()
+    tokens = set(re.findall(r"[a-z0-9]+", h))
+    return bool(tokens & _DOMESTIC_DISQUALIFIERS)
 
 
 def _query_words(q: str) -> list[str]:
@@ -1004,42 +1076,107 @@ def _score_text(haystack, words: list[str]) -> int:
     return sum(1 for w in words if w and w in h)
 
 
-def _item_require_words(item: str) -> list[str]:
-    """Distinctive item words a stock candidate must mention (lowercased).
+def _score_candidate(alt: str, url: str, words: list[str], phrase: str = "") -> int:
+    """Score candidate text against query words, with extra bonus for exact phrase."""
+    h_alt = (alt or "").lower()
+    h_url = (url or "").lower()
+    tokens_alt = set(re.findall(r"[a-z0-9]+", h_alt))
+    tokens_url = set(re.findall(r"[a-z0-9]+", h_url))
+    alt_hits = sum(1 for w in words if w and (w in tokens_alt or (len(w) >= 6 and w in h_alt)))
+    url_hits = sum(1 for w in words if w and (w in tokens_url or (len(w) >= 6 and w in h_url)))
+    score = 2 * alt_hits + url_hits
+    if phrase and len(phrase.split()) > 1:
+        phrase_clean = phrase.lower()
+        if phrase_clean in h_alt or phrase_clean in re.sub(r"[-_]", " ", h_alt):
+            score += 6
+        elif phrase_clean in re.sub(r"[-_]", " ", h_url):
+            score += 4
+    return score
 
-    Long (>=6-char) words are distinctive ('anaconda' beats 'green'); when
-    the item has no long word, any word qualifies. Never raises.
+
+def _item_require_words(item: str) -> dict:
+    """Structured requirements for a ranked item name.
+
+    Head: the primary subject noun (last token, e.g. 'cat' in 'Sand Cat').
+    Modifiers: distinguishing qualifiers (e.g. 'sand' in 'Sand Cat').
+    Phrase: the full item name string.
     """
     try:
-        tokens = re.findall(r"[a-z0-9]+", (item or "").lower())
-        long = [w for w in tokens if len(w) >= 6]
-        return long or tokens
+        clean = (item or "").lower().strip()
+        tokens = re.findall(r"[a-z0-9]+", clean)
+        if not tokens:
+            return {}
+        head = tokens[-1]
+        heads = [head]
+        if head.endswith("s") and len(head) > 3:
+            heads.append(head[:-1])
+        else:
+            heads.append(head + "s")
+        modifiers = tokens[:-1]
+        return {
+            "heads": heads,
+            "modifiers": modifiers,
+            "phrase": clean,
+        }
     except Exception:
-        return []
+        return {}
 
 
-def _meets_require(haystack: str, require: list[str] | None) -> bool:
-    """True when no gate applies or any require word is a substring."""
+def _meets_require(haystack: str, require: Any) -> bool:
+    """True when no gate applies or candidate text satisfies the requirement."""
     if not require:
         return True
     h = (haystack or "").lower()
-    return any(w and w in h for w in require)
+    h_tokens = set(re.findall(r"[a-z0-9]+", h))
+    if not h_tokens:
+        return False
+    h_clean = re.sub(r"[-_]", " ", h)
+
+    if isinstance(require, dict):
+        heads = require.get("heads", [])
+        modifiers = require.get("modifiers", [])
+        phrase = require.get("phrase", "")
+        # Exact full phrase match is immediate pass (e.g. 'sand cat' or 'sand-cat')
+        if phrase and (phrase in h or phrase in h_clean):
+            return True
+        # Head noun is strictly mandatory as an exact word token
+        if heads and not any(hd in h_tokens for hd in heads):
+            return False
+        # If item has distinguishing modifiers, at least one modifier must be an exact word token
+        if modifiers and not any(m in h_tokens for m in modifiers):
+            return False
+        return True
+
+    if isinstance(require, (list, tuple, set)):
+        for w in require:
+            w_str = str(w).lower().strip()
+            if " " in w_str:
+                if w_str in h or w_str in h_clean:
+                    return True
+            else:
+                if w_str in h_tokens or (len(w_str) >= 6 and w_str in h):
+                    return True
+        return False
+
+    return True
 
 
-def _family_query_for_item(item: str) -> tuple[str, list[str]]:
+def _family_query_for_item(item: str, topic: str = "") -> tuple[str, list[str]]:
     """(query, require) guessing the subject family from an item name.
 
     Generic, no species dictionary: ranking items are '<adjective> <family>'
     shaped, so the last word is the family guess ('Green Anaconda' ->
-    'anaconda', 'Burmese Python' -> 'python', 'Bald Eagle' -> 'eagle',
-    'Eiffel Tower' -> 'tower'); single-word items use that word.
-    Returns ("", []) when the item has no usable word. Never raises.
+    'anaconda', 'Bald Eagle' -> 'eagle', 'Eiffel Tower' -> 'tower').
+    For wild topics with domestic-ambiguous animals ('cat', 'dog', 'horse', 'pig'),
+    prepends 'wild' so fallback doesn't pull house pets.
     """
     try:
         tokens = re.findall(r"[a-z0-9]+", (item or "").lower())
         if not tokens:
             return "", []
         fam = tokens[-1]
+        if _is_wild_topic(topic) and fam in {"cat", "dog", "pig", "horse", "duck", "rabbit", "goat", "sheep"}:
+            return f"wild {fam}", [f"wild {fam}", fam]
         return fam, [fam]
     except Exception:
         return "", []
@@ -1048,21 +1185,18 @@ def _family_query_for_item(item: str) -> tuple[str, list[str]]:
 def _topic_query_for_topic(topic: str) -> tuple[str, list[str]]:
     """(query, require) for the topic's generic subject noun, or ("", []).
 
-    Generic, no dictionary: the first plural (trailing-s) content word past
-    stopwords is the subject in virtually every pool topic ('heaviest
-    snakes in the world' -> 'snakes', 'tallest buildings ...' ->
-    'buildings'). Topics without one ('largest fish in the ocean') return
-    ("", []) and skip the topic tier. The query is the SINGULAR form so
-    singular alts still meet the scorer's threshold ('snake' matches both
-    'snake' and 'snakes' alts); require covers both spellings. Never raises.
+    Preserves descriptive qualifiers (e.g. 'wild cats' -> 'wild cat',
+    'fighter jets' -> 'fighter jet') to prevent generic dilution.
     """
     try:
         tokens = [w for w in re.findall(r"[a-z0-9]+", (topic or "").lower())
                   if w not in _QUERY_STOPWORDS]
+        plural_idx = -1
         plural = ""
-        for w in tokens:
+        for idx, w in enumerate(tokens):
             if len(w) >= 4 and w.endswith("s") and not w.endswith("ss"):
                 plural = w
+                plural_idx = idx
                 break
         if not plural:
             return "", []
@@ -1072,26 +1206,30 @@ def _topic_query_for_topic(topic: str) -> tuple[str, list[str]]:
             singular = plural[:-2]
         else:
             singular = plural[:-1]
-        require = [plural] + ([singular] if singular and singular != plural else [])
-        return singular, require
+
+        qualifier = ""
+        if plural_idx > 0:
+            prev = tokens[plural_idx - 1]
+            if prev in {"wild", "sea", "ocean", "marine", "fighter", "cargo", "electric", "classic", "sports"}:
+                qualifier = prev
+
+        if qualifier:
+            q = f"{qualifier} {singular}"
+            require = [f"{qualifier} {plural}", f"{qualifier} {singular}", singular, plural]
+        else:
+            q = singular
+            require = [plural] + ([singular] if singular and singular != plural else [])
+
+        return q, require
     except Exception:
         return "", []
 
 
 def _best_video(query: str, used: set | None = None, mood: bool = True,
-                require: list[str] | None = None):
+                require: Any = None, is_wild: bool = False, phrase: str = ""):
     """Best literal-match stock video for one query (read-only on `used`).
 
-    Returns (dest|None, raw_score, commit_key|None). `used` is only checked,
-    never mutated — the caller commits the winner's key so a losing candidate
-    never burns its id. raw_score counts query words in the URL slug; the
-    caller normalizes with *2 for fair comparison against photo scores
-    (photo alt hits already count double, so a 2-word video slug match = 4
-    lines up with a 2-word photo alt match = 4). Score 0 when no candidate
-    meets the accuracy gate (min(2, len(words)) multi-word, 1 single-word).
-    `require` is an optional item-gate word list: candidates whose URL slug
-    lacks every require word are skipped (wrong-species guard), falling back
-    to no video rather than a mismatch.
+    Returns (dest|None, raw_score, commit_key|None).
     """
     if not PEXELS_KEY:
         return None, 0, None
@@ -1116,15 +1254,15 @@ def _best_video(query: str, used: set | None = None, mood: bool = True,
             r = retry("Pexels search", _search, tries=3, backoff=5)
             for v in r.json().get("videos", []):
                 if used is not None and v.get("id") in used:
-                    continue  # same story must not show the same clip twice
-                if not _meets_require(v.get("url", ""), require):
-                    continue  # item gate: wrong species, never score it
-                score = _score_text(v.get("url", ""), words)
+                    continue
+                url = v.get("url", "")
+                if is_wild and _has_domestic_disqualifier(url):
+                    continue
+                if not _meets_require(url, require):
+                    continue
+                score = _score_candidate(url, url, words, phrase)
                 if score < threshold:
                     continue
-                # Sharp-but-bounded: smallest file clearing PEXELS_MIN_WIDTH
-                # (default 1080p, 1:1 with the canvas). Falls back to whatever
-                # exists so clips with only SD files still play.
                 cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
                                key=lambda f: f.get("width", 0))
                 big_enough = [f for f in cands if f.get("width", 0) >= PEXELS_MIN_WIDTH]
@@ -1136,7 +1274,7 @@ def _best_video(query: str, used: set | None = None, mood: bool = True,
                     best_video = v
                     best_pick_file = pick[0]
             if best_video is not None and best_score >= threshold:
-                break  # earliest (most specific) variant already met the gate
+                break
         if best_video is None or best_pick_file is None:
             return None, 0, None
         dest = ASSETS / f"pexels_{best_video['id']}.mp4"
@@ -1150,7 +1288,7 @@ def _best_video(query: str, used: set | None = None, mood: bool = True,
                 retry("Pexels download", _download, tries=2, backoff=5)
             except Exception:
                 if dest.exists():
-                    dest.unlink()  # never keep a partial file
+                    dest.unlink()
                 raise
         return dest, best_score, best_video["id"]
     except Exception as e:
@@ -1159,18 +1297,7 @@ def _best_video(query: str, used: set | None = None, mood: bool = True,
 
 
 def pexels_clip(query: str, used: set | None = None, mood: bool = True):
-    """First unused stock clip for one query. Returns None (no key/fail/empty).
-
-    `used` holds Pexels video ids already shown in this run, so similar
-    queries can't repeat the same clip twice in one story. `mood=False`
-    skips the horror-mood forcing (ranking niche wants literal matches).
-
-    Accuracy gate: each candidate video is scored by how many query words
-    appear in its URL slug; only clips meeting
-    min(2, len(words)) (multi-word) or 1 (single-word) are accepted, so a
-    wrong-animal clip returns None and lets the photo fallback try instead.
-    Tries up to 3 query backoff variants (full -> drop-last-word).
-    """
+    """First unused stock clip for one query. Returns None (no key/fail/empty)."""
     dest, _score, key = _best_video(query, used, mood)
     if dest is not None and key is not None and used is not None:
         used.add(key)
@@ -1178,21 +1305,8 @@ def pexels_clip(query: str, used: set | None = None, mood: bool = True):
 
 
 def _best_photos(query: str, used: set | None = None, n: int = 1,
-                 require: list[str] | None = None):
-    """Top-N literal-match stock photos for one query (read-only on `used`).
-
-    Returns [(dest, score, commit_key, alt)] sorted score desc, then area desc,
-    then aspect-near-9:16 — distinct ids passing the accuracy gate
-    (score >= min(2, len(words)), width >= PEXELS_MIN_WIDTH, has original),
-    skipping ids already in `used` and dupes within this call. `used` is
-    only checked, never mutated; the caller commits the winners' keys.
-    `require` is an optional item-gate word list: candidates whose alt+url
-    lack every require word are skipped (wrong-species guard).
-    One photo search per query variant (max 3), collecting top-N from the
-    same pages — no extra per-photo API calls. Downloads+caches each hit
-    (assets/pexels_{id}.jpg); a failed download warns, deletes the partial,
-    and skips to the next candidate.
-    """
+                 require: Any = None, is_wild: bool = False, phrase: str = ""):
+    """Top-N literal-match stock photos for one query (read-only on `used`)."""
     if n <= 0 or not PEXELS_KEY:
         return []
     try:
@@ -1220,10 +1334,12 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
                     continue
                 alt = p.get("alt", "")
                 url = p.get("url", "")
-                if not _meets_require(f"{alt} {url}", require):
-                    continue  # item gate: wrong species, never score it
-                score = (2 * _score_text(alt, words)
-                         + _score_text(url, words))
+                haystack = f"{alt} {url}"
+                if is_wild and _has_domestic_disqualifier(haystack):
+                    continue
+                if not _meets_require(haystack, require):
+                    continue
+                score = _score_candidate(alt, url, words, phrase)
                 if score < threshold:
                     continue
                 w = p.get("width", 0) or 0
@@ -1233,7 +1349,6 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
                 if not src.get("original"):
                     continue
                 h = p.get("height", 0) or 0
-                # Prefer true-portrait near 9:16 on ties (smaller rank wins).
                 if w and h:
                     aspect = w / h
                     rank = abs(aspect - 9 / 16)
@@ -1242,7 +1357,7 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
                 area = (w or 0) * (h or 0)
                 pool[pid] = (p, score, area, rank)
             if len(pool) >= n:
-                break  # most specific variant(s) already filled the set
+                break
         if not pool:
             return []
         ranked = sorted(pool.values(), key=lambda t: (-t[1], -t[2], t[3]))
@@ -1255,13 +1370,13 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
                         d.raise_for_status()
                         with open(dest, "wb") as f:
                             shutil.copyfileobj(d.raw, f)
-                try:
-                    retry("Pexels photo download", _download, tries=2, backoff=5)
-                except Exception as e:
-                    if dest.exists():
-                        dest.unlink()  # never keep a partial file
-                    warn(f"Pexels photo download failed for '{query}' ({e}).")
-                    continue
+            try:
+                retry("Pexels photo download", _download, tries=2, backoff=5)
+            except Exception as e:
+                if dest.exists():
+                    dest.unlink()
+                warn(f"Pexels photo download failed for '{query}' ({e}).")
+                continue
             out.append((dest, score, f"photo_{p['id']}", p.get("alt", "")))
         return out
     except Exception as e:
@@ -1270,16 +1385,9 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
 
 
 def _best_photo(query: str, used: set | None = None,
-                require: list[str] | None = None):
-    """Best literal-match stock photo for one query (read-only on `used`).
-
-    Returns (dest|None, score, commit_key|None, alt). `used` is only checked,
-    never mutated — the caller commits the winner's f"photo_{id}" key so a
-    losing candidate never burns its id. Score = 2*alt_hits + url_hits
-    (alt is more descriptive, hence double weight); callers compare it
-    against video raw_score*2. Score 0 when nothing meets the gate.
-    """
-    res = _best_photos(query, used, 1, require)
+                require: Any = None, is_wild: bool = False, phrase: str = ""):
+    """Best literal-match stock photo for one query (read-only on `used`)."""
+    res = _best_photos(query, used, 1, require, is_wild=is_wild, phrase=phrase)
     return res[0] if res else (None, 0, None, "")
 
 
@@ -1376,37 +1484,45 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
     names = list(items or [])
     gate_for: dict = {}
     fam_for: dict = {}
+    is_wild = _is_wild_topic(topic)
     for (beat_idx, _lab), name in zip(labeled, names + [""] * len(labeled)):
-        gate_for[beat_idx] = _item_require_words(name) if name else []
-        fam_for[beat_idx] = _family_query_for_item(name) if name else ("", [])
+        gate_for[beat_idx] = _item_require_words(name) if name else {}
+        fam_for[beat_idx] = _family_query_for_item(name, topic) if name else ("", [])
     tquery, trequire = _topic_query_for_topic(topic)
     still_n = 0
     n_video = n_photo = n_card = 0
     for i, b in enumerate(beats):
         parts = _split_beat(b["text"], STILLS_PER_BEAT)
-        query = (b.get("query", "") if use_beat
-                 else random.choice(niche.AMBIENT_QUERIES))
+        raw_query = (b.get("query", "") if use_beat
+                     else random.choice(niche.AMBIENT_QUERIES))
         tiered = bool(use_beat and gate_for.get(i))
         require = gate_for.get(i)
+        item_phrase = require.get("phrase", "") if isinstance(require, dict) else ""
+        query = _clean_stock_query(raw_query, item_phrase) if tiered else raw_query
         # _best_* only read `used`; the winner's key(s) are committed below
         # so losers never burn their ids for later beats.
         vpath, vraw, vkey = _best_video(query, used_pexels, mood=niche.USE_MOOD,
-                                        require=require)
-        plist = _best_photos(query, used_pexels, len(parts), require)
+                                        require=require, is_wild=is_wild, phrase=item_phrase)
+        plist = _best_photos(query, used_pexels, len(parts), require=require,
+                             is_wild=is_wild, phrase=item_phrase)
         tier, eff_query = "exact", query
         if tiered and vpath is None and not plist:
             fquery, frequire = fam_for.get(i, ("", []))
             if fquery and frequire:
                 fpath, fraw, fkey = _best_video(
-                    fquery, used_pexels, mood=niche.USE_MOOD, require=frequire)
-                fplist = _best_photos(fquery, used_pexels, len(parts), frequire)
+                    fquery, used_pexels, mood=niche.USE_MOOD, require=frequire,
+                    is_wild=is_wild, phrase=fquery)
+                fplist = _best_photos(fquery, used_pexels, len(parts), require=frequire,
+                                      is_wild=is_wild, phrase=fquery)
                 if fpath is not None or fplist:
                     vpath, vraw, vkey, plist = fpath, fraw, fkey, fplist
                     tier, eff_query = "family", fquery
         if tiered and tier == "exact" and vpath is None and not plist and tquery:
             tpath, traw, tkey = _best_video(
-                tquery, used_pexels, mood=niche.USE_MOOD, require=trequire)
-            tplist = _best_photos(tquery, used_pexels, len(parts), trequire)
+                tquery, used_pexels, mood=niche.USE_MOOD, require=trequire,
+                is_wild=is_wild, phrase=tquery)
+            tplist = _best_photos(tquery, used_pexels, len(parts), require=trequire,
+                                  is_wild=is_wild, phrase=tquery)
             if tpath is not None or tplist:
                 vpath, vraw, vkey, plist = tpath, traw, tkey, tplist
                 tier, eff_query = "topic", tquery
@@ -1939,7 +2055,8 @@ def run(niche):
         f"buffer={bool(BUFFER_API_KEY)}")  # key presence only, never the key itself
     meta, slots = gen_script(niche)
     (stem.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
-    mp3, srt, beat_durs = gen_audio(meta["narration"], stem, meta.get("beats"))
+    mp3, srt, beat_durs = gen_audio(meta["narration"], stem, meta.get("beats"),
+                                    (slots or {}).get("topic", ""))
     log(f"Audio: mp3={mp3.stat().st_size // 1024} KB srt_exists={srt.exists()} "
         f"srt_bytes={srt.stat().st_size if srt.exists() else 0}")
     dur = audio_duration(mp3)

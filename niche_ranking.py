@@ -220,16 +220,25 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
     prompt = (
         "Propose ONE Top-5 countdown YouTube Shorts topic. Reply with ONLY "
         "valid JSON: {\"topic\": <noun phrase>, \"items\": [5 names]}. "
-        "Rules: evergreen and factual; rank 5 distinct real subjects a camera "
-        "could film with stock footage (animals, places, vehicles, structures, "
-        "food — NO people names, NO events, NO abstract concepts); each item "
-        "1-3 words, unique, plain ASCII. Topic examples: 'largest owls on "
+        "Rules: evergreen and factual; rank 5 distinct real subjects with abundant "
+        "stock footage on free stock sites like Pexels (popular animals, famous places, "
+        "common vehicle types, iconic structures; avoid ultra-rare species or obscure "
+        "subspecies that lack stock footage — NO people names, NO events, NO abstract concepts); "
+        "each item 1-3 words, unique, plain ASCII. Topic examples: 'largest owls on "
         "Earth', 'longest bridges in the world'. No questions, no hooks, "
         "no clickbait, no markdown, no extra keys.\n"
         f"Do NOT reuse any of these recent topics or their subjects:\n{avoid or '(none yet)'}\n"
         "Output only the JSON object."
     )
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.8,
+            "maxOutputTokens": 1024,
+        },
+        "safetySettings": C._GEMINI_SAFETY_SETTINGS,
+    }
     for round_no in range(1, AI_TOPIC_TRIES + 1):
         data = None
         for model in C.GEMINI_MODELS:
@@ -362,8 +371,8 @@ def build_prompt(history: list[dict]):
         "Description: exactly 2 sentences, include 1-2 fitting emojis and 3 hashtags, but emojis are metadata-only and never burned into the video. "
         "Tags: array of exactly 5 plain-ASCII strings, no emoji. "
         "Items: array of exactly 5 ranked item names, number 5 first and number 1 last. Keep each name short, 1-3 words, unique, and readable on screen. "
-        "Beats: array of exactly 7 objects in video order: hook, number 5, number 4, number 3, number 2, number 1, closer. Each object must be {\"text\": <exact narration chunk>, \"query\": <short searchable stock query, 2-4 words, MUST start with the exact ranked item name plus at most one habitat noun>, \"label\": <\"\" for hook and closer, or \"5\", \"4\", \"3\", \"2\", \"1\" for the five ranked beats>}. "
-        "Hard validation rules: (1) the 7 beat texts joined in order must equal the full narration exactly, (2) each of the 5 items must appear in the narration, (3) all 5 item names must be unique, (4) the chosen topic and ranked items must differ from recent history, (5) facts must be broadly known and safe; do not invent precise dates, records, or statistics. Example valid beat object: {'text': 'At number 5, the saltwater crocodile. Over 6 meters long.', 'query': 'saltwater crocodile water', 'label': '5'}. "
+        "Beats: array of exactly 7 objects in video order: hook, number 5, number 4, number 3, number 2, number 1, closer. Each object must be {\"text\": <exact narration chunk>, \"query\": <clean stock search query, 1-3 words, the exact ranked item name only (e.g. 'saltwater crocodile', 'cheetah'); do NOT append habitat nouns or scenery words like 'water', 'desert', 'forest'>, \"label\": <\"\" for hook and closer, or \"5\", \"4\", \"3\", \"2\", \"1\" for the five ranked beats>}. "
+        "Hard validation rules: (1) the 7 beat texts joined in order must equal the full narration exactly, (2) each of the 5 items must appear in the narration, (3) all 5 item names must be unique, (4) the chosen topic and ranked items must differ from recent history, (5) facts must be broadly known and safe; do not invent precise dates, records, or statistics. Example valid beat object: {'text': 'At number 5, the saltwater crocodile. Over 6 meters long.', 'query': 'saltwater crocodile', 'label': '5'}. "
         "Do not include markdown, notes, or any extra keys. Output only the JSON object."
     )
     return prompt, slots
