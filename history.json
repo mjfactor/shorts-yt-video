@@ -685,5 +685,31 @@
       "Irish Wolfhound",
       "English Mastiff"
     ]
+  },
+  {
+    "date": "2026-09-18_190621",
+    "title": "5 Largest Bears on Earth 🐻",
+    "niche": "ranking",
+    "tags": [
+      "largest bears",
+      "polar bear",
+      "kodiak bear",
+      "grizzly bear",
+      "wildlife"
+    ],
+    "narration": "The biggest bear on Earth weighs over 1,500 pounds, heavier than a grand piano. It hunts across freezing Arctic sea ice. At number 5, the American black bear. It lives across North America and can weigh over 500 pounds. These clever bears climb tall trees with ease. At number 4, the grizzly bear. Famous for its shoulder hump, this powerful beast can weigh nearly 800 pounds. Grizzly bears use long claws to dig for food and catch leaping salmon. At number 3, the Eurasian brown bear. Found in forests across Europe and Asia, large males weigh over 900 pounds. They eat berries, roots, and fish before sleeping through the winter. At number 2, the Kodiak bear. Isolated on Alaskan islands, massive males can weigh over 1,400 pounds. When standing upright, a Kodiak bear towers over 10 feet tall. And at number 1, the polar bear. This king of the Arctic can weigh over 1,500 pounds. Thick blubber and dense fur keep it warm while hunting seals on the frozen ocean. Which of these giant bears would you fear facing most in the wild?",
+    "bed": "bgm3.mp3",
+    "videoId": "ClELFcVNPUw",
+    "tiktokBufferPostId": null,
+    "topic": "largest bears in the world",
+    "topicSource": "ai",
+    "hookStyle": "stakes",
+    "items": [
+      "American black bear",
+      "Grizzly bear",
+      "Eurasian brown bear",
+      "Kodiak bear",
+      "Polar bear"
+    ]
   }
 ]
