@@ -659,5 +659,31 @@
       "Louvre Palace",
       "Hofburg Palace"
     ]
+  },
+  {
+    "date": "2026-09-18_181851",
+    "title": "5 Largest Dog Breeds in the World",
+    "niche": "ranking",
+    "tags": [
+      "dogs",
+      "giant dogs",
+      "dog breeds",
+      "pets",
+      "animals"
+    ],
+    "narration": "Imagine a dog standing as tall as a small pony, with a massive frame that weighs nearly as much as a full-grown man. This gentle giant sits at the top of our list today. At number 5, the Newfoundland. These dogs weigh over 60 kilograms and are famous for their thick, water-resistant coats. At number 4, the Saint Bernard. This breed reaches nearly 80 kilograms and is known for its legendary rescue history in the snowy mountains. At number 3, the Great Dane. These elegant dogs stand over 80 centimeters tall at the shoulder and are often called gentle giants. At number 2, the Irish Wolfhound. This breed is incredibly tall, sometimes reaching nearly 90 centimeters in height, making them true giants of the hound family. At number 1, the English Mastiff. These massive animals can weigh over 100 kilograms and possess a deep, powerful bark that commands instant respect. Which of these giant breeds would you choose to keep as a loyal companion?",
+    "bed": "bgm2.mp3",
+    "videoId": "LqIE-JHyC4Q",
+    "tiktokBufferPostId": "6aad82d9e64415091ec8bc5c",
+    "topic": "largest dog breeds in the world",
+    "topicSource": "ai",
+    "hookStyle": "sensory",
+    "items": [
+      "Newfoundland",
+      "Saint Bernard",
+      "Great Dane",
+      "Irish Wolfhound",
+      "English Mastiff"
+    ]
   }
 ]
