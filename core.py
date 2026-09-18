@@ -126,24 +126,21 @@ GEMINI_TTS_MODELS = [m.strip() for m in
 GEMINI_TTS_VOICES = ([v.strip() for v in
                       os.getenv("GEMINI_TTS_VOICES", "Charon").split(",")
                       if v.strip()] or ["Charon"])
-# Target spoken words-per-minute for Gemini TTS (default 155, calibrated for crisp Shorts pacing).
-# If raw generated speech drags below target, FFmpeg atempo gently speeds it up without pitch distortion.
-GEMINI_TTS_TARGET_WPM = _env_int("GEMINI_TTS_TARGET_WPM", 155)
 DEFAULT_GEMINI_TTS_STYLE = (
-    "Read in a crisp, energetic documentary voice at a brisk, natural YouTube Shorts pace "
-    "(around 150-160 words per minute). Articulate clearly with confident delivery, forward momentum, "
-    "and authentic storytelling tone. Avoid dragging or slurred words."
+    "Read in a natural, articulate documentary voice with steady pacing, "
+    "confident delivery, and authentic storytelling tone. Polished and engaging, "
+    "with clear, grounded emphasis on each reveal."
 )
 # Resonant alternate body style: authoritative countdown delivery, confident and weighty.
 DEEP_GEMINI_TTS_STYLE = (
-    "Read in an articulate, authoritative documentary voice with crisp pacing "
-    "(around 150-160 words per minute) and grounded confidence. Polished and commanding, "
-    "without dragging, slurring, or sounding detached."
+    "Read in a resonant, articulate documentary voice with steady, measured "
+    "pacing and grounded authority. Polished and commanding, without dragging "
+    "or sounding detached."
 )
 # Opening hook (beat 0) gets natural intrigue: draw the viewer in without hysterical hype.
 GEMINI_TTS_HOOK_PREFIX = (
     "For this opening hook only, deliver with sharp intrigue, curiosity, and "
-    "immediate engagement at a brisk pace, drawing the viewer in with natural dramatic presence. "
+    "immediate engagement, drawing the viewer in with natural dramatic presence. "
 )
 # Empty/whitespace env counts as unset so a CI empty string never kills direction.
 GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE") or "").strip() or DEFAULT_GEMINI_TTS_STYLE
@@ -169,45 +166,45 @@ def pick_tts_style(topic: str, text: str, beat_idx: int = -1, total_beats: int =
         "building", "statue", "island", "river", "desert", "volcano", "pyramid"
     ]):
         mood = (
-            "Read in a premium, cinematic documentary voice at a brisk, engaging pace "
-            "(~155 WPM) with clear authority, crisp articulation, and authentic wonder."
+            "Read in a premium, cinematic documentary voice with steady pacing, "
+            "clear authority, and an authentic sense of scale and wonder."
         )
     elif any(k in haystack for k in [
         "deadly", "danger", "horror", "haunted", "ghost", "creature",
         "predator", "attack", "monster", "scary", "venom", "poison", "toxic", "lethal"
     ]):
         mood = (
-            "Read in a tense, gripping documentary narration voice at a focused, energetic pace "
-            "(~155 WPM) with subtle intensity, crisp delivery, and sharp momentum."
+            "Read in a tense, gripping documentary narration voice with measured pacing, "
+            "subtle intensity, and strong focus on the sheer danger."
         )
     elif any(k in haystack for k in [
         "fastest", "speed", "hypercar", "jet", "missile", "mach", "quick", "rapid"
     ]):
         mood = (
-            "Read in a sharp, dynamic documentary voice at a fast, punchy pace "
-            "(~160 WPM) with crisp articulation and forward momentum."
+            "Read in a sharp, dynamic documentary voice with crisp articulation, "
+            "forward momentum, and an energetic sense of speed."
         )
     elif any(k in haystack for k in [
         "animal", "wild", "snake", "shark", "elephant", "cat",
         "dog", "predator", "nature", "wildlife", "bird", "fish"
     ]):
         mood = (
-            "Read in an engaging wildlife documentary voice at a brisk, lively pace "
-            "(~155 WPM) with crisp pronunciation, natural cadence, and alert fascination."
+            "Read in an engaging wildlife documentary voice with crisp pronunciation, "
+            "steady natural cadence, and grounded fascination."
         )
     else:
         mood = (
-            "Read in a confident, articulate documentary voice at a brisk YouTube Shorts pace "
-            "(~155 WPM) with natural cadence and energetic delivery."
+            "Read in a calm, confident documentary voice with natural cadence, "
+            "authoritative delivery, and articulate pacing."
         )
 
     # Dynamic beat-role adaptation: hook intrigue -> countdown momentum -> #1 reveal -> warm closer
     if beat_idx == 0:
-        role = " Hook the listener with intriguing curiosity, sharp energy, and immediate presence."
+        role = " Hook the listener with intriguing curiosity and immediate presence."
     elif 0 < beat_idx < total_beats - 2:
-        role = " Keep a confident countdown momentum, making the facts snappy, clear, and compelling."
+        role = " Keep a confident countdown momentum, making the facts clear and compelling."
     elif beat_idx == total_beats - 2:
-        role = " Deliver this final number one reveal with powerful impact and crisp dramatic weight."
+        role = " Give maximum dramatic weight and awe to this final number one reveal."
     elif beat_idx == total_beats - 1:
         role = " Transition into a warm, conversational, and direct closing tone."
     else:
@@ -757,9 +754,7 @@ def _gemini_synth(i: int, beat: dict, topic: str = "", total_beats: int = 7):
     """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure.
 
     Single voice per run (RUN_VOICE picked in run()); delivery style adapts
-    dynamically to the beat position and topic narration. If generated WPM is
-    below GEMINI_TTS_TARGET_WPM (~150-160 WPM), applies atempo filter to maintain
-    crisp, energetic Shorts pacing without pitch distortion.
+    dynamically to the beat position and topic narration.
     """
     voice = RUN_VOICE or (GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
                           if GEMINI_TTS_VOICES else "Charon")
@@ -768,24 +763,9 @@ def _gemini_synth(i: int, beat: dict, topic: str = "", total_beats: int = 7):
     raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
     seg = ASSETS / f"tts_beat_{i}.mp3"
     raw_pcm.write_bytes(pcm)
-
-    # Calculate spoken WPM of raw PCM (16-bit mono: 2 bytes per sample)
-    bytes_per_sec = rate * 2
-    raw_dur = max(0.1, len(pcm) / bytes_per_sec) if bytes_per_sec > 0 else 1.0
-    words = max(1, len(beat["text"].split()))
-    actual_wpm = (words / raw_dur) * 60.0
-
-    # Target is ~150-160 WPM (default 155). If speaking slower than 145 WPM,
-    # gently speed up with atempo (preserving exact pitch) to reach target WPM.
-    target_wpm = float(GEMINI_TTS_TARGET_WPM)
-    cmd = ["ffmpeg", "-y", "-f", "s16le", "-ar", str(rate), "-ac", "1",
-           "-i", str(raw_pcm)]
-    if target_wpm > 0 and actual_wpm < target_wpm - 5:
-        speed_ratio = min(1.6, max(0.8, target_wpm / actual_wpm))
-        log(f"TTS beat {i + 1} pacing: {actual_wpm:.0f} WPM -> {target_wpm:.0f} WPM (atempo={speed_ratio:.2f}x)")
-        cmd += ["-af", f"atempo={speed_ratio:.2f}"]
-    cmd += ["-c:a", "libmp3lame", str(seg)]
-    _run_ffmpeg(cmd, f"tts-beat-{i}-pcm")
+    _run_ffmpeg(["ffmpeg", "-y", "-f", "s16le", "-ar", str(rate), "-ac", "1",
+                 "-i", str(raw_pcm), "-c:a", "libmp3lame", str(seg)],
+                f"tts-beat-{i}-pcm")
     return voice, seg
 
 
@@ -1121,12 +1101,218 @@ def _score_candidate(alt: str, url: str, words: list[str], phrase: str = "") -> 
     return score
 
 
-def _item_require_words(item: str) -> dict:
+_BOGUS_FAMILY_WORDS = frozenset({
+    "said", "say", "says", "told", "talk", "speak", "go", "goes", "went", "get", "gets",
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
+    "al", "el", "del", "de", "da", "di", "du", "la", "le", "les", "san", "santa", "von", "van", "der", "den",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "first", "second", "third",
+    "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "jr", "sr",
+    "big", "large", "small", "tiny", "new", "old", "top", "pro", "max", "ultra", "plus", "super", "hyper",
+    "gt", "gts", "gtr", "rs", "amg", "sv", "evo", "svj", "ss", "v8", "v10", "v12", "edition", "series",
+})
+
+_DOMAIN_SYNONYMS: dict[str, set[str]] = {
+    # Watercraft / Marine
+    "yacht": {
+        "yacht", "yachts", "superyacht", "superyachts", "megayacht", "megayachts",
+        "boat", "boats", "ship", "ships", "vessel", "vessels", "watercraft",
+        "sailing", "sail", "ocean", "sea", "marine", "deck", "harbor", "marina", "port", "water",
+    },
+    "ship": {
+        "ship", "ships", "vessel", "vessels", "boat", "boats", "cruise", "cruises",
+        "freighter", "cargo", "container", "tanker", "ocean", "sea", "harbor", "port", "marine", "sailing", "water",
+    },
+    "boat": {
+        "boat", "boats", "ship", "ships", "vessel", "vessels", "yacht", "yachts",
+        "watercraft", "sailing", "water", "sea", "ocean", "lake", "river", "harbor",
+    },
+    "submarine": {
+        "submarine", "submarines", "sub", "subs", "submersible", "underwater",
+        "naval", "navy", "ocean", "sea", "torpedo", "water",
+    },
+    "shipwreck": {
+        "shipwreck", "shipwrecks", "wreck", "wrecks", "sunken", "underwater",
+        "ocean", "sea", "submerged", "coral", "reef", "ship",
+    },
+    # Aviation
+    "airplane": {
+        "plane", "planes", "airplane", "airplanes", "aircraft", "jet", "jets",
+        "aviation", "flight", "flying", "airliner", "airliners", "airport", "runway", "sky",
+    },
+    "plane": {
+        "plane", "planes", "airplane", "airplanes", "aircraft", "jet", "jets",
+        "aviation", "flight", "flying", "airliner", "airliners", "airport", "runway", "sky",
+    },
+    "aircraft": {
+        "plane", "planes", "airplane", "airplanes", "aircraft", "jet", "jets",
+        "aviation", "flight", "flying", "airliner", "airliners", "airport", "runway", "sky",
+    },
+    "jet": {
+        "jet", "jets", "fighter", "plane", "planes", "aircraft", "airplane", "airplanes",
+        "aviation", "cockpit", "supersonic", "sky", "flight",
+    },
+    "helicopter": {
+        "helicopter", "helicopters", "chopper", "choppers", "rotor", "rotors",
+        "aircraft", "aviation", "flight", "sky",
+    },
+    # Ground Vehicles
+    "car": {
+        "car", "cars", "automobile", "automobiles", "supercar", "supercars",
+        "hypercar", "hypercars", "vehicle", "vehicles", "auto", "motor", "drive", "driving", "road", "racing",
+    },
+    "supercar": {
+        "car", "cars", "automobile", "automobiles", "supercar", "supercars",
+        "hypercar", "hypercars", "vehicle", "vehicles", "auto", "motor", "drive", "driving", "road", "speed",
+    },
+    "truck": {
+        "truck", "trucks", "pickup", "pickups", "vehicle", "vehicles", "semi", "lorry", "road", "drive",
+    },
+    "motorcycle": {
+        "motorcycle", "motorcycles", "motorbike", "motorbikes", "bike", "bikes", "moto", "rider", "riding", "road",
+    },
+    "train": {
+        "train", "trains", "locomotive", "locomotives", "railway", "railroad",
+        "rail", "rails", "metro", "subway", "bullet", "tracks",
+    },
+    "tank": {
+        "tank", "tanks", "armor", "armored", "armour", "military", "army",
+        "combat", "cannon", "turret", "tracks", "vehicle",
+    },
+    # Space & Science
+    "rocket": {
+        "rocket", "rockets", "spacecraft", "spaceship", "launch", "space",
+        "nasa", "booster", "orbit", "astronaut", "propulsion",
+    },
+    "telescope": {
+        "telescope", "telescopes", "observatory", "astronomy", "space", "optics", "stars",
+    },
+    "planet": {
+        "planet", "planets", "solar", "system", "space", "astronomy", "orbit", "cosmos",
+    },
+    "moon": {
+        "moon", "moons", "lunar", "orbit", "space", "astronomy", "crater", "craters",
+    },
+    # Architecture & Civil Engineering
+    "building": {
+        "building", "buildings", "skyscraper", "skyscrapers", "architecture",
+        "tower", "towers", "edifice", "facade", "structure", "structures", "city", "skyline",
+    },
+    "skyscraper": {
+        "skyscraper", "skyscrapers", "building", "buildings", "tower", "towers",
+        "architecture", "highrise", "high-rise", "skyline", "city",
+    },
+    "tower": {
+        "tower", "towers", "building", "buildings", "skyscraper", "skyscrapers",
+        "structure", "structures", "spire", "architecture",
+    },
+    "bridge": {
+        "bridge", "bridges", "suspension", "viaduct", "overpass", "arch",
+        "cables", "crossing", "river", "span", "water",
+    },
+    "castle": {
+        "castle", "castles", "fortress", "fortresses", "fort", "palace", "palaces",
+        "citadel", "medieval", "stone", "walls",
+    },
+    "palace": {
+        "palace", "palaces", "castle", "castles", "royal", "mansion", "estate",
+        "residence", "architecture", "court",
+    },
+    "temple": {
+        "temple", "temples", "shrine", "shrines", "monastery", "sanctuary", "ancient", "stone", "architecture",
+    },
+    "church": {
+        "church", "churches", "cathedral", "cathedrals", "basilica", "chapel", "architecture",
+    },
+    "mosque": {
+        "mosque", "mosques", "minaret", "minarets", "dome", "architecture",
+    },
+    "dam": {
+        "dam", "dams", "reservoir", "hydroelectric", "spillway", "water", "concrete", "lake", "river",
+    },
+    "tunnel": {
+        "tunnel", "tunnels", "subway", "highway", "rail", "underground", "road",
+    },
+    "airport": {
+        "airport", "airports", "terminal", "runway", "tarmac", "aviation", "airplane", "airplanes",
+    },
+    "lighthouse": {
+        "lighthouse", "lighthouses", "beacon", "coast", "coastal", "ocean", "sea", "tower",
+    },
+    "fountain": {
+        "fountain", "fountains", "water", "spray", "cascade", "pool", "monument",
+    },
+    "coaster": {
+        "roller coaster", "rollercoaster", "coaster", "coasters", "ride", "rides", "amusement", "tracks",
+    },
+    "wheel": {
+        "ferris wheel", "ferris", "wheel", "wheels", "amusement", "carnival", "fair",
+    },
+    "aquarium": {
+        "aquarium", "aquariums", "tank", "fish", "marine", "underwater", "reef", "ocean",
+    },
+    "museum": {
+        "museum", "museums", "exhibit", "exhibition", "gallery", "art", "sculpture", "artifact",
+    },
+    "library": {
+        "library", "libraries", "books", "bookshelves", "reading",
+    },
+    "stadium": {
+        "stadium", "stadiums", "arena", "arenas", "pitch", "field", "sports",
+    },
+}
+
+_ANIMAL_DOMAINS: dict[str, set[str]] = {
+    "snake": {"snake", "snakes", "serpent", "serpents", "reptile", "reptiles", "viper", "vipers", "cobra", "cobras", "python", "mamba", "venomous"},
+    "spider": {"spider", "spiders", "arachnid", "arachnids", "tarantula", "web"},
+    "shark": {"shark", "sharks", "predator", "ocean", "sea", "marine", "underwater", "fin", "fish"},
+    "bird": {"bird", "birds", "avian", "feather", "feathers", "flight", "flying", "wing", "wings", "eagle", "hawk", "owl", "falcon"},
+    "eagle": {"eagle", "eagles", "bird", "birds", "raptor", "flying", "flight"},
+    "owl": {"owl", "owls", "bird", "birds", "raptor", "nocturnal", "feathers"},
+    "cat": {"cat", "cats", "feline", "felines", "kitten", "panther", "tiger", "lion", "leopard", "cheetah", "jaguar"},
+    "dog": {"dog", "dogs", "canine", "canines", "puppy", "puppies", "hound", "retriever", "terrier"},
+    "bear": {"bear", "bears", "grizzly", "polar bear", "cub", "predator", "fur"},
+    "crocodile": {"crocodile", "crocodiles", "alligator", "alligators", "reptile", "reptiles", "swamp", "river"},
+    "reptile": {"reptile", "reptiles", "lizard", "lizards", "snake", "snakes", "iguana", "gecko"},
+    "fish": {"fish", "fishes", "underwater", "ocean", "sea", "marine", "aquarium", "reef", "swimming"},
+    "whale": {"whale", "whales", "cetacean", "ocean", "sea", "marine", "mammal"},
+    "frog": {"frog", "frogs", "amphibian", "amphibians", "toad", "toads", "jungle"},
+    "crab": {"crab", "crabs", "crustacean", "ocean", "sea", "beach", "sand", "shell"},
+    "insect": {"insect", "insects", "bug", "bugs", "beetle", "butterfly", "moth", "ant", "bee"},
+    "dinosaur": {"dinosaur", "dinosaurs", "fossil", "fossils", "jurassic", "prehistoric", "t-rex"},
+}
+
+
+def _get_topic_domain_info(topic: str) -> tuple[str, set[str], bool]:
+    """Extract (base_subject, domain_keywords, is_object_topic) from topic."""
+    t_clean = (topic or "").lower()
+    t_tokens = set(re.findall(r"[a-z0-9]+", t_clean))
+
+    for k, syns in _DOMAIN_SYNONYMS.items():
+        if (k in t_tokens or (k.endswith("s") and k[:-1] in t_tokens)
+                or (k + "s") in t_tokens or (" " in k and k in t_clean)):
+            return k, syns, True
+
+    for k, syns in _ANIMAL_DOMAINS.items():
+        if (k in t_tokens or (k.endswith("s") and k[:-1] in t_tokens)
+                or (k + "s") in t_tokens or (" " in k and k in t_clean)):
+            return k, syns, False
+
+    tqueries = _topic_stock_queries(topic)
+    if tqueries:
+        subj = tqueries[-1][0]
+        reqs = set(tqueries[-1][1])
+        return subj, reqs, False
+
+    return "", set(), False
+
+
+def _item_require_words(item: str, domain: set[str] | None = None) -> dict:
     """Structured requirements for a ranked item name.
 
     Head: the primary subject noun (last token, e.g. 'cat' in 'Sand Cat').
     Modifiers: distinguishing qualifiers (e.g. 'sand' in 'Sand Cat').
     Phrase: the full item name string.
+    Domain: allowed topic domain keywords (e.g. yacht/marine synonyms).
     """
     try:
         clean = (item or "").lower().strip()
@@ -1144,6 +1330,7 @@ def _item_require_words(item: str) -> dict:
             "heads": heads,
             "modifiers": modifiers,
             "phrase": clean,
+            "domain": domain or set(),
         }
     except Exception:
         return {}
@@ -1160,11 +1347,20 @@ def _meets_require(haystack: str, require: Any) -> bool:
     h_clean = re.sub(r"[-_]", " ", h)
 
     if isinstance(require, dict):
+        domain = require.get("domain")
+        if domain:
+            # Candidate MUST match at least one domain keyword to prevent homonym pollution
+            # (e.g. rejecting solar eclipses or city traffic when ranking yachts)
+            has_domain = (any(d in h_tokens for d in domain if " " not in d) or
+                          any(d in h_clean for d in domain if " " in d))
+            if not has_domain:
+                return False
+
         heads = require.get("heads", [])
         modifiers = require.get("modifiers", [])
         phrase = require.get("phrase", "")
-        # Exact full phrase match is immediate pass (e.g. 'sand cat' or 'sand-cat')
-        if phrase and (phrase in h or phrase in h_clean):
+        # Multi-word exact phrase match (e.g. 'sand cat' or 'burj khalifa')
+        if phrase and len(phrase.split()) > 1 and (phrase in h or phrase in h_clean):
             return True
         # Head noun is strictly mandatory as an exact word token
         if heads and not any(hd in h_tokens for hd in heads):
@@ -1196,12 +1392,23 @@ def _family_query_for_item(item: str, topic: str = "") -> tuple[str, list[str]]:
     'anaconda', 'Bald Eagle' -> 'eagle', 'Eiffel Tower' -> 'tower').
     For wild topics with domestic-ambiguous animals ('cat', 'dog', 'horse', 'pig'),
     prepends 'wild' so fallback doesn't pull house pets.
+    For object topics, proper names with no category noun (e.g. 'Al Said', 'Eclipse',
+    'Dubai', 'Chiron') return empty so the pipeline cleanly falls back to topic stock.
     """
     try:
         tokens = re.findall(r"[a-z0-9]+", (item or "").lower())
         if not tokens:
             return "", []
         fam = tokens[-1]
+        if fam in _BOGUS_FAMILY_WORDS or len(fam) < 3:
+            return "", []
+
+        _subj, domain_kw, is_obj = _get_topic_domain_info(topic)
+        if is_obj:
+            if fam not in domain_kw:
+                return "", []
+            return fam, [fam]
+
         if _is_wild_topic(topic) and fam in {"cat", "dog", "pig", "horse", "duck", "rabbit", "goat", "sheep"}:
             return f"wild {fam}", [f"wild {fam}", fam]
         return fam, [fam]
@@ -1349,11 +1556,13 @@ def _best_video(query: str, used: set | None = None, mood: bool = True,
                 if used is not None and v.get("id") in used:
                     continue
                 url = v.get("url", "")
-                if is_wild and _has_domestic_disqualifier(url):
+                v_tags = " ".join(t.get("name", "") if isinstance(t, dict) else str(t) for t in v.get("tags", []))
+                haystack = f"{url} {v_tags}".strip() if v_tags else url
+                if is_wild and _has_domestic_disqualifier(haystack):
                     continue
-                if not _meets_require(url, require):
+                if not _meets_require(haystack, require):
                     continue
-                score = _score_candidate(url, url, words, phrase)
+                score = _score_candidate(v_tags or url, url, words, phrase)
                 if score < threshold:
                     continue
                 cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
@@ -1578,8 +1787,9 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
     gate_for: dict = {}
     fam_for: dict = {}
     is_wild = _is_wild_topic(topic)
+    base_subj, domain_kw, is_obj = _get_topic_domain_info(topic)
     for (beat_idx, _lab), name in zip(labeled, names + [""] * len(labeled)):
-        gate_for[beat_idx] = _item_require_words(name) if name else {}
+        gate_for[beat_idx] = _item_require_words(name, domain=domain_kw) if name else {}
         fam_for[beat_idx] = _family_query_for_item(name, topic) if name else ("", [])
     tqueries = _topic_stock_queries(topic)
     still_n = 0
@@ -1591,7 +1801,15 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
         tiered = bool(use_beat and gate_for.get(i))
         require = gate_for.get(i)
         item_phrase = require.get("phrase", "") if isinstance(require, dict) else ""
-        query = _clean_stock_query(raw_query, item_phrase) if tiered else raw_query
+        clean_q = _clean_stock_query(raw_query, item_phrase) if tiered else raw_query
+        if tiered and is_obj and base_subj:
+            q_lower = clean_q.lower()
+            if not any(k in q_lower for k in (domain_kw | {base_subj})):
+                query = f"{clean_q} {base_subj}"
+            else:
+                query = clean_q
+        else:
+            query = clean_q
         # _best_* only read `used`; the winner's key(s) are committed below
         # so losers never burn their ids for later beats.
         vpath, vraw, vkey = _best_video(query, used_pexels, mood=niche.USE_MOOD,
