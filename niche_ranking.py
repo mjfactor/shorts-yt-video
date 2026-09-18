@@ -252,6 +252,7 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
                 break
             except Exception as e:
                 C.log(f"AI topic model {model} unusable ({e}), trying next...")
+                time.sleep(2)
         if not isinstance(data, dict):
             continue
         topic = str(data.get("topic", "")).strip()

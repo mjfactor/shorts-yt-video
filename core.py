@@ -84,8 +84,10 @@ GEMINI_BACKOFF = max(0, _env_int("GEMINI_BACKOFF", 5))
 # Tried in order; first working model wins. Override via GEMINI_MODELS="model-a,model-b".
 GEMINI_MODELS = [m.strip() for m in
                  os.getenv("GEMINI_MODELS",
-                           "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-flash").split(",")
+                            "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
                  if m.strip()]
+# Pacing delay between Gemini TTS beats (default 15s to respect 3 RPM free-tier ceiling)
+GEMINI_TTS_PACE_SEC = _env_int("GEMINI_TTS_PACE_SEC", 15)
 
 # Standard safety thresholds calibrated for documentary/ranking facts (avoids false-positive topic blocks)
 _GEMINI_SAFETY_SETTINGS = [
@@ -496,7 +498,7 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
             try:
                 r = requests.post(keyed, json=payload, timeout=timeout)
                 r.raise_for_status()
-                _GEMINI_KEY_IDX = (idx + 1) % n  # advance round-robin for fair multi-key quota distribution
+                _GEMINI_KEY_IDX = idx  # stick with the working key
                 return r.json()
             except Exception as e:
                 last_err = e
@@ -508,9 +510,10 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
                     key_server_only = False
                     if attempt == tries:
                         break
-                    wait = backoff * attempt + random.uniform(0, 1)
+                    # Rate limits (RPM) require waiting for the sliding 1-minute window to reset
+                    wait = max(20.0, backoff * attempt * 4) + random.uniform(1.0, 3.0)
                     log(f"Gemini key {idx + 1}/{n} rate-limited (429, "
-                        f"attempt {attempt}/{tries}), backing off {wait:.1f}s...")
+                        f"attempt {attempt}/{tries}), waiting {wait:.1f}s for RPM quota window to reset...")
                     time.sleep(wait)
                     continue
                 if status is not None and 400 <= status < 500 and status != 408:
@@ -573,6 +576,7 @@ def gen_script(niche):
                     break
                 except Exception as e:
                     log(f"Gemini model {model} unusable ({e}), trying next...")
+                    time.sleep(2)
             if data is None:
                 log("All Gemini models failed, using fallback.")
                 break
@@ -720,6 +724,9 @@ def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
     parts, cues, durations = [], [], []
     t = 0.0
     for i, b in enumerate(beats):
+        if i > 0 and tag == "gemini" and GEMINI_TTS_PACE_SEC > 0:
+            log(f"Gemini TTS pacing: waiting {GEMINI_TTS_PACE_SEC}s between beats to respect RPM limits...")
+            time.sleep(GEMINI_TTS_PACE_SEC)
         try:
             voice, seg = synth(i, b, topic=topic, total_beats=len(beats))
         except TypeError:
