@@ -763,5 +763,31 @@
       "Reindeer",
       "Moose"
     ]
+  },
+  {
+    "date": "2026-09-18_202345",
+    "title": "5 Most Famous Lighthouses in the World 🏮",
+    "niche": "ranking",
+    "tags": [
+      "lighthouses",
+      "history",
+      "architecture",
+      "travel",
+      "landmarks"
+    ],
+    "narration": "Most people think the Statue of Liberty is the tallest beacon on earth. It is not even close to number 1, which rises over two hundred meters above the sea. At number 5, the Tower of Hercules. This ancient structure stands over fifty meters high. At number 4, Peggy's Point Lighthouse. This red and white icon draws nearly a million visitors every year. At number 3, Cape Hatteras Lighthouse. This giant reaches a height of nearly sixty meters with bold black stripes. At number 2, Split Rock Lighthouse. This dramatic cliffside beacon sits over forty meters above the water. At number 1, the Pharos of Alexandria. This lost wonder reached a height of over one hundred meters in ancient times. Comment your own ranking below.",
+    "bed": "bgm6.mp3",
+    "videoId": "1rqqed1Rdfw",
+    "tiktokBufferPostId": "6aada0761e8bdcdb522f5fa3",
+    "topic": "most famous lighthouses in the world",
+    "topicSource": "pool",
+    "hookStyle": "contrarian",
+    "items": [
+      "Tower of Hercules",
+      "Peggy's Point Lighthouse",
+      "Cape Hatteras Lighthouse",
+      "Split Rock Lighthouse",
+      "Pharos of Alexandria"
+    ]
   }
 ]
