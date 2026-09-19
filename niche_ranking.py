@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import time
 
 import core as C
 
@@ -220,16 +221,25 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
     prompt = (
         "Propose ONE Top-5 countdown YouTube Shorts topic. Reply with ONLY "
         "valid JSON: {\"topic\": <noun phrase>, \"items\": [5 names]}. "
-        "Rules: evergreen and factual; rank 5 distinct real subjects a camera "
-        "could film with stock footage (animals, places, vehicles, structures, "
-        "food — NO people names, NO events, NO abstract concepts); each item "
-        "1-3 words, unique, plain ASCII. Topic examples: 'largest owls on "
+        "Rules: evergreen and factual; rank 5 distinct real subjects with abundant "
+        "stock footage on free stock sites like Pexels (popular animals, famous places, "
+        "common vehicle types, iconic structures; avoid ultra-rare species or obscure "
+        "subspecies that lack stock footage — NO people names, NO events, NO abstract concepts); "
+        "each item 1-3 words, unique, plain ASCII. Topic examples: 'largest owls on "
         "Earth', 'longest bridges in the world'. No questions, no hooks, "
         "no clickbait, no markdown, no extra keys.\n"
         f"Do NOT reuse any of these recent topics or their subjects:\n{avoid or '(none yet)'}\n"
         "Output only the JSON object."
     )
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.8,
+            "maxOutputTokens": 1024,
+        },
+        "safetySettings": C._GEMINI_SAFETY_SETTINGS,
+    }
     for round_no in range(1, AI_TOPIC_TRIES + 1):
         data = None
         for model in C.GEMINI_MODELS:
@@ -243,6 +253,7 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
                 break
             except Exception as e:
                 C.log(f"AI topic model {model} unusable ({e}), trying next...")
+                time.sleep(2)
         if not isinstance(data, dict):
             continue
         topic = str(data.get("topic", "")).strip()
@@ -355,15 +366,15 @@ def build_prompt(history: list[dict]):
         f"{_items_hint_line(hint)}"
         "Return ONLY valid JSON with exactly these keys: title, narration, description, tags, items, beats. "
         "Title: plain ranked-list format, must start with '5' and state exactly what is ranked. Example valid titles: '5 Largest Animals on Earth' or '5 Most Expensive Things Ever Sold'. Keep it under 60 characters, no question hook, no curiosity-gap phrasing, no 'which' or 'where' setup, no 'Number 1...' suffix, no clickbait. Do not use any banned title hooks such as 'Number 1 Is Terrifying', 'Number One Is Terrifying', '#1 Is Terrifying', 'Will Shock You', or 'You Won't Believe'. One emoji is allowed only at the very start or end, but the on-screen banner still shows the same title without the emoji. "
-        "Narration: 200-220 words, present tense, fifth-grade reading level, short punchy sentences, one clear idea per sentence, no emojis, spoken aloud. Structure: 1-2 sentence hook teasing number 1 without naming it, written in this rotating style — "
+        "Narration: exactly 195-205 words (~80-85 seconds spoken at 145 WPM), present tense, fifth-grade reading level, short punchy sentences, one clear idea per sentence, no emojis, spoken aloud. Structure: 1-2 sentence hook teasing number 1 without naming it, written in this rotating style — "
         f"{hook_direction} "
         "The hook must contain ONE concrete stakes claim about number 1 (a rounded number or a size, weight, or height comparison using approximate language like 'about', 'over', or 'nearly'). Never open the narration with any of these stale openers: 'these are the 5', 'human beings love', 'deep beneath our feet', 'nature hides', 'push human engineering to'. "
         "Then the countdown from number 5 to number 1, each entry naming the item and 1-2 rounded, widely known facts using approximate language like 'about', 'over', or 'nearly'; then a 1-sentence closer asking viewers to comment their own ranking. Use commas and ellipses for dramatic pauses before each reveal. "
         "Description: exactly 2 sentences, include 1-2 fitting emojis and 3 hashtags, but emojis are metadata-only and never burned into the video. "
         "Tags: array of exactly 5 plain-ASCII strings, no emoji. "
         "Items: array of exactly 5 ranked item names, number 5 first and number 1 last. Keep each name short, 1-3 words, unique, and readable on screen. "
-        "Beats: array of exactly 7 objects in video order: hook, number 5, number 4, number 3, number 2, number 1, closer. Each object must be {\"text\": <exact narration chunk>, \"query\": <short searchable stock query, 2-4 words, MUST start with the exact ranked item name plus at most one habitat noun>, \"label\": <\"\" for hook and closer, or \"5\", \"4\", \"3\", \"2\", \"1\" for the five ranked beats>}. "
-        "Hard validation rules: (1) the 7 beat texts joined in order must equal the full narration exactly, (2) each of the 5 items must appear in the narration, (3) all 5 item names must be unique, (4) the chosen topic and ranked items must differ from recent history, (5) facts must be broadly known and safe; do not invent precise dates, records, or statistics. Example valid beat object: {'text': 'At number 5, the saltwater crocodile. Over 6 meters long.', 'query': 'saltwater crocodile water', 'label': '5'}. "
+        "Beats: array of exactly 7 objects in video order: hook, number 5, number 4, number 3, number 2, number 1, closer. Each object must be {\"text\": <exact narration chunk>, \"query\": <clean stock search query, 1-3 words; for proper names, vehicles, ships, yachts, buildings, or machines that do not contain the subject noun, ALWAYS append the subject noun (e.g. 'Eclipse yacht', 'Dubai yacht', 'Al Said yacht', 'Chiron supercar', 'Burj Khalifa tower'); for animals/nature use the exact species or breed name (e.g. 'saltwater crocodile', 'cheetah'); do NOT append habitat nouns or scenery words like 'water', 'desert', 'forest'>, \"label\": <\"\" for hook and closer, or \"5\", \"4\", \"3\", \"2\", \"1\" for the five ranked beats>}. "
+        "Hard validation rules: (1) the 7 beat texts joined in order must equal the full narration exactly, (2) each of the 5 items must appear in the narration, (3) all 5 item names must be unique, (4) the chosen topic and ranked items must differ from recent history, (5) facts must be broadly known and safe; do not invent precise dates, records, or statistics. Example valid beat object: {'text': 'At number 5, the Eclipse yacht. Over 160 meters long.', 'query': 'Eclipse yacht', 'label': '5'}. "
         "Do not include markdown, notes, or any extra keys. Output only the JSON object."
     )
     return prompt, slots
@@ -532,7 +543,20 @@ def validate_extra(data: dict) -> dict:
     if (not isinstance(items, list) or not items
             or not all(isinstance(t, str) and t.strip() for t in items)):
         raise ValueError("'items' must be a non-empty list of strings")
-    return {"items": [t.strip() for t in items if t.strip()][:10]}
+    clean_items = [t.strip() for t in items if t.strip()]
+    # Ranking backstop for bare homonym beat queries ('Eclipse' for item
+    # 'Eclipse'): core rejects these too, this cites the ranked item so the
+    # regen path knows which slot to fix. Multi-word and ordinary nouns pass.
+    beats = data.get("beats", [])
+    labeled = [b for b in (beats or []) if isinstance(b, dict)
+               and str(b.get("label", "")).isdigit()]
+    for b, name in zip(labeled, clean_items + [""] * len(labeled)):
+        q = str(b.get("query", ""))
+        if C._is_bare_homonym_query(q):
+            raise ValueError(
+                f"beat query '{q.strip()}' for '{name or '?'}' is a bare "
+                "homonym head lacking the subject noun (e.g. 'Eclipse yacht')")
+    return {"items": clean_items[:10]}
 
 
 # Overused title hooks: the prompt bans them, and this is the backstop —

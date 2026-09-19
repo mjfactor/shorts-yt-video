@@ -86,6 +86,16 @@ GEMINI_MODELS = [m.strip() for m in
                  os.getenv("GEMINI_MODELS",
                             "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
                  if m.strip()]
+# Pacing delay between Gemini TTS beats (default 15s to respect 3 RPM free-tier ceiling)
+GEMINI_TTS_PACE_SEC = _env_int("GEMINI_TTS_PACE_SEC", 15)
+
+# Standard safety thresholds calibrated for documentary/ranking facts (avoids false-positive topic blocks)
+_GEMINI_SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+]
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
 # Minimum Pexels file width to prefer (default 1080: 1:1 with the 1080x1920
 # canvas, no upscale softness). Smaller files still play as fallback.
@@ -97,6 +107,8 @@ MAX_AUDIO_SEC = float(os.getenv("MAX_AUDIO_SEC", "180"))
 TTS_RATE = os.getenv("TTS_RATE", "-5%")
 TTS_PITCH = os.getenv("TTS_PITCH", "-10Hz")
 TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
+# Background music volume (linear scale: 0.08 is subtle/balanced, 0.20 was old loud level):
+BGM_VOLUME = float(os.getenv("BGM_VOLUME", "0.08"))
 # TTS engine chain (default gemini -> edge): "gemini" (per-beat Gemini TTS,
 # voices alternate, beat-level captions since Gemini returns audio only),
 # or "edge" (free edge-tts only, word-level captions). Missing keys skip
@@ -109,30 +121,29 @@ GEMINI_TTS_MODELS = [m.strip() for m in
                      os.getenv("GEMINI_TTS_MODELS",
                                "gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts").split(",")
                      if m.strip()]
-# Single narrator voice (default "Charon"); tone alternates between runs
-# instead (even history count -> energetic, odd -> deep). A comma-separated
-# pool still alternates voices per run. 30 prebuilt voices, see AI Studio library.
+# Single narrator voice (default "Charon"); tone adapts dynamically to content
+# and beat position. A comma-separated pool alternates voices per run.
 GEMINI_TTS_VOICES = ([v.strip() for v in
                       os.getenv("GEMINI_TTS_VOICES", "Charon").split(",")
                       if v.strip()] or ["Charon"])
+# Target speech rate in words per minute for Gemini TTS delivery (default 145 WPM -> ~80-85s for 200 words).
+# Calibrated via gentle atempo adjustment. 0 = unadjusted natural speed.
+GEMINI_TTS_TARGET_WPM = _env_int("GEMINI_TTS_TARGET_WPM", 145)
 DEFAULT_GEMINI_TTS_STYLE = (
-    "Read in a single energetic countdown-narrator voice with clear pacing, "
-    "confident delivery, and lively momentum. Polished and engaging, "
-    "with strong emphasis on each reveal."
+    "Read in a natural, articulate documentary voice with steady, engaging "
+    "pacing (~145 words per minute), confident delivery, and authentic storytelling tone. "
+    "Polished and dynamic, with clear, grounded emphasis on each reveal."
 )
-# Deep-voice alternate body style for per-run tone alternation (see
-# pick_run_tone): low, resonant, authoritative countdown delivery —
-# confident and weighty, never horror.
+# Resonant alternate body style: authoritative countdown delivery, confident and weighty.
 DEEP_GEMINI_TTS_STYLE = (
-    "Read in a deep, resonant countdown-narrator voice with slow confident "
-    "pacing and weighty authority. Commanding and polished, with powerful "
-    "emphasis on each reveal."
+    "Read in a resonant, articulate documentary voice with steady, measured "
+    "pacing and grounded authority. Polished and commanding, without dragging "
+    "or sounding detached."
 )
-# Opening hook (beat 0) gets extra punch: the first 2 seconds decide retention.
+# Opening hook (beat 0) gets natural intrigue: draw the viewer in without hysterical hype.
 GEMINI_TTS_HOOK_PREFIX = (
-    "For this opening hook only, deliver with super-energetic, bright, "
-    "attention-grabbing punch, as if the first two seconds decide whether "
-    "the viewer stays. "
+    "For this opening hook only, deliver with sharp intrigue, curiosity, and "
+    "immediate engagement, drawing the viewer in with natural dramatic presence. "
 )
 # Empty/whitespace env counts as unset so a CI empty string never kills direction.
 GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE") or "").strip() or DEFAULT_GEMINI_TTS_STYLE
@@ -141,7 +152,7 @@ GEMINI_TTS_STYLE = (os.getenv("GEMINI_TTS_STYLE") or "").strip() or DEFAULT_GEMI
 GEMINI_TTS_STYLE_EXPLICIT = bool((os.getenv("GEMINI_TTS_STYLE") or "").strip())
 # Single voice selected for this run by pick_run_voice() (None = not yet picked).
 RUN_VOICE: str | None = None
-# Delivery tone for this run ("energetic" | "deep" | None), picked by
+# Delivery tone for this run ("adaptive" | "deep" | None), picked by
 # pick_run_tone(); None means an explicit GEMINI_TTS_STYLE won instead.
 RUN_TONE: str | None = None
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
@@ -149,42 +160,60 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
-def pick_tts_style(topic: str, text: str) -> str:
-    """Choose a narrator style tuned to the topic and storytelling tone."""
+def pick_tts_style(topic: str, text: str, beat_idx: int = -1, total_beats: int = 7) -> str:
+    """Choose a narrator style tuned to the topic, narration content, and beat position."""
     haystack = f"{topic} {text}".lower()
 
     if any(k in haystack for k in [
         "planet", "space", "galaxy", "moon", "star", "ocean", "mountain",
-        "building", "statue", "island", "river", "desert", "volcano"
+        "building", "statue", "island", "river", "desert", "volcano", "pyramid"
     ]):
-        return (
-            "Read in a premium, cinematic documentary voice with confident pacing, "
-            "clear authority, and a sense of scale and wonder. Keep it polished, "
-            "immersive, and slightly dramatic at the ranking reveals."
+        mood = (
+            "Read in a premium, cinematic documentary voice with steady, engaging pacing "
+            "(~145 words per minute), clear authority, and an authentic sense of scale and wonder."
         )
-
-    if any(k in haystack for k in [
+    elif any(k in haystack for k in [
         "deadly", "danger", "horror", "haunted", "ghost", "creature",
-        "predator", "attack", "monster", "scary", "venom"
+        "predator", "attack", "monster", "scary", "venom", "poison", "toxic", "lethal"
     ]):
-        return (
-            "Read in a dark, ominous, high-tension narration voice with restrained horror, "
-            "measured pacing, and strong emphasis on danger and surprise."
+        mood = (
+            "Read in a tense, gripping documentary narration voice with measured, engaging pacing "
+            "(~145 words per minute), subtle intensity, and strong focus on the sheer danger."
+        )
+    elif any(k in haystack for k in [
+        "fastest", "speed", "hypercar", "jet", "missile", "mach", "quick", "rapid"
+    ]):
+        mood = (
+            "Read in a sharp, dynamic documentary voice with crisp articulation, "
+            "forward momentum (~145 words per minute), and an energetic sense of speed."
+        )
+    elif any(k in haystack for k in [
+        "animal", "wild", "snake", "shark", "elephant", "cat",
+        "dog", "predator", "nature", "wildlife", "bird", "fish"
+    ]):
+        mood = (
+            "Read in an engaging wildlife documentary voice with crisp pronunciation, "
+            "steady engaging cadence (~145 words per minute), and grounded fascination."
+        )
+    else:
+        mood = (
+            "Read in a calm, confident documentary voice with natural cadence, "
+            "authoritative delivery, and articulate pacing (~145 words per minute)."
         )
 
-    if any(k in haystack for k in [
-        "animal", "wild", "snake", "shark", "elephant", "giraffe", "cat",
-        "dog", "predator", "nature"
-    ]):
-        return (
-            "Read in a dramatic but accessible countdown voice with strong emphasis on each reveal, "
-            "clear pacing, and an energetic sense of awe."
-        )
+    # Dynamic beat-role adaptation: hook intrigue -> countdown momentum -> #1 reveal -> warm closer
+    if beat_idx == 0:
+        role = " Hook the listener with intriguing curiosity and immediate presence."
+    elif 0 < beat_idx < total_beats - 2:
+        role = " Keep a confident countdown momentum, making the facts clear and compelling."
+    elif beat_idx == total_beats - 2:
+        role = " Give maximum dramatic weight and awe to this final number one reveal."
+    elif beat_idx == total_beats - 1:
+        role = " Transition into a warm, conversational, and direct closing tone."
+    else:
+        role = ""
 
-    return (
-        "Read in a calm, confident narrator voice with steady pacing, authoritative tone, "
-        "and clean emphasis on each reveal."
-    )
+    return f"{mood}{role}"
 
 W, H = 1080, 1920  # vertical Shorts
 
@@ -401,6 +430,9 @@ def _validate_script(data, niche) -> dict:
         raise ValueError("missing/invalid 'title' (must be non-empty string)")
     if not isinstance(narration, str) or len(narration.split()) < 20:
         raise ValueError("'narration' missing or too short (<20 words)")
+    _nwords = len(narration.split())
+    if _nwords < 180:
+        raise ValueError(f"'narration' too short ({_nwords} words, need 180+ for ~80-85s at 145 WPM)")
     if not isinstance(description, str) or not description.strip():
         raise ValueError("missing/invalid 'description' (must be non-empty string)")
     if (not isinstance(tags, list) or not tags
@@ -424,8 +456,20 @@ def _validate_script(data, niche) -> dict:
             lab = ""
         lab = "".join(c for c in lab if c.isdigit())[:2]
         norm_beats.append({"text": t.strip(), "query": q.strip(), "label": lab})
+    for b in norm_beats:
+        # Bare homonym heads ('Eclipse', 'Hyperion') pull unrelated stock
+        # (solar eclipses, theaters); the prompt demands anchored queries, so
+        # a bare one is a bad draft worth a regen. Labeled beats only, table
+        # scoped for precision — ordinary singletons never trip this.
+        if b["label"].isdigit() and _is_bare_homonym_query(b["query"]):
+            raise ValueError(
+                f"beat query '{b['query']}' is a bare homonym head lacking the "
+                "subject noun (e.g. 'Eclipse yacht', 'monitor lizard')")
     if sum(len(b["text"].split()) for b in norm_beats) < 20:
         raise ValueError("'beats' cover too little text (<20 words total)")
+    _bwords = sum(len(b["text"].split()) for b in norm_beats)
+    if _bwords < 180:
+        raise ValueError(f"'beats' cover too little text ({_bwords} words, need 180+ for ~80-85s at 145 WPM)")
     # Normalize so downstream steps never choke on oversized input.
     out = {
         "title": title.strip()[:100],
@@ -439,7 +483,8 @@ def _validate_script(data, niche) -> dict:
 
 
 def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
-                  backoff: int | None = None, timeout: int | None = None):
+                  backoff: int | None = None, timeout: int | None = None,
+                  validate=None):
     """POST to Gemini with key rotation + retries. `url` is keyless.
 
     Sticks with the working key; invalid-key rejections (other 4xx) fail
@@ -450,6 +495,15 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
     exhaustion); 429 retries count toward the key's tries. Raises the last
     error when all keys fail. Defaults come from the GEMINI_TIMEOUT (text)
     / GEMINI_TTS_TIMEOUT (voice), GEMINI_TRIES, GEMINI_BACKOFF env tunables.
+
+    Optional `validate` gates strict per-key validation of the decoded
+    HTTP-200 JSON (TTS callers pass a validator checking for usable audio
+    in candidates[0].content.parts[].inlineData). A validation failure is
+    treated as a content rejection on that key — not a server outage: the
+    key is failed over immediately (no same-key retry), it does NOT count
+    toward the server-only breaker, and _GEMINI_KEY_IDX sticks only after
+    validation passes. Callers without `validate` (text/script path) are
+    unaffected.
     """
     if tries is None:
         tries = GEMINI_TRIES
@@ -472,8 +526,22 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
             try:
                 r = requests.post(keyed, json=payload, timeout=timeout)
                 r.raise_for_status()
-                _GEMINI_KEY_IDX = idx  # stick with the working key
-                return r.json()
+                data = r.json()
+                if validate is not None:
+                    try:
+                        validate(data)
+                    except Exception as ve:
+                        last_err = ve
+                        # Content rejection, not server-down: fail over to
+                        # the next key without tripping the server-only
+                        # breaker (same class as 4xx, never retried).
+                        key_server_only = False
+                        if k < n - 1:
+                            log(f"Gemini key {idx + 1}/{n} returned unusable payload "
+                                f"({ve}), failing over to next key...")
+                        break
+                _GEMINI_KEY_IDX = idx  # stick with the working key (validated)
+                return data
             except Exception as e:
                 last_err = e
                 status = _http_status(e)
@@ -484,9 +552,10 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
                     key_server_only = False
                     if attempt == tries:
                         break
-                    wait = backoff * attempt + random.uniform(0, 1)
+                    # Rate limits (RPM) require waiting for the sliding 1-minute window to reset
+                    wait = max(20.0, backoff * attempt * 4) + random.uniform(1.0, 3.0)
                     log(f"Gemini key {idx + 1}/{n} rate-limited (429, "
-                        f"attempt {attempt}/{tries}), backing off {wait:.1f}s...")
+                        f"attempt {attempt}/{tries}), waiting {wait:.1f}s for RPM quota window to reset...")
                     time.sleep(wait)
                     continue
                 if status is not None and 400 <= status < 500 and status != 408:
@@ -527,7 +596,15 @@ def gen_script(niche):
     if GEMINI_KEYS:
         for attempt in range(1 + SIMILARITY_RETRIES):
             prompt, slots = niche.build_prompt(history)
-            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.7,
+                    "maxOutputTokens": 4096,
+                },
+                "safetySettings": _GEMINI_SAFETY_SETTINGS,
+            }
             data = None
             for model in GEMINI_MODELS:
                 try:
@@ -541,6 +618,7 @@ def gen_script(niche):
                     break
                 except Exception as e:
                     log(f"Gemini model {model} unusable ({e}), trying next...")
+                    time.sleep(2)
             if data is None:
                 log("All Gemini models failed, using fallback.")
                 break
@@ -613,48 +691,32 @@ def pick_run_voice(history_len: int | None, stamp: str = "") -> tuple[str, str]:
 
 
 def pick_run_tone(history_len: int | None, stamp: str = "") -> tuple[str, str]:
-    """Body delivery tone for the whole run, alternating between runs.
-
-    Same history-parity cadence as voice selection: even history entry
-    count -> "energetic", odd -> "deep" (Charon+energetic one run,
-    Charon+deep the next); when history is unavailable (None), fall back to
-    the stamp's day-of-month parity. Returns (tone, reason) for logging.
-    An explicit non-blank GEMINI_TTS_STYLE skips this entirely (see run()).
-    """
-    if history_len is not None:
-        tone = "energetic" if history_len % 2 == 0 else "deep"
-        return tone, f"history parity (entries={history_len})"
-    try:
-        day = int(stamp[8:10])
-    except (ValueError, IndexError):
-        day = datetime.datetime.now().day
-    tone = "energetic" if day % 2 == 0 else "deep"
-    return tone, "date-stamp day parity (history unavailable)"
+    """Delivery tone for the run. Default is adaptive narration-dependent delivery."""
+    return "adaptive", "narration-dependent dynamic delivery"
 
 
 def _gemini_tts_beat(text: str, voice: str, topic: str = "",
-                     is_hook: bool = False) -> tuple[bytes, int]:
+                     is_hook: bool = False, beat_idx: int = -1,
+                     total_beats: int = 7) -> tuple[bytes, int]:
     """One beat of raw PCM audio via Gemini TTS. Returns (pcm, sample_rate).
 
     Tries GEMINI_TTS_MODELS in order; raises when all fail. The caller falls
     back to edge-tts for the WHOLE narration on any failure — per-beat
     retries would multiply a total outage by the beat count. Beat text is
-    always sent verbatim; only the delivery prefix varies (hook punch on
-    beat 0, base countdown style otherwise).
+    always sent verbatim; delivery style adapts dynamically per beat.
     """
     if not GEMINI_KEYS:
         raise ValueError("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it)")
     if topic:
-        base_style = pick_tts_style(topic, text)
+        base_style = pick_tts_style(topic, text, beat_idx, total_beats)
     elif GEMINI_TTS_STYLE_EXPLICIT:
         base_style = GEMINI_TTS_STYLE
-    elif (RUN_TONE or "energetic") == "deep":
+    elif (RUN_TONE or "adaptive") == "deep":
         base_style = DEEP_GEMINI_TTS_STYLE
     else:
-        base_style = GEMINI_TTS_STYLE
-    # Hook keeps its punchy prefix on every tone: a bright hook dropping into
-    # a deep weighty body is the contrast, and retention needs the first 2s.
-    prefix = GEMINI_TTS_HOOK_PREFIX if is_hook else ""
+        base_style = pick_tts_style("", text, beat_idx, total_beats) if beat_idx >= 0 else DEFAULT_GEMINI_TTS_STYLE
+
+    prefix = (GEMINI_TTS_HOOK_PREFIX if (is_hook or beat_idx == 0) and not topic else "")
     prompt = f"{prefix}{base_style} Say the following text:\n\n{text}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -662,13 +724,22 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "",
             "responseModalities": ["AUDIO"],
             "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
         },
+        "safetySettings": _GEMINI_SAFETY_SETTINGS,
     }
     last_err: Exception | None = None
     for model in GEMINI_TTS_MODELS:
         try:
             url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                    f"{model}:generateContent")
-            raw = _fetch_gemini(url, payload, timeout=GEMINI_TTS_TIMEOUT)
+
+            def _validate_tts_audio(raw, _model=model):
+                parts = raw["candidates"][0]["content"].get("parts", [])
+                inline = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
+                if not inline or not inline.get("data"):
+                    raise ValueError(f"TTS model {_model} returned no audio")
+
+            raw = _fetch_gemini(url, payload, timeout=GEMINI_TTS_TIMEOUT,
+                                validate=_validate_tts_audio)
             parts = raw["candidates"][0]["content"].get("parts", [])
             inline = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
             if not inline or not inline.get("data"):
@@ -703,7 +774,16 @@ def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
     parts, cues, durations = [], [], []
     t = 0.0
     for i, b in enumerate(beats):
-        voice, seg = synth(i, b, topic) if topic else synth(i, b)
+        if i > 0 and tag == "gemini" and GEMINI_TTS_PACE_SEC > 0:
+            log(f"Gemini TTS pacing: waiting {GEMINI_TTS_PACE_SEC}s between beats to respect RPM limits...")
+            time.sleep(GEMINI_TTS_PACE_SEC)
+        try:
+            voice, seg = synth(i, b, topic=topic, total_beats=len(beats))
+        except TypeError:
+            try:
+                voice, seg = synth(i, b, topic)
+            except TypeError:
+                voice, seg = synth(i, b)
         d = audio_duration(seg)
         parts.append(seg)
         cues.append((t, t + d, " ".join(b["text"].split())))
@@ -720,22 +800,44 @@ def _assemble_beats(beats: list[dict], mp3: Path, srt: Path,
     return durations
 
 
-def _gemini_synth(i: int, beat: dict, topic: str = ""):
+def _gemini_synth(i: int, beat: dict, topic: str = "", total_beats: int = 7):
     """Gemini per-beat synth step: (voice, seg_mp3). Raises on failure.
 
-    Single voice per run (RUN_VOICE picked in run()); beat 0 gets the hook
-    delivery punch, beats 1-6 keep the base countdown style. Beat text is
-    verbatim; SRT/validation/fallback untouched.
+    Single voice per run (RUN_VOICE picked in run()); delivery style adapts
+    dynamically to the beat position and topic narration. Calibrates to
+    GEMINI_TTS_TARGET_WPM via gentle atempo adjustment.
     """
     voice = RUN_VOICE or (GEMINI_TTS_VOICES[i % len(GEMINI_TTS_VOICES)]
                           if GEMINI_TTS_VOICES else "Charon")
-    pcm, rate = _gemini_tts_beat(beat["text"], voice, topic, is_hook=(i == 0))
+    pcm, rate = _gemini_tts_beat(beat["text"], voice, topic, is_hook=(i == 0),
+                                 beat_idx=i, total_beats=total_beats)
     raw_pcm = ASSETS / f"tts_beat_{i}.pcm"
+    raw_seg = ASSETS / f"tts_beat_{i}_raw.mp3"
     seg = ASSETS / f"tts_beat_{i}.mp3"
     raw_pcm.write_bytes(pcm)
     _run_ffmpeg(["ffmpeg", "-y", "-f", "s16le", "-ar", str(rate), "-ac", "1",
-                 "-i", str(raw_pcm), "-c:a", "libmp3lame", str(seg)],
+                 "-i", str(raw_pcm), "-c:a", "libmp3lame", str(raw_seg)],
                 f"tts-beat-{i}-pcm")
+
+    target_wpm = GEMINI_TTS_TARGET_WPM
+    if target_wpm > 0:
+        words = len(beat["text"].split())
+        raw_dur = audio_duration(raw_seg)
+        if raw_dur > 0 and words > 0:
+            current_wpm = (words / raw_dur) * 60.0
+            factor = target_wpm / current_wpm
+            factor = max(0.85, min(1.35, factor))
+            if abs(factor - 1.0) >= 0.03:
+                _run_ffmpeg(["ffmpeg", "-y", "-i", str(raw_seg),
+                             "-filter:a", f"atempo={factor:.3f}",
+                             "-c:a", "libmp3lame", str(seg)],
+                            f"tts-beat-{i}-atempo")
+                return voice, seg
+
+    if raw_seg.exists():
+        if seg.exists():
+            seg.unlink()
+        raw_seg.rename(seg)
     return voice, seg
 
 
@@ -917,7 +1019,7 @@ def make_bed(duration: float, slot: int | None = None) -> tuple[Path, str | None
             log(f"Bed: looping custom track {custom} (1 of {len(pool)} in pool)")
     if custom is not None:
         _run_ffmpeg(["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(custom),
-                     "-t", str(duration), "-af", "volume=0.20",
+                     "-t", str(duration), "-af", f"volume={BGM_VOLUME:.2f}",
                      "-c:a", "libmp3lame", str(bed)], "bed-loop")
     else:
         # Layered dark drone: brown-noise texture (the phone-audible part,
@@ -969,8 +1071,57 @@ _QUERY_STOPWORDS = frozenset({
     "a", "an", "the", "in", "on", "of", "at", "to", "for",
     "with", "from", "and", "or", "is", "are", "its", "it",
     "cinematic", "close", "creeping", "slowly", "swimming",
-    "underwater", "slithering", "wild",
+    "underwater", "slithering",
 })
+
+# Scenery/habitat words that can dilute stock queries away from the actual subject
+_GENERIC_HABITAT_WORDS = frozenset({
+    "desert", "forest", "savanna", "savannah", "jungle", "ocean", "water",
+    "river", "sea", "mountain", "mountains", "sky", "underwater", "swamp",
+    "grassland", "plains", "trees", "dunes",
+})
+
+# Domestic/indoor indicators to reject when the topic is wild animals
+_DOMESTIC_DISQUALIFIERS = frozenset({
+    "indoor", "indoors", "sofa", "couch", "living room", "pet", "pets",
+    "sweater", "costume", "leash", "collar", "bedroom", "blanket",
+    "domestic", "housecat", "kitten", "puppy", "furniture",
+    "home", "apartment", "rug", "carpet",
+})
+
+
+def _is_wild_topic(topic: str) -> bool:
+    """True if topic is about wildlife, nature, or wild creatures."""
+    t = (topic or "").lower()
+    wild_words = {
+        "wild", "wildlife", "nature", "predator", "predators", "safari",
+        "jungle", "forest", "ocean", "sea", "marine", "deep sea",
+        "deadliest", "poisonous", "venomous", "carnivore",
+    }
+    return any(w in t for w in wild_words)
+
+
+def _clean_stock_query(q: str, item_name: str = "") -> str:
+    """Strip generic habitat/scenery words from query unless they are part of item_name."""
+    clean_q = (q or "").strip()
+    if not clean_q:
+        return ""
+    item_tokens = set(re.findall(r"[a-z0-9]+", (item_name or "").lower()))
+    words = clean_q.split()
+    kept = []
+    for w in words:
+        wl = re.sub(r"[^a-z0-9]", "", w.lower())
+        if wl in _GENERIC_HABITAT_WORDS and wl not in item_tokens:
+            continue
+        kept.append(w)
+    return " ".join(kept) if kept else clean_q
+
+
+def _has_domestic_disqualifier(haystack: str) -> bool:
+    """Check if text mentions domestic/indoor keywords."""
+    h = (haystack or "").lower()
+    tokens = set(re.findall(r"[a-z0-9]+", h))
+    return bool(tokens & _DOMESTIC_DISQUALIFIERS)
 
 
 def _query_words(q: str) -> list[str]:
@@ -1004,94 +1155,598 @@ def _score_text(haystack, words: list[str]) -> int:
     return sum(1 for w in words if w and w in h)
 
 
-def _item_require_words(item: str) -> list[str]:
-    """Distinctive item words a stock candidate must mention (lowercased).
+def _score_candidate(alt: str, url: str, words: list[str], phrase: str = "") -> int:
+    """Score candidate text against query words, with extra bonus for exact phrase."""
+    h_alt = (alt or "").lower()
+    h_url = (url or "").lower()
+    tokens_alt = set(re.findall(r"[a-z0-9]+", h_alt))
+    tokens_url = set(re.findall(r"[a-z0-9]+", h_url))
+    alt_hits = sum(1 for w in words if w and (w in tokens_alt or (len(w) >= 6 and w in h_alt)))
+    url_hits = sum(1 for w in words if w and (w in tokens_url or (len(w) >= 6 and w in h_url)))
+    score = 2 * alt_hits + url_hits
+    if phrase and len(phrase.split()) > 1:
+        phrase_clean = phrase.lower()
+        if phrase_clean in h_alt or phrase_clean in re.sub(r"[-_]", " ", h_alt):
+            score += 6
+        elif phrase_clean in re.sub(r"[-_]", " ", h_url):
+            score += 4
+    return score
 
-    Long (>=6-char) words are distinctive ('anaconda' beats 'green'); when
-    the item has no long word, any word qualifies. Never raises.
+
+_BOGUS_FAMILY_WORDS = frozenset({
+    "said", "say", "says", "told", "talk", "speak", "go", "goes", "went", "get", "gets",
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
+    "al", "el", "del", "de", "da", "di", "du", "la", "le", "les", "san", "santa", "von", "van", "der", "den",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "first", "second", "third",
+    "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "jr", "sr",
+    "big", "large", "small", "tiny", "new", "old", "top", "pro", "max", "ultra", "plus", "super", "hyper",
+    "gt", "gts", "gtr", "rs", "amg", "sv", "evo", "svj", "ss", "v8", "v10", "v12", "edition", "series",
+})
+
+# Known homonym heads: bare-head stock queries for these collide with
+# unrelated footage (computer monitors, solar eclipses, theaters), because
+# the exact->family->topic fallback drops modifiers/subject nouns to the
+# bare head. First domain noun is the preferred Pexels anchor. Family
+# fallback and exact-tier anchoring always carry a domain noun for these;
+# the list-branch substring fallback is disabled for them (exact token
+# only); the validator rejects them as bare beat queries.
+_HOMONYM_HEADS: dict[str, tuple[str, ...]] = {
+    "monitor": ("lizard", "reptile"),
+    "eclipse": ("yacht", "boat", "ship"),
+    "hyperion": ("tree", "redwood"),
+    "sequoia": ("tree", "redwood"),
+    "sherman": ("tree", "redwood"),
+    "python": ("snake", "reptile"),
+    "cobra": ("snake", "reptile"),
+    "viper": ("snake", "reptile"),
+    "boa": ("snake", "constrictor"),
+    "mamba": ("snake", "reptile"),
+    "jaguar": ("cat", "feline"),
+    "mustang": ("horse", "stallion"),
+    "bronco": ("horse", "stallion"),
+    "charger": ("horse", "stallion"),
+    "falcon": ("bird", "eagle"),
+    "raven": ("bird", "crow"),
+    "stingray": ("fish", "ray"),
+    "comet": ("fish", "goldfish"),
+    "neon": ("fish", "tetra"),
+    "angel": ("fish", "angelfish"),
+    "atlas": ("moth", "insect"),
+    "hercules": ("beetle", "insect"),
+    "goliath": ("spider", "tarantula"),
+    "titan": ("beetle", "insect"),
+}
+
+_DOMAIN_SYNONYMS: dict[str, set[str]] = {
+    # Watercraft / Marine
+    "yacht": {
+        "yacht", "yachts", "superyacht", "superyachts", "megayacht", "megayachts",
+        "boat", "boats", "ship", "ships", "vessel", "vessels", "watercraft",
+        "sailing", "sail", "ocean", "sea", "marine", "deck", "harbor", "marina", "port", "water",
+    },
+    "ship": {
+        "ship", "ships", "vessel", "vessels", "boat", "boats", "cruise", "cruises",
+        "freighter", "cargo", "container", "tanker", "ocean", "sea", "harbor", "port", "marine", "sailing", "water",
+    },
+    "boat": {
+        "boat", "boats", "ship", "ships", "vessel", "vessels", "yacht", "yachts",
+        "watercraft", "sailing", "water", "sea", "ocean", "lake", "river", "harbor",
+    },
+    "submarine": {
+        "submarine", "submarines", "sub", "subs", "submersible", "underwater",
+        "naval", "navy", "ocean", "sea", "torpedo", "water",
+    },
+    "shipwreck": {
+        "shipwreck", "shipwrecks", "wreck", "wrecks", "sunken", "underwater",
+        "ocean", "sea", "submerged", "coral", "reef", "ship",
+    },
+    # Aviation
+    "airplane": {
+        "plane", "planes", "airplane", "airplanes", "aircraft", "jet", "jets",
+        "aviation", "flight", "flying", "airliner", "airliners", "airport", "runway", "sky",
+    },
+    "plane": {
+        "plane", "planes", "airplane", "airplanes", "aircraft", "jet", "jets",
+        "aviation", "flight", "flying", "airliner", "airliners", "airport", "runway", "sky",
+    },
+    "aircraft": {
+        "plane", "planes", "airplane", "airplanes", "aircraft", "jet", "jets",
+        "aviation", "flight", "flying", "airliner", "airliners", "airport", "runway", "sky",
+    },
+    "jet": {
+        "jet", "jets", "fighter", "plane", "planes", "aircraft", "airplane", "airplanes",
+        "aviation", "cockpit", "supersonic", "sky", "flight",
+    },
+    "helicopter": {
+        "helicopter", "helicopters", "chopper", "choppers", "rotor", "rotors",
+        "aircraft", "aviation", "flight", "sky",
+    },
+    # Ground Vehicles
+    "car": {
+        "car", "cars", "automobile", "automobiles", "supercar", "supercars",
+        "hypercar", "hypercars", "vehicle", "vehicles", "auto", "motor", "drive", "driving", "road", "racing",
+    },
+    "supercar": {
+        "car", "cars", "automobile", "automobiles", "supercar", "supercars",
+        "hypercar", "hypercars", "vehicle", "vehicles", "auto", "motor", "drive", "driving", "road", "speed",
+    },
+    "truck": {
+        "truck", "trucks", "pickup", "pickups", "vehicle", "vehicles", "semi", "lorry", "road", "drive",
+    },
+    "motorcycle": {
+        "motorcycle", "motorcycles", "motorbike", "motorbikes", "bike", "bikes", "moto", "rider", "riding", "road",
+    },
+    "train": {
+        "train", "trains", "locomotive", "locomotives", "railway", "railroad",
+        "rail", "rails", "metro", "subway", "bullet", "tracks",
+    },
+    "tank": {
+        "tank", "tanks", "armor", "armored", "armour", "military", "army",
+        "combat", "cannon", "turret", "tracks", "vehicle",
+    },
+    # Space & Science
+    "rocket": {
+        "rocket", "rockets", "spacecraft", "spaceship", "launch", "space",
+        "nasa", "booster", "orbit", "astronaut", "propulsion",
+    },
+    "telescope": {
+        "telescope", "telescopes", "observatory", "astronomy", "space", "optics", "stars",
+    },
+    "planet": {
+        "planet", "planets", "solar", "system", "space", "astronomy", "orbit", "cosmos",
+    },
+    "moon": {
+        "moon", "moons", "lunar", "orbit", "space", "astronomy", "crater", "craters",
+    },
+    # Architecture & Civil Engineering
+    "building": {
+        "building", "buildings", "skyscraper", "skyscrapers", "architecture",
+        "tower", "towers", "edifice", "facade", "structure", "structures", "city", "skyline",
+    },
+    "skyscraper": {
+        "skyscraper", "skyscrapers", "building", "buildings", "tower", "towers",
+        "architecture", "highrise", "high-rise", "skyline", "city",
+    },
+    "tower": {
+        "tower", "towers", "building", "buildings", "skyscraper", "skyscrapers",
+        "structure", "structures", "spire", "architecture",
+    },
+    "bridge": {
+        "bridge", "bridges", "suspension", "viaduct", "overpass", "arch",
+        "cables", "crossing", "river", "span", "water",
+    },
+    "castle": {
+        "castle", "castles", "fortress", "fortresses", "fort", "palace", "palaces",
+        "citadel", "medieval", "stone", "walls",
+    },
+    "palace": {
+        "palace", "palaces", "castle", "castles", "royal", "mansion", "estate",
+        "residence", "architecture", "court",
+    },
+    "temple": {
+        "temple", "temples", "shrine", "shrines", "monastery", "sanctuary", "ancient", "stone", "architecture",
+    },
+    "church": {
+        "church", "churches", "cathedral", "cathedrals", "basilica", "chapel", "architecture",
+    },
+    "mosque": {
+        "mosque", "mosques", "minaret", "minarets", "dome", "architecture",
+    },
+    "dam": {
+        "dam", "dams", "reservoir", "hydroelectric", "spillway", "water", "concrete", "lake", "river",
+    },
+    "tunnel": {
+        "tunnel", "tunnels", "subway", "highway", "rail", "underground", "road",
+    },
+    "airport": {
+        "airport", "airports", "terminal", "runway", "tarmac", "aviation", "airplane", "airplanes",
+    },
+    "lighthouse": {
+        "lighthouse", "lighthouses", "beacon", "coast", "coastal", "ocean", "sea", "tower",
+    },
+    "fountain": {
+        "fountain", "fountains", "water", "spray", "cascade", "pool", "monument",
+    },
+    "coaster": {
+        "roller coaster", "rollercoaster", "coaster", "coasters", "ride", "rides", "amusement", "tracks",
+    },
+    "wheel": {
+        "ferris wheel", "ferris", "wheel", "wheels", "amusement", "carnival", "fair",
+    },
+    "aquarium": {
+        "aquarium", "aquariums", "tank", "fish", "marine", "underwater", "reef", "ocean",
+    },
+    "museum": {
+        "museum", "museums", "exhibit", "exhibition", "gallery", "art", "sculpture", "artifact",
+    },
+    "library": {
+        "library", "libraries", "books", "bookshelves", "reading",
+    },
+    "stadium": {
+        "stadium", "stadiums", "arena", "arenas", "pitch", "field", "sports",
+    },
+}
+
+_ANIMAL_DOMAINS: dict[str, set[str]] = {
+    "snake": {"snake", "snakes", "serpent", "serpents", "reptile", "reptiles", "viper", "vipers", "cobra", "cobras", "python", "mamba", "venomous"},
+    "spider": {"spider", "spiders", "arachnid", "arachnids", "tarantula", "web"},
+    "shark": {"shark", "sharks", "predator", "ocean", "sea", "marine", "underwater", "fin", "fish"},
+    "bird": {"bird", "birds", "avian", "feather", "feathers", "flight", "flying", "wing", "wings", "eagle", "hawk", "owl", "falcon"},
+    "eagle": {"eagle", "eagles", "bird", "birds", "raptor", "flying", "flight"},
+    "owl": {"owl", "owls", "bird", "birds", "raptor", "nocturnal", "feathers"},
+    "cat": {"cat", "cats", "feline", "felines", "kitten", "panther", "tiger", "lion", "leopard", "cheetah", "jaguar"},
+    "dog": {"dog", "dogs", "canine", "canines", "puppy", "puppies", "hound", "retriever", "terrier"},
+    "bear": {"bear", "bears", "grizzly", "polar bear", "cub", "predator", "fur"},
+    "crocodile": {"crocodile", "crocodiles", "alligator", "alligators", "reptile", "reptiles", "swamp", "river"},
+    "reptile": {"reptile", "reptiles", "lizard", "lizards", "snake", "snakes", "iguana", "gecko"},
+    "fish": {"fish", "fishes", "underwater", "ocean", "sea", "marine", "aquarium", "reef", "swimming"},
+    "whale": {"whale", "whales", "cetacean", "ocean", "sea", "marine", "mammal"},
+    "frog": {"frog", "frogs", "amphibian", "amphibians", "toad", "toads", "jungle"},
+    "crab": {"crab", "crabs", "crustacean", "ocean", "sea", "beach", "sand", "shell"},
+    "insect": {"insect", "insects", "bug", "bugs", "beetle", "butterfly", "moth", "ant", "bee"},
+    "dinosaur": {"dinosaur", "dinosaurs", "fossil", "fossils", "jurassic", "prehistoric", "t-rex"},
+}
+
+
+# Recognized category/subject nouns (domain keys + plurals + homonym
+# grounding vocab). A beat query headed by one of these is already specific
+# ('saltwater crocodile', 'Crocodile'), so subject-noun anchoring leaves it
+# untouched; anything else ungrounded gets the topic subject appended.
+_CATEGORY_NOUNS = frozenset(
+    {k for k in _DOMAIN_SYNONYMS} | {f"{k}s" for k in _DOMAIN_SYNONYMS}
+    | {k for k in _ANIMAL_DOMAINS} | {f"{k}s" for k in _ANIMAL_DOMAINS}
+    | {d for _ds in _HOMONYM_HEADS.values() for d in _ds}
+    | {f"{d}s" for _ds in _HOMONYM_HEADS.values() for d in _ds}
+)
+
+
+def _get_topic_domain_info(topic: str) -> tuple[str, set[str], bool]:
+    """Extract (base_subject, domain_keywords, is_object_topic) from topic."""
+    t_clean = (topic or "").lower()
+    t_tokens = set(re.findall(r"[a-z0-9]+", t_clean))
+
+    for k, syns in _DOMAIN_SYNONYMS.items():
+        if (k in t_tokens or (k.endswith("s") and k[:-1] in t_tokens)
+                or (k + "s") in t_tokens or (" " in k and k in t_clean)):
+            return k, syns, True
+
+    for k, syns in _ANIMAL_DOMAINS.items():
+        if (k in t_tokens or (k.endswith("s") and k[:-1] in t_tokens)
+                or (k + "s") in t_tokens or (" " in k and k in t_clean)):
+            return k, syns, False
+
+    tqueries = _topic_stock_queries(topic)
+    if tqueries:
+        subj = tqueries[-1][0]
+        reqs = set(tqueries[-1][1])
+        return subj, reqs, False
+
+    return "", set(), False
+
+
+def _item_require_words(item: str, domain: set[str] | None = None) -> dict:
+    """Structured requirements for a ranked item name.
+
+    Head: the primary subject noun (last token, e.g. 'cat' in 'Sand Cat').
+    Modifiers: distinguishing qualifiers (e.g. 'sand' in 'Sand Cat').
+    Phrase: the full item name string.
+    Domain: allowed topic domain keywords (e.g. yacht/marine synonyms).
     """
     try:
-        tokens = re.findall(r"[a-z0-9]+", (item or "").lower())
-        long = [w for w in tokens if len(w) >= 6]
-        return long or tokens
+        clean = (item or "").lower().strip()
+        tokens = re.findall(r"[a-z0-9]+", clean)
+        if not tokens:
+            return {}
+        head = tokens[-1]
+        heads = [head]
+        if head.endswith("s") and len(head) > 3:
+            heads.append(head[:-1])
+        else:
+            heads.append(head + "s")
+        modifiers = tokens[:-1]
+        return {
+            "heads": heads,
+            "modifiers": modifiers,
+            "phrase": clean,
+            "domain": domain or set(),
+        }
     except Exception:
-        return []
+        return {}
 
 
-def _meets_require(haystack: str, require: list[str] | None) -> bool:
-    """True when no gate applies or any require word is a substring."""
+def _meets_require(haystack: str, require: Any) -> bool:
+    """True when no gate applies or candidate text satisfies the requirement."""
     if not require:
         return True
     h = (haystack or "").lower()
-    return any(w and w in h for w in require)
+    h_tokens = set(re.findall(r"[a-z0-9]+", h))
+    if not h_tokens:
+        return False
+    h_clean = re.sub(r"[-_]", " ", h)
+
+    if isinstance(require, dict):
+        domain = require.get("domain")
+        if domain:
+            # Candidate MUST match at least one domain keyword to prevent homonym pollution
+            # (e.g. rejecting solar eclipses or city traffic when ranking yachts)
+            has_domain = (any(d in h_tokens for d in domain if " " not in d) or
+                          any(d in h_clean for d in domain if " " in d))
+            if not has_domain:
+                return False
+
+        heads = require.get("heads", [])
+        modifiers = require.get("modifiers", [])
+        phrase = require.get("phrase", "")
+        # Multi-word exact phrase match (e.g. 'sand cat' or 'burj khalifa')
+        if phrase and len(phrase.split()) > 1 and (phrase in h or phrase in h_clean):
+            return True
+        # Head noun is strictly mandatory as an exact word token
+        if heads and not any(hd in h_tokens for hd in heads):
+            return False
+        # If item has distinguishing modifiers, at least one modifier must be an exact word token
+        if modifiers and not any(m in h_tokens for m in modifiers):
+            return False
+        return True
+
+    if isinstance(require, (list, tuple, set)):
+        for w in require:
+            w_str = str(w).lower().strip()
+            if " " in w_str:
+                if w_str in h or w_str in h_clean:
+                    return True
+            else:
+                if w_str in h_tokens:
+                    return True
+                # Long-word substring fallback (e.g. 'anaconda' inside a glued
+                # slug like 'green-anaconda-video'). Disabled for known homonym
+                # heads ('monitor' is a substring of 'computer monitor' slugs,
+                # 'eclipse' of solar-eclipse slugs): those match as exact word
+                # tokens only, otherwise computer/tech footage airs as nature.
+                _w_sing = w_str[:-1] if w_str.endswith("s") and len(w_str) > 3 else w_str
+                if (len(w_str) >= 6 and w_str not in _HOMONYM_HEADS
+                        and _w_sing not in _HOMONYM_HEADS and w_str in h):
+                    return True
+        return False
+
+    return True
 
 
-def _family_query_for_item(item: str) -> tuple[str, list[str]]:
+def _family_query_for_item(item: str, topic: str = "") -> tuple[str, list[str]]:
     """(query, require) guessing the subject family from an item name.
 
     Generic, no species dictionary: ranking items are '<adjective> <family>'
     shaped, so the last word is the family guess ('Green Anaconda' ->
-    'anaconda', 'Burmese Python' -> 'python', 'Bald Eagle' -> 'eagle',
-    'Eiffel Tower' -> 'tower'); single-word items use that word.
-    Returns ("", []) when the item has no usable word. Never raises.
+    'anaconda', 'Bald Eagle' -> 'eagle', 'Eiffel Tower' -> 'tower').
+    For wild topics with domestic-ambiguous animals ('cat', 'dog', 'horse', 'pig'),
+    prepends 'wild' so fallback doesn't pull house pets.
+    For object topics, proper names with no category noun (e.g. 'Al Said', 'Eclipse',
+    'Dubai', 'Chiron') return empty so the pipeline cleanly falls back to topic stock.
     """
     try:
         tokens = re.findall(r"[a-z0-9]+", (item or "").lower())
         if not tokens:
             return "", []
         fam = tokens[-1]
+        if fam in _BOGUS_FAMILY_WORDS or len(fam) < 3:
+            return "", []
+
+        _subj, domain_kw, is_obj = _get_topic_domain_info(topic)
+        if is_obj:
+            if fam not in domain_kw:
+                return "", []
+            return fam, [fam]
+
+        # Homonym heads never fall back to the bare head: with a topic
+        # overlap the family query carries the domain noun ('Nile monitor'
+        # -> 'monitor lizard' for lizard topics, gated on head+domain
+        # phrases); without one there is no safe family stock, so return
+        # empty and let the topic tier fill in (e.g. car-'Cobra' never pulls
+        # snake footage via a bare 'cobra' query).
+        if fam in _HOMONYM_HEADS:
+            cands = list(_HOMONYM_HEADS[fam])
+            topic_words = {str(d).lower() for d in (domain_kw or set()) if str(d).strip()}
+            if _subj and str(_subj).strip():
+                topic_words.add(str(_subj).lower())
+            topic_words |= {w[:-1] if w.endswith("s") and len(w) > 3 else w + "s"
+                            for w in list(topic_words) if w}
+            best = next((d for d in cands if d in topic_words), None)
+            if best is None:
+                return "", []
+            return f"{fam} {best}", [f"{fam} {d}" for d in cands]
+
+        if _is_wild_topic(topic) and fam in {"cat", "dog", "pig", "horse", "duck", "rabbit", "goat", "sheep"}:
+            return f"wild {fam}", [f"wild {fam}", fam]
         return fam, [fam]
     except Exception:
         return "", []
 
 
-def _topic_query_for_topic(topic: str) -> tuple[str, list[str]]:
-    """(query, require) for the topic's generic subject noun, or ("", []).
+def _is_bare_homonym_query(q: str) -> bool:
+    """True when the query is a lone homonym head ('Eclipse', 'monitor').
 
-    Generic, no dictionary: the first plural (trailing-s) content word past
-    stopwords is the subject in virtually every pool topic ('heaviest
-    snakes in the world' -> 'snakes', 'tallest buildings ...' ->
-    'buildings'). Topics without one ('largest fish in the ocean') return
-    ("", []) and skip the topic tier. The query is the SINGULAR form so
-    singular alts still meet the scorer's threshold ('snake' matches both
-    'snake' and 'snakes' alts); require covers both spellings. Never raises.
+    Single token (case-insensitive, singular/plural) matching _HOMONYM_HEADS.
+    Anchored forms ('Eclipse yacht') and ordinary nouns are False.
     """
     try:
-        tokens = [w for w in re.findall(r"[a-z0-9]+", (topic or "").lower())
-                  if w not in _QUERY_STOPWORDS]
-        plural = ""
-        for w in tokens:
-            if len(w) >= 4 and w.endswith("s") and not w.endswith("ss"):
-                plural = w
-                break
-        if not plural:
-            return "", []
-        if plural.endswith("ies") and len(plural) > 4:
-            singular = plural[:-3] + "y"
-        elif plural.endswith(("ses", "xes", "ches", "shes")) and len(plural) > 4:
-            singular = plural[:-2]
-        else:
-            singular = plural[:-1]
-        require = [plural] + ([singular] if singular and singular != plural else [])
-        return singular, require
+        toks = re.findall(r"[a-z0-9]+", (q or "").lower())
+        if len(toks) != 1:
+            return False
+        t = toks[0]
+        if t in _HOMONYM_HEADS:
+            return True
+        return t.endswith("s") and len(t) > 3 and t[:-1] in _HOMONYM_HEADS
     except Exception:
-        return "", []
+        return False
+
+
+def _anchor_query_with_subject(clean_q: str, item_phrase: str,
+                               base_subj: str, domain_kw: set | None,
+                               is_obj: bool = False) -> str:
+    """Append the topic subject noun when the beat query is ungrounded.
+
+    Object topics keep the legacy broad anchoring ('Chiron' -> 'Chiron car').
+    Otherwise: bare single-token queries lacking any subject/domain word gain
+    the subject ('Eclipse' -> 'Eclipse yacht' only happens via the object
+    path; 'Hyperion' -> 'Hyperion tree'); multi-word queries whose item head
+    is a known homonym gain the table domain overlapping this topic ('Nile
+    monitor' -> 'Nile monitor lizard'). Queries already carrying the subject
+    or a domain word, and heads that are themselves category nouns
+    ('saltwater crocodile'), are left untouched.
+    """
+    try:
+        q = (clean_q or "").strip()
+        subj = (base_subj or "").strip().lower()
+        if not q or not subj:
+            return clean_q
+        if is_obj:
+            q_lower = q.lower()
+            if not any(k in q_lower for k in (set(domain_kw or set()) | {subj})):
+                return f"{q} {base_subj.strip()}"
+            return q
+        q_tokens = set(re.findall(r"[a-z0-9]+", q.lower()))
+        subj_forms = {subj, subj[:-1] if subj.endswith("s") and len(subj) > 3 else subj + "s"}
+        domain_l = {str(d).lower() for d in (domain_kw or set()) if str(d).strip()}
+        if q_tokens & subj_forms or q_tokens & domain_l:
+            return q
+        if any(d in q.lower() for d in domain_l if " " in d):
+            return q
+        itoks = re.findall(r"[a-z0-9]+", (item_phrase or "").lower())
+        head = itoks[-1] if itoks else ""
+        if not head:
+            return q
+        if len(q_tokens) > 1 and head in _HOMONYM_HEADS:
+            cands = list(_HOMONYM_HEADS[head])
+            topic_words = set(domain_l) | set(subj_forms)
+            topic_words |= {w[:-1] if w.endswith("s") and len(w) > 3 else w + "s"
+                            for w in list(topic_words) if w}
+            best = next((d for d in cands if d in topic_words), None)
+            if best is None:
+                return q
+            return f"{q} {best}"
+        if len(q_tokens) == 1:
+            head_forms = {head, head[:-1] if head.endswith("s") and len(head) > 3 else head + "s"}
+            if head_forms & domain_l or head_forms & _CATEGORY_NOUNS:
+                return q
+            return f"{q} {base_subj.strip()}"
+        return q
+    except Exception:
+        return clean_q
+
+
+_TOPIC_META_NOUNS = frozenset({
+    "breeds", "breed", "species", "types", "type", "kinds", "kind",
+    "varieties", "variety", "categories", "category",
+})
+_NON_PLURAL_NOUNS = frozenset({
+    "this", "gas", "glass", "grass", "boss", "cross", "crisis", "basis",
+    "status", "circus", "canvas", "apparatus", "series", "species",
+})
+_SUPERLATIVES = {
+    "largest": "large", "biggest": "big", "fastest": "fast", "tallest": "tall",
+    "deepest": "deep", "deadliest": "deadly", "heaviest": "heavy", "wild": "wild",
+    "scariest": "scary", "oldest": "old", "strongest": "strong", "longest": "long",
+    "highest": "high", "smallest": "small", "coldest": "cold", "hottest": "hot",
+    "giant": "giant", "massive": "massive",
+}
+
+
+def _topic_stock_queries(topic: str) -> list[tuple[str, list[str]]]:
+    """Prioritized list of (query, require) fallback pairs for the topic's subject.
+
+    Overcomes Pexels gaps by extracting the actual underlying subject noun:
+    - Avoids meta-nouns like 'breeds' or 'species' (e.g. 'dog breeds' -> 'dog').
+    - Skips adjectives ending with '-ous' (e.g. 'venomous snakes' -> 'snake').
+    - Maps superlatives to natural stock search terms (e.g. 'largest dogs' -> 'large dog').
+    """
+    try:
+        raw_tokens = re.findall(r"[a-z0-9]+", (topic or "").lower())
+        tokens = [w for w in raw_tokens if w not in _QUERY_STOPWORDS and w not in {
+            "world", "earth", "ever", "all", "time", "history", "top", "5", "five", "most"
+        }]
+        if not tokens:
+            return []
+
+        primary_token = None
+        qualifier = None
+
+        # Check for superlative anywhere in tokens
+        for w in tokens:
+            if w in _SUPERLATIVES:
+                qualifier = _SUPERLATIVES[w]
+                break
+            elif w.endswith(("ous", "ive", "ful")):
+                qualifier = w
+                break
+
+        # Check if there is a meta noun (e.g. 'breeds', 'species')
+        for idx, w in enumerate(tokens):
+            if w in _TOPIC_META_NOUNS and idx > 0:
+                primary_token = tokens[idx - 1]
+                if not qualifier and idx > 1 and tokens[idx - 2] not in _QUERY_STOPWORDS:
+                    qualifier = tokens[idx - 2]
+                break
+
+        # If no meta noun, scan from right to left for plural noun
+        if not primary_token:
+            for idx in range(len(tokens) - 1, -1, -1):
+                w = tokens[idx]
+                if w.endswith("ous") or w in _NON_PLURAL_NOUNS:
+                    continue
+                if len(w) >= 3 and (w.endswith("s") or w in {"aircraft", "sheep", "deer", "fish"}):
+                    primary_token = w
+                    if not qualifier and idx > 0 and tokens[idx - 1] not in _QUERY_STOPWORDS and not tokens[idx - 1].isdigit():
+                        qualifier = tokens[idx - 1]
+                    break
+
+        if not primary_token and tokens:
+            primary_token = tokens[-1]
+            if not qualifier and len(tokens) > 1 and not tokens[-2].isdigit():
+                qualifier = tokens[-2]
+
+        p = primary_token or ""
+        if p.endswith("ies") and len(p) > 4:
+            sing = p[:-3] + "y"
+            plur = p
+        elif p.endswith(("ses", "xes", "ches", "shes")) and len(p) > 4:
+            sing = p[:-2]
+            plur = p
+        elif p.endswith("s") and not p.endswith("ss") and len(p) > 3 and not p.endswith("ous"):
+            sing = p[:-1]
+            plur = p
+        else:
+            sing = p
+            plur = p if p in {"aircraft", "sheep", "deer", "fish"} else (p + "s")
+
+        clean_qual = qualifier or ""
+        if clean_qual in _SUPERLATIVES:
+            clean_qual = _SUPERLATIVES[clean_qual]
+
+        queries = []
+        if clean_qual and clean_qual not in {"most", "the", sing}:
+            q_desc = f"{clean_qual} {sing}"
+            req_desc = [f"{clean_qual} {plur}", f"{clean_qual} {sing}", plur, sing]
+            queries.append((q_desc, req_desc))
+
+        q_base = sing
+        req_base = [plur, sing] if plur != sing else [sing]
+        if (q_base, req_base) not in queries:
+            queries.append((q_base, req_base))
+        return queries
+    except Exception:
+        return []
+
+
+def _topic_query_for_topic(topic: str) -> tuple[str, list[str]]:
+    """(query, require) for the topic's generic subject noun, or ("", [])."""
+    queries = _topic_stock_queries(topic)
+    return queries[0] if queries else ("", [])
 
 
 def _best_video(query: str, used: set | None = None, mood: bool = True,
-                require: list[str] | None = None):
+                require: Any = None, is_wild: bool = False, phrase: str = ""):
     """Best literal-match stock video for one query (read-only on `used`).
 
-    Returns (dest|None, raw_score, commit_key|None). `used` is only checked,
-    never mutated — the caller commits the winner's key so a losing candidate
-    never burns its id. raw_score counts query words in the URL slug; the
-    caller normalizes with *2 for fair comparison against photo scores
-    (photo alt hits already count double, so a 2-word video slug match = 4
-    lines up with a 2-word photo alt match = 4). Score 0 when no candidate
-    meets the accuracy gate (min(2, len(words)) multi-word, 1 single-word).
-    `require` is an optional item-gate word list: candidates whose URL slug
-    lacks every require word are skipped (wrong-species guard), falling back
-    to no video rather than a mismatch.
+    Returns (dest|None, raw_score, commit_key|None).
     """
     if not PEXELS_KEY:
         return None, 0, None
@@ -1116,15 +1771,17 @@ def _best_video(query: str, used: set | None = None, mood: bool = True,
             r = retry("Pexels search", _search, tries=3, backoff=5)
             for v in r.json().get("videos", []):
                 if used is not None and v.get("id") in used:
-                    continue  # same story must not show the same clip twice
-                if not _meets_require(v.get("url", ""), require):
-                    continue  # item gate: wrong species, never score it
-                score = _score_text(v.get("url", ""), words)
+                    continue
+                url = v.get("url", "")
+                v_tags = " ".join(t.get("name", "") if isinstance(t, dict) else str(t) for t in v.get("tags", []))
+                haystack = f"{url} {v_tags}".strip() if v_tags else url
+                if is_wild and _has_domestic_disqualifier(haystack):
+                    continue
+                if not _meets_require(haystack, require):
+                    continue
+                score = _score_candidate(v_tags or url, url, words, phrase)
                 if score < threshold:
                     continue
-                # Sharp-but-bounded: smallest file clearing PEXELS_MIN_WIDTH
-                # (default 1080p, 1:1 with the canvas). Falls back to whatever
-                # exists so clips with only SD files still play.
                 cands = sorted((f for f in v.get("video_files", []) if f.get("link")),
                                key=lambda f: f.get("width", 0))
                 big_enough = [f for f in cands if f.get("width", 0) >= PEXELS_MIN_WIDTH]
@@ -1136,7 +1793,7 @@ def _best_video(query: str, used: set | None = None, mood: bool = True,
                     best_video = v
                     best_pick_file = pick[0]
             if best_video is not None and best_score >= threshold:
-                break  # earliest (most specific) variant already met the gate
+                break
         if best_video is None or best_pick_file is None:
             return None, 0, None
         dest = ASSETS / f"pexels_{best_video['id']}.mp4"
@@ -1150,7 +1807,7 @@ def _best_video(query: str, used: set | None = None, mood: bool = True,
                 retry("Pexels download", _download, tries=2, backoff=5)
             except Exception:
                 if dest.exists():
-                    dest.unlink()  # never keep a partial file
+                    dest.unlink()
                 raise
         return dest, best_score, best_video["id"]
     except Exception as e:
@@ -1159,18 +1816,7 @@ def _best_video(query: str, used: set | None = None, mood: bool = True,
 
 
 def pexels_clip(query: str, used: set | None = None, mood: bool = True):
-    """First unused stock clip for one query. Returns None (no key/fail/empty).
-
-    `used` holds Pexels video ids already shown in this run, so similar
-    queries can't repeat the same clip twice in one story. `mood=False`
-    skips the horror-mood forcing (ranking niche wants literal matches).
-
-    Accuracy gate: each candidate video is scored by how many query words
-    appear in its URL slug; only clips meeting
-    min(2, len(words)) (multi-word) or 1 (single-word) are accepted, so a
-    wrong-animal clip returns None and lets the photo fallback try instead.
-    Tries up to 3 query backoff variants (full -> drop-last-word).
-    """
+    """First unused stock clip for one query. Returns None (no key/fail/empty)."""
     dest, _score, key = _best_video(query, used, mood)
     if dest is not None and key is not None and used is not None:
         used.add(key)
@@ -1178,21 +1824,8 @@ def pexels_clip(query: str, used: set | None = None, mood: bool = True):
 
 
 def _best_photos(query: str, used: set | None = None, n: int = 1,
-                 require: list[str] | None = None):
-    """Top-N literal-match stock photos for one query (read-only on `used`).
-
-    Returns [(dest, score, commit_key, alt)] sorted score desc, then area desc,
-    then aspect-near-9:16 — distinct ids passing the accuracy gate
-    (score >= min(2, len(words)), width >= PEXELS_MIN_WIDTH, has original),
-    skipping ids already in `used` and dupes within this call. `used` is
-    only checked, never mutated; the caller commits the winners' keys.
-    `require` is an optional item-gate word list: candidates whose alt+url
-    lack every require word are skipped (wrong-species guard).
-    One photo search per query variant (max 3), collecting top-N from the
-    same pages — no extra per-photo API calls. Downloads+caches each hit
-    (assets/pexels_{id}.jpg); a failed download warns, deletes the partial,
-    and skips to the next candidate.
-    """
+                 require: Any = None, is_wild: bool = False, phrase: str = ""):
+    """Top-N literal-match stock photos for one query (read-only on `used`)."""
     if n <= 0 or not PEXELS_KEY:
         return []
     try:
@@ -1220,10 +1853,12 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
                     continue
                 alt = p.get("alt", "")
                 url = p.get("url", "")
-                if not _meets_require(f"{alt} {url}", require):
-                    continue  # item gate: wrong species, never score it
-                score = (2 * _score_text(alt, words)
-                         + _score_text(url, words))
+                haystack = f"{alt} {url}"
+                if is_wild and _has_domestic_disqualifier(haystack):
+                    continue
+                if not _meets_require(haystack, require):
+                    continue
+                score = _score_candidate(alt, url, words, phrase)
                 if score < threshold:
                     continue
                 w = p.get("width", 0) or 0
@@ -1233,7 +1868,6 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
                 if not src.get("original"):
                     continue
                 h = p.get("height", 0) or 0
-                # Prefer true-portrait near 9:16 on ties (smaller rank wins).
                 if w and h:
                     aspect = w / h
                     rank = abs(aspect - 9 / 16)
@@ -1242,7 +1876,7 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
                 area = (w or 0) * (h or 0)
                 pool[pid] = (p, score, area, rank)
             if len(pool) >= n:
-                break  # most specific variant(s) already filled the set
+                break
         if not pool:
             return []
         ranked = sorted(pool.values(), key=lambda t: (-t[1], -t[2], t[3]))
@@ -1259,7 +1893,7 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
                     retry("Pexels photo download", _download, tries=2, backoff=5)
                 except Exception as e:
                     if dest.exists():
-                        dest.unlink()  # never keep a partial file
+                        dest.unlink()
                     warn(f"Pexels photo download failed for '{query}' ({e}).")
                     continue
             out.append((dest, score, f"photo_{p['id']}", p.get("alt", "")))
@@ -1270,16 +1904,9 @@ def _best_photos(query: str, used: set | None = None, n: int = 1,
 
 
 def _best_photo(query: str, used: set | None = None,
-                require: list[str] | None = None):
-    """Best literal-match stock photo for one query (read-only on `used`).
-
-    Returns (dest|None, score, commit_key|None, alt). `used` is only checked,
-    never mutated — the caller commits the winner's f"photo_{id}" key so a
-    losing candidate never burns its id. Score = 2*alt_hits + url_hits
-    (alt is more descriptive, hence double weight); callers compare it
-    against video raw_score*2. Score 0 when nothing meets the gate.
-    """
-    res = _best_photos(query, used, 1, require)
+                require: Any = None, is_wild: bool = False, phrase: str = ""):
+    """Best literal-match stock photo for one query (read-only on `used`)."""
+    res = _best_photos(query, used, 1, require, is_wild=is_wild, phrase=phrase)
     return res[0] if res else (None, 0, None, "")
 
 
@@ -1376,40 +2003,67 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
     names = list(items or [])
     gate_for: dict = {}
     fam_for: dict = {}
+    is_wild = _is_wild_topic(topic)
+    base_subj, domain_kw, is_obj = _get_topic_domain_info(topic)
     for (beat_idx, _lab), name in zip(labeled, names + [""] * len(labeled)):
-        gate_for[beat_idx] = _item_require_words(name) if name else []
-        fam_for[beat_idx] = _family_query_for_item(name) if name else ("", [])
-    tquery, trequire = _topic_query_for_topic(topic)
+        gate_for[beat_idx] = _item_require_words(name, domain=domain_kw) if name else {}
+        fam_for[beat_idx] = _family_query_for_item(name, topic) if name else ("", [])
+    tqueries = _topic_stock_queries(topic)
     still_n = 0
     n_video = n_photo = n_card = 0
     for i, b in enumerate(beats):
         parts = _split_beat(b["text"], STILLS_PER_BEAT)
-        query = (b.get("query", "") if use_beat
-                 else random.choice(niche.AMBIENT_QUERIES))
+        raw_query = (b.get("query", "") if use_beat
+                     else random.choice(niche.AMBIENT_QUERIES))
         tiered = bool(use_beat and gate_for.get(i))
         require = gate_for.get(i)
+        item_phrase = require.get("phrase", "") if isinstance(require, dict) else ""
+        clean_q = _clean_stock_query(raw_query, item_phrase) if tiered else raw_query
+        if tiered and base_subj:
+            query = _anchor_query_with_subject(clean_q, item_phrase, base_subj, domain_kw, is_obj)
+        else:
+            query = clean_q
         # _best_* only read `used`; the winner's key(s) are committed below
         # so losers never burn their ids for later beats.
         vpath, vraw, vkey = _best_video(query, used_pexels, mood=niche.USE_MOOD,
-                                        require=require)
-        plist = _best_photos(query, used_pexels, len(parts), require)
+                                        require=require, is_wild=is_wild, phrase=item_phrase)
+        plist = _best_photos(query, used_pexels, len(parts), require=require,
+                             is_wild=is_wild, phrase=item_phrase)
         tier, eff_query = "exact", query
         if tiered and vpath is None and not plist:
             fquery, frequire = fam_for.get(i, ("", []))
             if fquery and frequire:
                 fpath, fraw, fkey = _best_video(
-                    fquery, used_pexels, mood=niche.USE_MOOD, require=frequire)
-                fplist = _best_photos(fquery, used_pexels, len(parts), frequire)
+                    fquery, used_pexels, mood=niche.USE_MOOD, require=frequire,
+                    is_wild=is_wild, phrase=fquery)
+                fplist = _best_photos(fquery, used_pexels, len(parts), require=frequire,
+                                      is_wild=is_wild, phrase=fquery)
                 if fpath is not None or fplist:
                     vpath, vraw, vkey, plist = fpath, fraw, fkey, fplist
                     tier, eff_query = "family", fquery
-        if tiered and tier == "exact" and vpath is None and not plist and tquery:
-            tpath, traw, tkey = _best_video(
-                tquery, used_pexels, mood=niche.USE_MOOD, require=trequire)
-            tplist = _best_photos(tquery, used_pexels, len(parts), trequire)
-            if tpath is not None or tplist:
-                vpath, vraw, vkey, plist = tpath, traw, tkey, tplist
-                tier, eff_query = "topic", tquery
+        if vpath is None and not plist and tqueries:
+            for tq, treq in tqueries:
+                tpath, traw, tkey = _best_video(
+                    tq, used_pexels, mood=niche.USE_MOOD, require=treq,
+                    is_wild=is_wild, phrase=tq)
+                tplist = _best_photos(tq, used_pexels, len(parts), require=treq,
+                                      is_wild=is_wild, phrase=tq)
+                if tpath is not None or tplist:
+                    vpath, vraw, vkey, plist = tpath, traw, tkey, tplist
+                    tier, eff_query = "topic", tq
+                    break
+        # If still no stock for this beat, relax used_pexels to reuse good topic stock
+        if vpath is None and not plist and tqueries:
+            for tq, treq in tqueries:
+                tpath, traw, tkey = _best_video(
+                    tq, used=None, mood=niche.USE_MOOD, require=treq,
+                    is_wild=is_wild, phrase=tq)
+                tplist = _best_photos(tq, used=None, n=len(parts), require=treq,
+                                      is_wild=is_wild, phrase=tq)
+                if tpath is not None or tplist:
+                    vpath, vraw, vkey, plist = tpath, traw, tkey, tplist
+                    tier, eff_query = "topic-reuse", tq
+                    break
         vnorm = vraw * 2
         pbest = plist[0][1] if plist else 0
         vclip, photolist, kind = None, [], "card"
@@ -1427,8 +2081,25 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
             n_video += len(parts)
             winner = f"video_{vkey}"
         else:
-            n_card += len(parts)
-            tier = "card"
+            # Fallback: borrow from previous clips or cached assets so NO plain text title cards air
+            available_visuals = [c for (c, _, _) in clips if c and c.suffix in {".mp4", ".jpg"}]
+            if not available_visuals:
+                available_visuals = list(ASSETS.glob("pexels_*.mp4")) + list(ASSETS.glob("pexels_*.jpg"))
+            if available_visuals:
+                vclip = available_visuals[i % len(available_visuals)]
+                if vclip.suffix == ".mp4":
+                    kind = "video"
+                    n_video += len(parts)
+                    winner = f"reused_{vclip.stem}"
+                else:
+                    photolist = [(vclip, 1, f"reused_{vclip.stem}", "reused visual")]
+                    kind = f"{len(parts)}xphoto"
+                    n_photo += len(parts)
+                    winner = f"reused_{vclip.stem}"
+                tier = "reused"
+            else:
+                n_card += len(parts)
+                tier = "card"
         via = f"->{eff_query}" if eff_query != query else ""
         log(f"Beat {i + 1} ('{query}'{via}): {kind} tier={tier} winner={winner}{alt_snip} (vscore={vnorm}, pscore={pbest}).")
         for j, part in enumerate(parts):
@@ -1438,8 +2109,16 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
             elif photolist:
                 clip, seek = photolist[j][0] if j < len(photolist) else photolist[0][0], None
             if clip is None:
-                warn(f"Beat {i + 1}.{j + 1} ('{query}'): no stock, using title card.")
-                clip = beat_card(still_n, part)
+                available_visuals = [c for (c, _, _) in clips if c and c.suffix in {".mp4", ".jpg"}]
+                if not available_visuals:
+                    available_visuals = list(ASSETS.glob("pexels_*.mp4")) + list(ASSETS.glob("pexels_*.jpg"))
+                if available_visuals:
+                    clip = available_visuals[still_n % len(available_visuals)]
+                    seek = 2.0 * (j + 1) if clip.suffix == ".mp4" else None
+                    warn(f"Beat {i + 1}.{j + 1} ('{query}'): no stock, reusing run visual {clip.name}.")
+                else:
+                    warn(f"Beat {i + 1}.{j + 1} ('{query}'): emergency fallback card.")
+                    clip = beat_card(still_n, part)
             clips.append((clip, seek, i))
             still_n += 1
     log(f"Visuals: {len(clips)} cuts for {len(beats)} beats "
@@ -1939,7 +2618,8 @@ def run(niche):
         f"buffer={bool(BUFFER_API_KEY)}")  # key presence only, never the key itself
     meta, slots = gen_script(niche)
     (stem.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
-    mp3, srt, beat_durs = gen_audio(meta["narration"], stem, meta.get("beats"))
+    mp3, srt, beat_durs = gen_audio(meta["narration"], stem, meta.get("beats"),
+                                    (slots or {}).get("topic", ""))
     log(f"Audio: mp3={mp3.stat().st_size // 1024} KB srt_exists={srt.exists()} "
         f"srt_bytes={srt.stat().st_size if srt.exists() else 0}")
     dur = audio_duration(mp3)
