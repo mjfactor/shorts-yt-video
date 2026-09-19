@@ -815,5 +815,31 @@
       "King Penguin",
       "Emperor Penguin"
     ]
+  },
+  {
+    "date": "2026-09-19_045426",
+    "title": "5 Largest Lizards on Earth 🦎",
+    "niche": "ranking",
+    "tags": [
+      "lizards",
+      "komodo dragon",
+      "monitor lizard",
+      "reptiles",
+      "wildlife"
+    ],
+    "narration": "Nothing alive today comes close to the giant at number one. It stretches nearly three meters long, heavier than most adult humans. At number five, the Nile Monitor. This active predator grows nearly two meters long near African rivers. At number four, the Crocodile Monitor. This slender climber reaches nearly two and a half meters in New Guinea trees. At number three, the Perentie. This desert dweller grows nearly two and a half meters long across Australia. At number two, the Asian Water Monitor. This heavy swimmer reaches nearly three meters in southern swamps. At number one, the Komodo Dragon. This famous island giant grows over three meters long. Which of these heavy reptiles is your favorite?",
+    "bed": "bgm8.mp3",
+    "videoId": "w5DZjWE7ANE",
+    "tiktokBufferPostId": "6aae1936560f708e814e0bf3",
+    "topic": "largest lizards on Earth",
+    "topicSource": "ai",
+    "hookStyle": "record",
+    "items": [
+      "Nile Monitor",
+      "Crocodile Monitor",
+      "Perentie",
+      "Asian Water Monitor",
+      "Komodo Dragon"
+    ]
   }
 ]
