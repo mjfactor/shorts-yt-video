@@ -483,7 +483,8 @@ def _validate_script(data, niche) -> dict:
 
 
 def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
-                  backoff: int | None = None, timeout: int | None = None):
+                  backoff: int | None = None, timeout: int | None = None,
+                  validate=None):
     """POST to Gemini with key rotation + retries. `url` is keyless.
 
     Sticks with the working key; invalid-key rejections (other 4xx) fail
@@ -494,6 +495,15 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
     exhaustion); 429 retries count toward the key's tries. Raises the last
     error when all keys fail. Defaults come from the GEMINI_TIMEOUT (text)
     / GEMINI_TTS_TIMEOUT (voice), GEMINI_TRIES, GEMINI_BACKOFF env tunables.
+
+    Optional `validate` gates strict per-key validation of the decoded
+    HTTP-200 JSON (TTS callers pass a validator checking for usable audio
+    in candidates[0].content.parts[].inlineData). A validation failure is
+    treated as a content rejection on that key — not a server outage: the
+    key is failed over immediately (no same-key retry), it does NOT count
+    toward the server-only breaker, and _GEMINI_KEY_IDX sticks only after
+    validation passes. Callers without `validate` (text/script path) are
+    unaffected.
     """
     if tries is None:
         tries = GEMINI_TRIES
@@ -516,8 +526,22 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
             try:
                 r = requests.post(keyed, json=payload, timeout=timeout)
                 r.raise_for_status()
-                _GEMINI_KEY_IDX = idx  # stick with the working key
-                return r.json()
+                data = r.json()
+                if validate is not None:
+                    try:
+                        validate(data)
+                    except Exception as ve:
+                        last_err = ve
+                        # Content rejection, not server-down: fail over to
+                        # the next key without tripping the server-only
+                        # breaker (same class as 4xx, never retried).
+                        key_server_only = False
+                        if k < n - 1:
+                            log(f"Gemini key {idx + 1}/{n} returned unusable payload "
+                                f"({ve}), failing over to next key...")
+                        break
+                _GEMINI_KEY_IDX = idx  # stick with the working key (validated)
+                return data
             except Exception as e:
                 last_err = e
                 status = _http_status(e)
@@ -707,7 +731,15 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "",
         try:
             url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                    f"{model}:generateContent")
-            raw = _fetch_gemini(url, payload, timeout=GEMINI_TTS_TIMEOUT)
+
+            def _validate_tts_audio(raw, _model=model):
+                parts = raw["candidates"][0]["content"].get("parts", [])
+                inline = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
+                if not inline or not inline.get("data"):
+                    raise ValueError(f"TTS model {_model} returned no audio")
+
+            raw = _fetch_gemini(url, payload, timeout=GEMINI_TTS_TIMEOUT,
+                                validate=_validate_tts_audio)
             parts = raw["candidates"][0]["content"].get("parts", [])
             inline = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
             if not inline or not inline.get("data"):
