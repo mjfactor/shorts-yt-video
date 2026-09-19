@@ -456,6 +456,15 @@ def _validate_script(data, niche) -> dict:
             lab = ""
         lab = "".join(c for c in lab if c.isdigit())[:2]
         norm_beats.append({"text": t.strip(), "query": q.strip(), "label": lab})
+    for b in norm_beats:
+        # Bare homonym heads ('Eclipse', 'Hyperion') pull unrelated stock
+        # (solar eclipses, theaters); the prompt demands anchored queries, so
+        # a bare one is a bad draft worth a regen. Labeled beats only, table
+        # scoped for precision — ordinary singletons never trip this.
+        if b["label"].isdigit() and _is_bare_homonym_query(b["query"]):
+            raise ValueError(
+                f"beat query '{b['query']}' is a bare homonym head lacking the "
+                "subject noun (e.g. 'Eclipse yacht', 'monitor lizard')")
     if sum(len(b["text"].split()) for b in norm_beats) < 20:
         raise ValueError("'beats' cover too little text (<20 words total)")
     _bwords = sum(len(b["text"].split()) for b in norm_beats)
@@ -1142,6 +1151,40 @@ _BOGUS_FAMILY_WORDS = frozenset({
     "gt", "gts", "gtr", "rs", "amg", "sv", "evo", "svj", "ss", "v8", "v10", "v12", "edition", "series",
 })
 
+# Known homonym heads: bare-head stock queries for these collide with
+# unrelated footage (computer monitors, solar eclipses, theaters), because
+# the exact->family->topic fallback drops modifiers/subject nouns to the
+# bare head. First domain noun is the preferred Pexels anchor. Family
+# fallback and exact-tier anchoring always carry a domain noun for these;
+# the list-branch substring fallback is disabled for them (exact token
+# only); the validator rejects them as bare beat queries.
+_HOMONYM_HEADS: dict[str, tuple[str, ...]] = {
+    "monitor": ("lizard", "reptile"),
+    "eclipse": ("yacht", "boat", "ship"),
+    "hyperion": ("tree", "redwood"),
+    "sequoia": ("tree", "redwood"),
+    "sherman": ("tree", "redwood"),
+    "python": ("snake", "reptile"),
+    "cobra": ("snake", "reptile"),
+    "viper": ("snake", "reptile"),
+    "boa": ("snake", "constrictor"),
+    "mamba": ("snake", "reptile"),
+    "jaguar": ("cat", "feline"),
+    "mustang": ("horse", "stallion"),
+    "bronco": ("horse", "stallion"),
+    "charger": ("horse", "stallion"),
+    "falcon": ("bird", "eagle"),
+    "raven": ("bird", "crow"),
+    "stingray": ("fish", "ray"),
+    "comet": ("fish", "goldfish"),
+    "neon": ("fish", "tetra"),
+    "angel": ("fish", "angelfish"),
+    "atlas": ("moth", "insect"),
+    "hercules": ("beetle", "insect"),
+    "goliath": ("spider", "tarantula"),
+    "titan": ("beetle", "insect"),
+}
+
 _DOMAIN_SYNONYMS: dict[str, set[str]] = {
     # Watercraft / Marine
     "yacht": {
@@ -1313,6 +1356,18 @@ _ANIMAL_DOMAINS: dict[str, set[str]] = {
 }
 
 
+# Recognized category/subject nouns (domain keys + plurals + homonym
+# grounding vocab). A beat query headed by one of these is already specific
+# ('saltwater crocodile', 'Crocodile'), so subject-noun anchoring leaves it
+# untouched; anything else ungrounded gets the topic subject appended.
+_CATEGORY_NOUNS = frozenset(
+    {k for k in _DOMAIN_SYNONYMS} | {f"{k}s" for k in _DOMAIN_SYNONYMS}
+    | {k for k in _ANIMAL_DOMAINS} | {f"{k}s" for k in _ANIMAL_DOMAINS}
+    | {d for _ds in _HOMONYM_HEADS.values() for d in _ds}
+    | {f"{d}s" for _ds in _HOMONYM_HEADS.values() for d in _ds}
+)
+
+
 def _get_topic_domain_info(topic: str) -> tuple[str, set[str], bool]:
     """Extract (base_subject, domain_keywords, is_object_topic) from topic."""
     t_clean = (topic or "").lower()
@@ -1408,7 +1463,16 @@ def _meets_require(haystack: str, require: Any) -> bool:
                 if w_str in h or w_str in h_clean:
                     return True
             else:
-                if w_str in h_tokens or (len(w_str) >= 6 and w_str in h):
+                if w_str in h_tokens:
+                    return True
+                # Long-word substring fallback (e.g. 'anaconda' inside a glued
+                # slug like 'green-anaconda-video'). Disabled for known homonym
+                # heads ('monitor' is a substring of 'computer monitor' slugs,
+                # 'eclipse' of solar-eclipse slugs): those match as exact word
+                # tokens only, otherwise computer/tech footage airs as nature.
+                _w_sing = w_str[:-1] if w_str.endswith("s") and len(w_str) > 3 else w_str
+                if (len(w_str) >= 6 and w_str not in _HOMONYM_HEADS
+                        and _w_sing not in _HOMONYM_HEADS and w_str in h):
                     return True
         return False
 
@@ -1440,11 +1504,101 @@ def _family_query_for_item(item: str, topic: str = "") -> tuple[str, list[str]]:
                 return "", []
             return fam, [fam]
 
+        # Homonym heads never fall back to the bare head: with a topic
+        # overlap the family query carries the domain noun ('Nile monitor'
+        # -> 'monitor lizard' for lizard topics, gated on head+domain
+        # phrases); without one there is no safe family stock, so return
+        # empty and let the topic tier fill in (e.g. car-'Cobra' never pulls
+        # snake footage via a bare 'cobra' query).
+        if fam in _HOMONYM_HEADS:
+            cands = list(_HOMONYM_HEADS[fam])
+            topic_words = {str(d).lower() for d in (domain_kw or set()) if str(d).strip()}
+            if _subj and str(_subj).strip():
+                topic_words.add(str(_subj).lower())
+            topic_words |= {w[:-1] if w.endswith("s") and len(w) > 3 else w + "s"
+                            for w in list(topic_words) if w}
+            best = next((d for d in cands if d in topic_words), None)
+            if best is None:
+                return "", []
+            return f"{fam} {best}", [f"{fam} {d}" for d in cands]
+
         if _is_wild_topic(topic) and fam in {"cat", "dog", "pig", "horse", "duck", "rabbit", "goat", "sheep"}:
             return f"wild {fam}", [f"wild {fam}", fam]
         return fam, [fam]
     except Exception:
         return "", []
+
+
+def _is_bare_homonym_query(q: str) -> bool:
+    """True when the query is a lone homonym head ('Eclipse', 'monitor').
+
+    Single token (case-insensitive, singular/plural) matching _HOMONYM_HEADS.
+    Anchored forms ('Eclipse yacht') and ordinary nouns are False.
+    """
+    try:
+        toks = re.findall(r"[a-z0-9]+", (q or "").lower())
+        if len(toks) != 1:
+            return False
+        t = toks[0]
+        if t in _HOMONYM_HEADS:
+            return True
+        return t.endswith("s") and len(t) > 3 and t[:-1] in _HOMONYM_HEADS
+    except Exception:
+        return False
+
+
+def _anchor_query_with_subject(clean_q: str, item_phrase: str,
+                               base_subj: str, domain_kw: set | None,
+                               is_obj: bool = False) -> str:
+    """Append the topic subject noun when the beat query is ungrounded.
+
+    Object topics keep the legacy broad anchoring ('Chiron' -> 'Chiron car').
+    Otherwise: bare single-token queries lacking any subject/domain word gain
+    the subject ('Eclipse' -> 'Eclipse yacht' only happens via the object
+    path; 'Hyperion' -> 'Hyperion tree'); multi-word queries whose item head
+    is a known homonym gain the table domain overlapping this topic ('Nile
+    monitor' -> 'Nile monitor lizard'). Queries already carrying the subject
+    or a domain word, and heads that are themselves category nouns
+    ('saltwater crocodile'), are left untouched.
+    """
+    try:
+        q = (clean_q or "").strip()
+        subj = (base_subj or "").strip().lower()
+        if not q or not subj:
+            return clean_q
+        if is_obj:
+            q_lower = q.lower()
+            if not any(k in q_lower for k in (set(domain_kw or set()) | {subj})):
+                return f"{q} {base_subj.strip()}"
+            return q
+        q_tokens = set(re.findall(r"[a-z0-9]+", q.lower()))
+        subj_forms = {subj, subj[:-1] if subj.endswith("s") and len(subj) > 3 else subj + "s"}
+        domain_l = {str(d).lower() for d in (domain_kw or set()) if str(d).strip()}
+        if q_tokens & subj_forms or q_tokens & domain_l:
+            return q
+        if any(d in q.lower() for d in domain_l if " " in d):
+            return q
+        itoks = re.findall(r"[a-z0-9]+", (item_phrase or "").lower())
+        head = itoks[-1] if itoks else ""
+        if not head:
+            return q
+        if len(q_tokens) > 1 and head in _HOMONYM_HEADS:
+            cands = list(_HOMONYM_HEADS[head])
+            topic_words = set(domain_l) | set(subj_forms)
+            topic_words |= {w[:-1] if w.endswith("s") and len(w) > 3 else w + "s"
+                            for w in list(topic_words) if w}
+            best = next((d for d in cands if d in topic_words), None)
+            if best is None:
+                return q
+            return f"{q} {best}"
+        if len(q_tokens) == 1:
+            head_forms = {head, head[:-1] if head.endswith("s") and len(head) > 3 else head + "s"}
+            if head_forms & domain_l or head_forms & _CATEGORY_NOUNS:
+                return q
+            return f"{q} {base_subj.strip()}"
+        return q
+    except Exception:
+        return clean_q
 
 
 _TOPIC_META_NOUNS = frozenset({
@@ -1833,12 +1987,8 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
         require = gate_for.get(i)
         item_phrase = require.get("phrase", "") if isinstance(require, dict) else ""
         clean_q = _clean_stock_query(raw_query, item_phrase) if tiered else raw_query
-        if tiered and is_obj and base_subj:
-            q_lower = clean_q.lower()
-            if not any(k in q_lower for k in (domain_kw | {base_subj})):
-                query = f"{clean_q} {base_subj}"
-            else:
-                query = clean_q
+        if tiered and base_subj:
+            query = _anchor_query_with_subject(clean_q, item_phrase, base_subj, domain_kw, is_obj)
         else:
             query = clean_q
         # _best_* only read `used`; the winner's key(s) are committed below

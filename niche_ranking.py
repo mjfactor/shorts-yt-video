@@ -543,7 +543,20 @@ def validate_extra(data: dict) -> dict:
     if (not isinstance(items, list) or not items
             or not all(isinstance(t, str) and t.strip() for t in items)):
         raise ValueError("'items' must be a non-empty list of strings")
-    return {"items": [t.strip() for t in items if t.strip()][:10]}
+    clean_items = [t.strip() for t in items if t.strip()]
+    # Ranking backstop for bare homonym beat queries ('Eclipse' for item
+    # 'Eclipse'): core rejects these too, this cites the ranked item so the
+    # regen path knows which slot to fix. Multi-word and ordinary nouns pass.
+    beats = data.get("beats", [])
+    labeled = [b for b in (beats or []) if isinstance(b, dict)
+               and str(b.get("label", "")).isdigit()]
+    for b, name in zip(labeled, clean_items + [""] * len(labeled)):
+        q = str(b.get("query", ""))
+        if C._is_bare_homonym_query(q):
+            raise ValueError(
+                f"beat query '{q.strip()}' for '{name or '?'}' is a bare "
+                "homonym head lacking the subject noun (e.g. 'Eclipse yacht')")
+    return {"items": clean_items[:10]}
 
 
 # Overused title hooks: the prompt bans them, and this is the backstop —
