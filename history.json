@@ -789,5 +789,31 @@
       "Split Rock Lighthouse",
       "Pharos of Alexandria"
     ]
+  },
+  {
+    "date": "2026-09-19_040622",
+    "title": "5 Largest Penguins on Earth 🐧",
+    "niche": "ranking",
+    "tags": [
+      "penguins",
+      "largest penguins",
+      "emperor penguin",
+      "antarctic birds",
+      "flightless birds"
+    ],
+    "narration": "Nothing alive today comes close to number one. It stands nearly one hundred twenty centimeters tall, taller than a large dog. At number five, the Chinstrap Penguin. It weighs about four kilograms and has a distinct black band under its head. At number four, the Adelie Penguin. It grows to nearly seventy centimeters and lives on the rocky Antarctic coast. At number three, the Gentoo Penguin. It reaches about ninety centimeters in height and swims at speeds over thirty kilometers per hour. At number two, the King Penguin. It stands nearly one meter tall and sports bright orange patches on its neck. At number one, the Emperor Penguin. It grows to over one meter in height and withstands brutal freezing winters on the ice. Which of these amazing birds is your absolute favorite?",
+    "bed": "bgm7.mp3",
+    "videoId": "cg7dwu-M1vM",
+    "tiktokBufferPostId": "6aae0d3265e5b8cd5b2866db",
+    "topic": "largest penguins on Earth",
+    "topicSource": "ai",
+    "hookStyle": "record",
+    "items": [
+      "Chinstrap Penguin",
+      "Adelie Penguin",
+      "Gentoo Penguin",
+      "King Penguin",
+      "Emperor Penguin"
+    ]
   }
 ]
