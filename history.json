@@ -893,5 +893,31 @@
       "pronghorn",
       "cheetah"
     ]
+  },
+  {
+    "date": "2026-09-19_072412",
+    "title": "5 Largest Land Mammals on Earth 🐘",
+    "niche": "ranking",
+    "tags": [
+      "mammals",
+      "wildlife",
+      "nature",
+      "elephants",
+      "rhinos"
+    ],
+    "narration": "The largest creature on this list weighs over six tonnes, which is about the same as three full-grown cars parked side by side. It towers over every other living thing on land today. At number 5, the Indian rhinoceros. This animal stands nearly two meters tall and weighs over two thousand kilograms. It has one thick horn on its nose. At number 4, the hippopotamus. This massive mammal weighs over fifteen hundred kilograms. It spends most of its day in the water to stay cool. At number 3, the white rhinoceros. It reaches a weight of over two thousand kilograms. This giant grazer is known for its wide, square lip. At number 2, the Asian elephant. This smart animal weighs nearly four tonnes. It uses its long trunk to gather food and water from high trees. At number 1, the African bush elephant. It is the biggest land animal alive today. It weighs over six tonnes and stands nearly four meters tall at the shoulder. This gentle giant roams the savannas of Africa. Which of these five massive land mammals do you find the most impressive? Tell me your own ranking in the comments below.",
+    "bed": "bgm2.mp3",
+    "videoId": "M3bupHsJDJM",
+    "tiktokBufferPostId": null,
+    "topic": "largest land mammals on Earth",
+    "topicSource": "ai",
+    "hookStyle": "stakes",
+    "items": [
+      "Indian rhinoceros",
+      "hippopotamus",
+      "white rhinoceros",
+      "Asian elephant",
+      "African bush elephant"
+    ]
   }
 ]
