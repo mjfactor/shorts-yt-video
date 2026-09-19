@@ -430,6 +430,9 @@ def _validate_script(data, niche) -> dict:
         raise ValueError("missing/invalid 'title' (must be non-empty string)")
     if not isinstance(narration, str) or len(narration.split()) < 20:
         raise ValueError("'narration' missing or too short (<20 words)")
+    _nwords = len(narration.split())
+    if _nwords < 180:
+        raise ValueError(f"'narration' too short ({_nwords} words, need 180+ for ~80-85s at 145 WPM)")
     if not isinstance(description, str) or not description.strip():
         raise ValueError("missing/invalid 'description' (must be non-empty string)")
     if (not isinstance(tags, list) or not tags
@@ -455,6 +458,9 @@ def _validate_script(data, niche) -> dict:
         norm_beats.append({"text": t.strip(), "query": q.strip(), "label": lab})
     if sum(len(b["text"].split()) for b in norm_beats) < 20:
         raise ValueError("'beats' cover too little text (<20 words total)")
+    _bwords = sum(len(b["text"].split()) for b in norm_beats)
+    if _bwords < 180:
+        raise ValueError(f"'beats' cover too little text ({_bwords} words, need 180+ for ~80-85s at 145 WPM)")
     # Normalize so downstream steps never choke on oversized input.
     out = {
         "title": title.strip()[:100],
