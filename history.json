@@ -867,5 +867,31 @@
       "Helios",
       "Hyperion"
     ]
+  },
+  {
+    "date": "2026-09-19_063043",
+    "title": "5 Fastest Land Mammals on Earth",
+    "niche": "ranking",
+    "tags": [
+      "wildlife",
+      "animals",
+      "nature",
+      "science",
+      "mammals"
+    ],
+    "narration": "The fastest creature on this list hits speeds over sixty miles per hour, making it faster than a car driving through a school zone. It is built for pure survival. At number 5, the blackbuck. This spiral horned antelope runs across open plains at nearly fifty miles per hour. It uses incredible agility to dodge predators. At number 4, the lion. The king of the jungle reaches speeds of over fifty miles per hour in short bursts. It relies on explosive power to catch its dinner. At number 3, the gnu. Also known as the wildebeest, this animal runs nearly fifty-five miles per hour to escape hungry hunters. It migrates in massive herds across the savanna. At number 2, the pronghorn. This North American native maintains speeds of over fifty-five miles per hour for long distances. It is the endurance master of the animal kingdom. At number 1, the cheetah. This spotted predator sprints at nearly seventy miles per hour to close the distance on its prey. Its flexible spine allows for lightning fast turns during a chase. Which of these five animals do you think is the most impressive hunter in the wild today?",
+    "bed": "bgm1.mp3",
+    "videoId": "l9z7qWUsM8E",
+    "tiktokBufferPostId": "6aae324f5fe629aa266d194b",
+    "topic": "fastest land mammals on Earth",
+    "topicSource": "ai",
+    "hookStyle": "stakes",
+    "items": [
+      "blackbuck",
+      "lion",
+      "gnu",
+      "pronghorn",
+      "cheetah"
+    ]
   }
 ]
