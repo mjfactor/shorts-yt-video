@@ -763,5 +763,57 @@
       "Reindeer",
       "Moose"
     ]
+  },
+  {
+    "date": "2026-09-18_202345",
+    "title": "5 Most Famous Lighthouses in the World 🏮",
+    "niche": "ranking",
+    "tags": [
+      "lighthouses",
+      "history",
+      "architecture",
+      "travel",
+      "landmarks"
+    ],
+    "narration": "Most people think the Statue of Liberty is the tallest beacon on earth. It is not even close to number 1, which rises over two hundred meters above the sea. At number 5, the Tower of Hercules. This ancient structure stands over fifty meters high. At number 4, Peggy's Point Lighthouse. This red and white icon draws nearly a million visitors every year. At number 3, Cape Hatteras Lighthouse. This giant reaches a height of nearly sixty meters with bold black stripes. At number 2, Split Rock Lighthouse. This dramatic cliffside beacon sits over forty meters above the water. At number 1, the Pharos of Alexandria. This lost wonder reached a height of over one hundred meters in ancient times. Comment your own ranking below.",
+    "bed": "bgm6.mp3",
+    "videoId": "1rqqed1Rdfw",
+    "tiktokBufferPostId": "6aada0761e8bdcdb522f5fa3",
+    "topic": "most famous lighthouses in the world",
+    "topicSource": "pool",
+    "hookStyle": "contrarian",
+    "items": [
+      "Tower of Hercules",
+      "Peggy's Point Lighthouse",
+      "Cape Hatteras Lighthouse",
+      "Split Rock Lighthouse",
+      "Pharos of Alexandria"
+    ]
+  },
+  {
+    "date": "2026-09-19_040622",
+    "title": "5 Largest Penguins on Earth 🐧",
+    "niche": "ranking",
+    "tags": [
+      "penguins",
+      "largest penguins",
+      "emperor penguin",
+      "antarctic birds",
+      "flightless birds"
+    ],
+    "narration": "Nothing alive today comes close to number one. It stands nearly one hundred twenty centimeters tall, taller than a large dog. At number five, the Chinstrap Penguin. It weighs about four kilograms and has a distinct black band under its head. At number four, the Adelie Penguin. It grows to nearly seventy centimeters and lives on the rocky Antarctic coast. At number three, the Gentoo Penguin. It reaches about ninety centimeters in height and swims at speeds over thirty kilometers per hour. At number two, the King Penguin. It stands nearly one meter tall and sports bright orange patches on its neck. At number one, the Emperor Penguin. It grows to over one meter in height and withstands brutal freezing winters on the ice. Which of these amazing birds is your absolute favorite?",
+    "bed": "bgm7.mp3",
+    "videoId": "cg7dwu-M1vM",
+    "tiktokBufferPostId": "6aae0d3265e5b8cd5b2866db",
+    "topic": "largest penguins on Earth",
+    "topicSource": "ai",
+    "hookStyle": "record",
+    "items": [
+      "Chinstrap Penguin",
+      "Adelie Penguin",
+      "Gentoo Penguin",
+      "King Penguin",
+      "Emperor Penguin"
+    ]
   }
 ]
