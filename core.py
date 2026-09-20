@@ -114,7 +114,8 @@ BGM_VOLUME = float(os.getenv("BGM_VOLUME", "0.08"))
 # or "edge" (free edge-tts only, word-level captions). Missing keys skip
 # with a warning; any engine failure warns and moves to the next.
 TTS_ENGINE = os.getenv("TTS_ENGINE", "gemini").strip().lower()
-# Reserved for future OpenRouter use (currently no engine reads it).
+# OpenRouter :free text failover for Gemini outages (models via
+# OPENROUTER_MODELS env; max 2 models, 1 try each, no retries).
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 # Tried in order; first working model wins (mirrors GEMINI_MODELS).
 GEMINI_TTS_MODELS = [m.strip() for m in
@@ -774,6 +775,71 @@ def wiki_fact_check(items) -> dict:
         return outcomes
 
 
+# Hook stakes gate: beat[0] must carry a stakes signal (a digit, or a
+# scale/danger word) AND must not name number 1 (tease, don't tell).
+# Violations get at most ONE regen per run (flag in gen_script); after
+# that the draft is accepted best-effort, like similarity retries.
+_HOOK_STAKES_RE = re.compile(
+    r"\d|over|about|nearly|tonnes|meters|taller|heavier|weighs|stands|"
+    r"bigger|deadlier|faster", re.IGNORECASE)
+_HOOK_NAMES_ONE_RE = re.compile(r"number\s*1|#1|number one", re.IGNORECASE)
+
+
+def _hook_violation(data) -> str | None:
+    """Reason the hook beat violates the stakes rule, else None."""
+    try:
+        beats = data.get("beats") or []
+        hook = str(beats[0].get("text", "")) if beats else ""
+    except (AttributeError, IndexError, TypeError):
+        return "hook beat unreadable"
+    if _HOOK_NAMES_ONE_RE.search(hook):
+        return "hook names number 1 instead of teasing it"
+    if not _HOOK_STAKES_RE.search(hook):
+        return "hook has no stakes signal (digit or scale/danger word)"
+    return None
+
+
+def _try_openrouter(prompt: str, niche):
+    """OpenRouter :free text failover. Returns validated meta or None.
+
+    Max 2 models (OPENROUTER_MODELS env, default 2 :free models), 1 try
+    each, no retries — the 50 req/day free cap must survive the outage.
+    Same downstream as Gemini text (fences, json, _validate_script, wiki
+    advisory). Any failure warns and returns None (caller falls through
+    to the offline fallback). Never raises.
+    """
+    models = [m.strip() for m in
+              os.getenv("OPENROUTER_MODELS",
+                        "meta-llama/llama-3.3-70b-instruct:free,"
+                        "openai/gpt-oss-120b:free").split(",")
+              if m.strip()][:2]
+    if not OPENROUTER_KEY:
+        log("OpenRouter skipped (OPENROUTER_API_KEY unset).")
+        return None
+    for m in models:
+        try:
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_KEY}",
+                         "Content-Type": "application/json"},
+                json={"model": m,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "temperature": 0.7,
+                      "max_tokens": 4096},
+                timeout=15)
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"]
+            # strip markdown fences (identical to the Gemini text path)
+            text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            data = _validate_script(json.loads(text), niche)
+            wiki_fact_check(data.get("items"))
+            log(f"OpenRouter script OK via {m}.")
+            return data
+        except Exception as e:
+            warn(f"OpenRouter model {m} unusable ({e}), trying next...")
+    return None
+
+
 def gen_script(niche):
     """Call Gemini free API. Returns (meta, slots).
 
@@ -782,6 +848,7 @@ def gen_script(niche):
     Fallback matches the active niche too (slots avoid recent history).
     """
     history = load_history()
+    hook_regen_used = False  # at most ONE hook-stakes regen per run
     if GEMINI_KEYS:
         for attempt in range(1 + SIMILARITY_RETRIES):
             prompt, slots = niche.build_prompt(history)
@@ -812,8 +879,19 @@ def gen_script(niche):
                     log(f"Gemini model {model} unusable ({e}), trying next...")
                     time.sleep(2)
             if data is None:
-                log("All Gemini models failed, using fallback.")
-                break
+                log("All Gemini models failed, trying OpenRouter :free failover.")
+                data = _try_openrouter(prompt, niche)
+                if data is None:
+                    log("OpenRouter failed too, using fallback.")
+                    break
+            hook_problem = _hook_violation(data)
+            if hook_problem is not None and not hook_regen_used:
+                hook_regen_used = True
+                warn(f"Hook weak ({hook_problem}), "
+                     f"regenerating once for a fresh draft...")
+                continue
+            if hook_problem is not None:
+                log(f"Hook still weak ({hook_problem}), accepting best-effort.")
             reason = similar_to_history(data, slots, history, niche)
             # Sanitize AFTER the similarity verdict: stripping banned hooks
             # beforehand would hide them from the regen backstop.
@@ -2158,6 +2236,86 @@ def _stock_offset(stock: Path, part_idx: int, parts: int):
     return max(0.0, dur * part_idx / parts)
 
 
+def _beat_synonyms(beats: list[dict] | None) -> list[list[str]]:
+    """Alternate stock-search phrasings per beat (same subject, not new ones).
+
+    ONE batched Gemini call for all beats (temperature 0.3, small token
+    budget, ~20s timeout, shared _fetch_gemini key rotation). Best-effort:
+    ANY failure (no keys, 4xx/5xx, parse error, bad shape) returns per-beat
+    [] with a log() — visuals must never depend on it. Each alternate is
+    strictly validated (1-3 ASCII words, <=40 chars, not the beats's own
+    query); anything failing validation is dropped.
+    """
+    n = len(beats or [])
+    if not n:
+        return []
+    if not GEMINI_KEYS:
+        log("Beat synonyms skipped (no Gemini keys); tiers unchanged.")
+        return [[] for _ in range(n)]
+    lines = []
+    for idx, b in enumerate(beats or []):
+        q = str((b or {}).get("query", "")).strip()
+        t = " ".join(str((b or {}).get("text", "")).split())[:100]
+        lines.append(f"{idx + 1}. query='{q}' text='{t}'")
+    prompt = (
+        "For each of these video beats, suggest 2-3 alternate stock-footage "
+        "search phrasings for the SAME subject (alternates, not new "
+        "subjects). Reply with ONLY valid JSON: "
+        "{\"synonyms\": [[...], ...]} with exactly "
+        f"{n} inner lists in beat order. Rules: each alternate 1-3 words, "
+        "plain ASCII, portrait-friendly concrete nouns; keep proper names "
+        "anchored with the subject noun (e.g. 'Eclipse yacht' -> "
+        "['luxury yacht', 'superyacht deck']); no abstract concepts, "
+        "no extra keys.\n"
+        + "\n".join(lines) + "\nOutput only the JSON object."
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.3,
+            "maxOutputTokens": 512,
+        },
+        "safetySettings": _GEMINI_SAFETY_SETTINGS,
+    }
+    for model in GEMINI_MODELS:
+        try:
+            url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"{model}:generateContent")
+            raw = _fetch_gemini(url, payload, timeout=20)
+            text = raw["candidates"][0]["content"]["parts"][0]["text"]
+            text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            lists = json.loads(text).get("synonyms")
+            if not isinstance(lists, list) or len(lists) != n:
+                raise ValueError("synonyms shape mismatch")
+            out = []
+            for idx, alts in enumerate(lists):
+                keep: list[str] = []
+                orig = str(((beats or [])[idx] or {}).get("query", "")).strip().casefold()
+                if isinstance(alts, list):
+                    for a in alts:
+                        if not isinstance(a, str):
+                            continue
+                        s = a.strip()
+                        if (not s or len(s) > 40 or not s.isascii()
+                                or not 1 <= len(s.split()) <= 3
+                                or s.casefold() == orig
+                                or s in keep):
+                            continue
+                        keep.append(s)
+                        if len(keep) >= 3:
+                            break
+                out.append(keep)
+            log(f"Beat synonyms: {sum(len(k) for k in out)} alternates for "
+                f"{n} beats.")
+            return out
+        except Exception as e:
+            log(f"Synonym model {model} unusable ({e}), trying next...")
+            time.sleep(2)
+    log("Beat synonyms unavailable, exact/family/topic tiers unchanged.")
+    return [[] for _ in range(n)]
+
+
 def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
                       topic: str = "") -> list[tuple]:
     """Per beat: STILLS_PER_BEAT cuts (Pexels video vs photos -> card).
@@ -2170,12 +2328,16 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
     vs best-photo 2*alt + url); higher wins, ties go to video (motion
     preferred). Labeled beats (#5..#1, positionally zipped with `items`
     like board_filter) search in tiers: exact (beat query + distinctive
-    item word: long >=6-char word, else any word) -> family (item's last
-    word as the family guess, e.g. 'Green Anaconda' -> 'anaconda', gated
-    on that word, so a close relative fills in) -> topic (the topic's
-    generic plural noun, e.g. 'snakes', gated on both spellings) ->
-    Pillow title card. Wrong-family stock never airs at any tier; the
-    card is the last resort only. Unlabeled beats (hook/closer) keep the
+    item word: long >=6-char word, else any word) -> synonyms (AI alternate
+    phrasings of the same subject, in order, same gates) -> family (item's
+    last word as the family guess, e.g. 'Green Anaconda' -> 'anaconda',
+    gated on that word, so a close relative fills in) -> topic (the
+    topic's generic plural noun, e.g. 'snakes', gated on both spellings)
+    -> topic-loose (same topic query, domain-guard only, no item gates:
+    same-family generic footage beats a text card) -> Pillow title card.
+    Wrong-family stock never airs at any tier; the card fires only when
+    Pexels itself is unreachable/empty-handed. Unlabeled beats (hook/closer)
+    keep the
     single ungated search. A video win reuses ONE clip across the beat's
     cuts (later cuts seek via _stock_offset for continuity); a photo win
     emits one DISTINCT photo per cut (cycling plist[0] only when Pexels
@@ -2201,6 +2363,12 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
         gate_for[beat_idx] = _item_require_words(name, domain=domain_kw) if name else {}
         fam_for[beat_idx] = _family_query_for_item(name, topic) if name else ("", [])
     tqueries = _topic_stock_queries(topic)
+    # ONE batched synonym fetch per run; skipped when Pexels is keyless
+    # (cards inevitable) or no beat is gated (nothing to paraphrase).
+    need_syn = bool(PEXELS_KEY and use_beat
+                    and any(gate_for.get(idx)
+                            for idx in range(len(beats or []))))
+    syn_for = _beat_synonyms(beats) if need_syn else [[] for _ in (beats or [])]
     still_n = 0
     n_video = n_photo = n_card = 0
     for i, b in enumerate(beats):
@@ -2223,6 +2391,18 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
                              is_wild=is_wild, phrase=item_phrase)
         tier, eff_query = "exact", query
         if tiered and vpath is None and not plist:
+            for syn in (syn_for[i] if i < len(syn_for) else []):
+                spath, sraw, skey = _best_video(
+                    syn, used_pexels, mood=niche.USE_MOOD, require=require,
+                    is_wild=is_wild, phrase=syn)
+                splist = _best_photos(syn, used_pexels, len(parts),
+                                      require=require, is_wild=is_wild,
+                                      phrase=syn)
+                if spath is not None or splist:
+                    vpath, vraw, vkey, plist = spath, sraw, skey, splist
+                    tier, eff_query = "synonym", syn
+                    break
+        if tiered and vpath is None and not plist:
             fquery, frequire = fam_for.get(i, ("", []))
             if fquery and frequire:
                 fpath, fraw, fkey = _best_video(
@@ -2243,6 +2423,24 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
                 if tpath is not None or tplist:
                     vpath, vraw, vkey, plist = tpath, traw, tkey, tplist
                     tier, eff_query = "topic", tq
+                    break
+        # Loosest real-footage tier: same topic query, domain-guard only
+        # (no item gates) — same-family generic footage beats a text card,
+        # and the domain list keeps homonym territory out.
+        if vpath is None and not plist and tqueries and domain_kw:
+            loose = sorted(domain_kw)
+            for tq, _treq in tqueries:
+                for u in (used_pexels, None):
+                    lpath, lraw, lkey = _best_video(
+                        tq, u, mood=niche.USE_MOOD, require=loose,
+                        is_wild=is_wild, phrase=tq)
+                    lplist = _best_photos(tq, u, len(parts), require=loose,
+                                          is_wild=is_wild, phrase=tq)
+                    if lpath is not None or lplist:
+                        vpath, vraw, vkey, plist = lpath, lraw, lkey, lplist
+                        tier, eff_query = "topic-loose", tq
+                        break
+                if vpath is not None or plist:
                     break
         # If still no stock for this beat, relax used_pexels to reuse good topic stock
         if vpath is None and not plist and tqueries:
