@@ -818,5 +818,32 @@
       "Pronghorn",
       "Cheetah"
     ]
+  },
+  {
+    "date": "2026-09-20_221015",
+    "title": "5 Heroic Marathon Runner Rescues",
+    "niche": "ranking",
+    "tags": [
+      "marathon",
+      "running",
+      "rescue",
+      "sports",
+      "hero"
+    ],
+    "narration": "The top rescue involves a brave stranger carrying a collapsed athlete over two miles to the finish line, showing more heart than a thousand professional trainers. This act of pure kindness defines the spirit of long distance racing. At number 5, the 2012 London Marathon rescue. A fellow runner stops to help a man who is struggling to finish. They walk together for nearly a kilometer to reach the end safely. At number 4, the 2016 Austin Marathon. A runner collapses with only a few meters remaining. A rival competitor lifts him up. They cross the line together after moving slowly for about one minute. At number 3, the 2018 Gold Coast Marathon. A participant loses consciousness near the end of the race. A bystander rushes onto the course to provide aid. Medical staff arrive within about thirty seconds to assist the athlete. At number 2, the 2017 Boston Marathon. A runner experiences severe heat exhaustion during the final stretch. Another athlete stays by his side. They provide support for nearly three kilometers until help arrives. At number 1, the 2016 Ironman World Championship. A woman carries a fallen competitor across the line. Please comment on which of these rescues inspires you the most.",
+    "bed": "bgm8.mp3",
+    "videoId": "1w3z2MnK5hQ",
+    "tiktokBufferPostId": "6ab05dc9c88b75a7de2e4539",
+    "topic": "marathon rescues that save runners",
+    "topicSource": "pool",
+    "hookStyle": "stakes",
+    "vertical": "danger-work",
+    "items": [
+      "London Marathon Rescue",
+      "Austin Marathon Rescue",
+      "Gold Coast Rescue",
+      "Boston Marathon Rescue",
+      "Ironman World Rescue"
+    ]
   }
 ]
