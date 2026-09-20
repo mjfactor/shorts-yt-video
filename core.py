@@ -114,7 +114,8 @@ BGM_VOLUME = float(os.getenv("BGM_VOLUME", "0.08"))
 # or "edge" (free edge-tts only, word-level captions). Missing keys skip
 # with a warning; any engine failure warns and moves to the next.
 TTS_ENGINE = os.getenv("TTS_ENGINE", "gemini").strip().lower()
-# Reserved for future OpenRouter use (currently no engine reads it).
+# OpenRouter :free text failover for Gemini outages (models via
+# OPENROUTER_MODELS env; max 2 models, 1 try each, no retries).
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 # Tried in order; first working model wins (mirrors GEMINI_MODELS).
 GEMINI_TTS_MODELS = [m.strip() for m in
@@ -399,7 +400,24 @@ def similar_to_history(data: dict, slots: dict, history: list[dict], niche):
         return "title already used"
     item_window = [h for h in history[-DEDUP_ITEM_WINDOW:]
                    if h.get("niche", "horror") == niche.MODE]
-    reason = niche.similarity_reason(data, slots, window, item_window)
+    # Same-topic compare on canonical form: synonym superlatives
+    # (biggest->largest, quickest->fastest, highest->tallest,
+    # deepest->longest) count as the same topic. Core never imports a
+    # niche, so the map is duplicated locally (mirrors niche _canon_topic).
+    def _canon_topic(t: str) -> str:
+        c = str(t or "").casefold()
+        for variant, canon in (("biggest", "largest"),
+                               ("quickest", "fastest"),
+                               ("highest", "tallest"),
+                               ("deepest", "longest")):
+            c = re.sub(rf"\b{variant}\b", canon, c)
+        return re.sub(r"\s+", " ", c).strip()
+    norm_slots = dict(slots or {},
+                      topic=_canon_topic((slots or {}).get("topic", "")))
+    norm_window = [dict(h, topic=_canon_topic(h.get("topic", "")))
+                   for h in window]
+    reason = niche.similarity_reason(data, norm_slots, norm_window,
+                                     item_window)
     if reason is not None:
         return reason
     new_sig = _story_signature(
@@ -492,7 +510,12 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
     timing-out endpoint won't heal in one backoff — fast 5xx responses may
     still retry). HTTP 429 is per-project quota, so it backs off with
     jitter on the SAME key instead of rotating (key-hopping would deepen
-    exhaustion); 429 retries count toward the key's tries. Raises the last
+    exhaustion); 429 retries count toward the key's tries. HTTP 5xx
+    (including 503 UNAVAILABLE) is per-project overload — different keys
+    are different projects — so a 5xx key retries its own tries, then fails
+    over to the next key WITHOUT tripping the endpoint-down breaker; only
+    timeouts/network errors (true endpoint-down signals) count toward it
+    (2 such keys skips the rest). Raises the last
     error when all keys fail. Defaults come from the GEMINI_TIMEOUT (text)
     / GEMINI_TTS_TIMEOUT (voice), GEMINI_TRIES, GEMINI_BACKOFF env tunables.
 
@@ -516,12 +539,12 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
         raise ValueError("GEMINI_API_KEY missing")
     n = len(GEMINI_KEYS)
     last_err: Exception | None = None
-    server_only_failures = 0  # keys that exhausted attempts with only 5xx/timeout/network errors
+    server_only_failures = 0  # keys exhausted by timeout/network errors only (5xx is per-project, never counts)
     for k in range(n):
         idx = (_GEMINI_KEY_IDX + k) % n
         sep = "&" if "?" in url else "?"
         keyed = f"{url}{sep}key={GEMINI_KEYS[idx]}"
-        key_server_only = True  # stays True unless this key sees a 4xx rejection
+        key_server_only = True  # stays True only for pure timeout/network failures (4xx/429/5xx/validate clear it)
         for attempt in range(1, tries + 1):
             try:
                 r = requests.post(keyed, json=payload, timeout=timeout)
@@ -564,6 +587,12 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
                         log(f"Gemini key {idx + 1}/{n} rejected (HTTP {status}), "
                             "failing over to next key...")
                     break  # 4xx won't heal with retries — try next key
+                if status is not None and 500 <= status < 600:
+                    # Per-project overload (503 = that key's project is full,
+                    # other keys are other projects): retry this key's own
+                    # tries, then fail over — never count toward the
+                    # endpoint-down breaker.
+                    key_server_only = False
                 if isinstance(e, requests.exceptions.Timeout):
                     if k < n - 1:
                         log(f"Gemini key {idx + 1}/{n} timed out "
@@ -585,6 +614,232 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
     raise last_err
 
 
+# Advisory Wikipedia existence check (MediaWiki Action API, NOT the
+# deprecated RESTBase rest_v1 summary path). One batched GET per run over
+# the 5 ranked item names: rejects hallucinations (missing/disambiguation
+# pages get a warn()), never certifies stats — no numbers are injected
+# into the script (rounded-numbers-only policy stays). Fail-open everywhere:
+# never raises, never triggers a Gemini regen, offline/no-network skips
+# with a warn (same ethos as pexels_clip returning None). Successes are
+# cached in assets/wiki_cache.json (TTL 14d, casefold keys); the Pexels
+# cache pattern is reused and cleanup_intermediates() keeps the file.
+WIKI_CONTACT = ((os.getenv("WIKI_CONTACT") or "").strip()
+                or "mailto:shorts-pipeline@localhost")
+WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
+WIKI_CACHE_PATH = ASSETS / "wiki_cache.json"
+WIKI_CACHE_TTL_SEC = 14 * 24 * 3600
+
+
+def _wiki_user_agent() -> str:
+    """Mandatory custom UA (never the default python-requests UA)."""
+    rv = getattr(requests, "__version__", "unknown")
+    return f"YoutubeShortsPipeline/1.0 ({WIKI_CONTACT}) requests/{rv}"
+
+
+def _load_wiki_cache() -> dict:
+    try:
+        if WIKI_CACHE_PATH.exists():
+            data = json.loads(WIKI_CACHE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        warn(f"Wiki cache unreadable ({e}), rechecking live.")
+    return {}
+
+
+def _save_wiki_cache(cache: dict):
+    try:
+        ASSETS.mkdir(exist_ok=True)
+        WIKI_CACHE_PATH.write_text(json.dumps(cache, indent=2,
+                                              ensure_ascii=False),
+                                   encoding="utf-8")
+    except Exception as e:
+        warn(f"Wiki cache unwritable ({e}).")
+
+
+def wiki_fact_check(items) -> dict:
+    """Advisory per-subject Wikipedia existence: ok|missing|disambiguation|no_extract|error.
+
+    ONE batched GET per run (pipe-joined titles, max 50), timeout (5, 10),
+    single retry on 429/5xx honoring Retry-After, else fail-open. Cached
+    successes (TTL 14d) skip the network. Missing/disambiguation/no_extract
+    outcomes warn naming the entity and continue. Never raises.
+    """
+    outcomes: dict = {}
+    try:
+        names = [str(i).strip() for i in (items or [])
+                 if str(i or "").strip()]
+        names = list(dict.fromkeys(names))[:50]
+        if not names:
+            return outcomes
+        now = time.time()
+        cache = _load_wiki_cache()
+        fresh = {}
+        for n in names:
+            entry = cache.get(n.casefold())
+            if (isinstance(entry, dict) and entry.get("outcome") == "ok"
+                    and isinstance(entry.get("ts"), (int, float))
+                    and now - entry["ts"] < WIKI_CACHE_TTL_SEC):
+                outcomes[n] = "ok"
+            else:
+                fresh[n] = entry
+        if not fresh:
+            log(f"Wiki check: {len(outcomes)} cached ok, no live lookup needed.")
+            return outcomes
+        params = {
+            "action": "query",
+            "format": "json",
+            "formatversion": "2",
+            "redirects": "1",
+            "converttitles": "1",
+            "titles": "|".join(fresh),
+            "prop": "info|extracts|pageprops",
+            "inprop": "url",
+            "exintro": "1",
+            "explaintext": "1",
+            "exchars": "1200",
+            "ppprop": "disambiguation|wikibase_item",
+        }
+        headers = {"User-Agent": _wiki_user_agent()}
+        resp = None
+        for attempt in (1, 2):
+            try:
+                resp = requests.get(WIKI_API_URL, params=params,
+                                    headers=headers, timeout=(5, 10))
+                if resp.status_code in (429,) or 500 <= resp.status_code < 600:
+                    raise requests.exceptions.HTTPError(
+                        f"HTTP {resp.status_code}", response=resp)
+                resp.raise_for_status()
+                break
+            except Exception as e:
+                status = _http_status(e)
+                retryable = (status is None or status == 429
+                             or (isinstance(status, int)
+                                 and 500 <= status < 600))
+                if attempt == 2 or not retryable:
+                    raise
+                wait = 0.0
+                try:
+                    ra = (resp.headers.get("Retry-After")
+                          if resp is not None else None)
+                    wait = float(ra) if ra else 0.0
+                except (TypeError, ValueError):
+                    wait = 0.0
+                if wait <= 0:
+                    wait = 5.0 * attempt
+                log(f"Wiki check retryable ({e}), waiting {wait:.0f}s...")
+                time.sleep(wait)
+        if resp is None:
+            raise ValueError("wiki request produced no response")
+        payload = resp.json()
+        query = payload.get("query", {}) if isinstance(payload, dict) else {}
+        # Resolve redirects/normalizations to final page titles.
+        alias = {}
+        conversions = (list(query.get("redirects", []) or [])
+                       + list(query.get("normalized", []) or []))
+        for conv in conversions:
+            if isinstance(conv, dict) and conv.get("from") and conv.get("to"):
+                alias[str(conv["from"]).casefold()] = str(conv["to"])
+        pages = {}
+        for p in query.get("pages", []) or []:
+            if isinstance(p, dict) and p.get("title"):
+                pages[str(p["title"]).casefold()] = p
+        for n in fresh:
+            final = alias.get(n.casefold(), n).casefold()
+            page = pages.get(final)
+            if page is None or page.get("missing"):
+                outcomes[n] = "missing"
+                warn(f"Wiki check: '{n}' has no Wikipedia page "
+                     f"(possible hallucination).")
+            elif isinstance(page.get("pageprops"), dict) and \
+                    page["pageprops"].get("disambiguation"):
+                outcomes[n] = "disambiguation"
+                warn(f"Wiki check: '{n}' is a Wikipedia disambiguation page.")
+            elif not str(page.get("extract", "") or "").strip():
+                outcomes[n] = "no_extract"
+                warn(f"Wiki check: '{n}' has no Wikipedia intro extract.")
+            else:
+                outcomes[n] = "ok"
+                cache[n.casefold()] = {"outcome": "ok", "ts": now,
+                                       "title": page.get("title", n)}
+        _save_wiki_cache(cache)
+        log(f"Wiki check: {sum(1 for v in outcomes.values() if v == 'ok')}/"
+            f"{len(names)} subjects ok.")
+        return outcomes
+    except Exception as e:
+        warn(f"Wiki check skipped (fail-open): {e}")
+        for n in (items or []):
+            key = str(n or "").strip()
+            if key and key not in outcomes:
+                outcomes[key] = "error"
+        return outcomes
+
+
+# Hook stakes gate: beat[0] must carry a stakes signal (a digit, or a
+# scale/danger word) AND must not name number 1 (tease, don't tell).
+# Violations get at most ONE regen per run (flag in gen_script); after
+# that the draft is accepted best-effort, like similarity retries.
+_HOOK_STAKES_RE = re.compile(
+    r"\d|over|about|nearly|tonnes|meters|taller|heavier|weighs|stands|"
+    r"bigger|deadlier|faster", re.IGNORECASE)
+_HOOK_NAMES_ONE_RE = re.compile(r"number\s*1|#1|number one", re.IGNORECASE)
+
+
+def _hook_violation(data) -> str | None:
+    """Reason the hook beat violates the stakes rule, else None."""
+    try:
+        beats = data.get("beats") or []
+        hook = str(beats[0].get("text", "")) if beats else ""
+    except (AttributeError, IndexError, TypeError):
+        return "hook beat unreadable"
+    if _HOOK_NAMES_ONE_RE.search(hook):
+        return "hook names number 1 instead of teasing it"
+    if not _HOOK_STAKES_RE.search(hook):
+        return "hook has no stakes signal (digit or scale/danger word)"
+    return None
+
+
+def _try_openrouter(prompt: str, niche):
+    """OpenRouter :free text failover. Returns validated meta or None.
+
+    Max 2 models (OPENROUTER_MODELS env, default 2 :free models), 1 try
+    each, no retries — the 50 req/day free cap must survive the outage.
+    Same downstream as Gemini text (fences, json, _validate_script, wiki
+    advisory). Any failure warns and returns None (caller falls through
+    to the offline fallback). Never raises.
+    """
+    models = [m.strip() for m in
+              os.getenv("OPENROUTER_MODELS",
+                        "meta-llama/llama-3.3-70b-instruct:free,"
+                        "openai/gpt-oss-120b:free").split(",")
+              if m.strip()][:2]
+    if not OPENROUTER_KEY:
+        log("OpenRouter skipped (OPENROUTER_API_KEY unset).")
+        return None
+    for m in models:
+        try:
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_KEY}",
+                         "Content-Type": "application/json"},
+                json={"model": m,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "temperature": 0.7,
+                      "max_tokens": 4096},
+                timeout=15)
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"]
+            # strip markdown fences (identical to the Gemini text path)
+            text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            data = _validate_script(json.loads(text), niche)
+            wiki_fact_check(data.get("items"))
+            log(f"OpenRouter script OK via {m}.")
+            return data
+        except Exception as e:
+            warn(f"OpenRouter model {m} unusable ({e}), trying next...")
+    return None
+
+
 def gen_script(niche):
     """Call Gemini free API. Returns (meta, slots).
 
@@ -593,6 +848,7 @@ def gen_script(niche):
     Fallback matches the active niche too (slots avoid recent history).
     """
     history = load_history()
+    hook_regen_used = False  # at most ONE hook-stakes regen per run
     if GEMINI_KEYS:
         for attempt in range(1 + SIMILARITY_RETRIES):
             prompt, slots = niche.build_prompt(history)
@@ -615,13 +871,27 @@ def gen_script(niche):
                     # strip markdown fences
                     text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
                     data = _validate_script(json.loads(text), niche)
+                    # Advisory hallucination gate on raw titles (Option A):
+                    # warn-only, never regens, never injects numbers.
+                    wiki_fact_check(data.get("items"))
                     break
                 except Exception as e:
                     log(f"Gemini model {model} unusable ({e}), trying next...")
                     time.sleep(2)
             if data is None:
-                log("All Gemini models failed, using fallback.")
-                break
+                log("All Gemini models failed, trying OpenRouter :free failover.")
+                data = _try_openrouter(prompt, niche)
+                if data is None:
+                    log("OpenRouter failed too, using fallback.")
+                    break
+            hook_problem = _hook_violation(data)
+            if hook_problem is not None and not hook_regen_used:
+                hook_regen_used = True
+                warn(f"Hook weak ({hook_problem}), "
+                     f"regenerating once for a fresh draft...")
+                continue
+            if hook_problem is not None:
+                log(f"Hook still weak ({hook_problem}), accepting best-effort.")
             reason = similar_to_history(data, slots, history, niche)
             # Sanitize AFTER the similarity verdict: stripping banned hooks
             # beforehand would hide them from the regen backstop.
@@ -1966,6 +2236,86 @@ def _stock_offset(stock: Path, part_idx: int, parts: int):
     return max(0.0, dur * part_idx / parts)
 
 
+def _beat_synonyms(beats: list[dict] | None) -> list[list[str]]:
+    """Alternate stock-search phrasings per beat (same subject, not new ones).
+
+    ONE batched Gemini call for all beats (temperature 0.3, small token
+    budget, ~20s timeout, shared _fetch_gemini key rotation). Best-effort:
+    ANY failure (no keys, 4xx/5xx, parse error, bad shape) returns per-beat
+    [] with a log() — visuals must never depend on it. Each alternate is
+    strictly validated (1-3 ASCII words, <=40 chars, not the beats's own
+    query); anything failing validation is dropped.
+    """
+    n = len(beats or [])
+    if not n:
+        return []
+    if not GEMINI_KEYS:
+        log("Beat synonyms skipped (no Gemini keys); tiers unchanged.")
+        return [[] for _ in range(n)]
+    lines = []
+    for idx, b in enumerate(beats or []):
+        q = str((b or {}).get("query", "")).strip()
+        t = " ".join(str((b or {}).get("text", "")).split())[:100]
+        lines.append(f"{idx + 1}. query='{q}' text='{t}'")
+    prompt = (
+        "For each of these video beats, suggest 2-3 alternate stock-footage "
+        "search phrasings for the SAME subject (alternates, not new "
+        "subjects). Reply with ONLY valid JSON: "
+        "{\"synonyms\": [[...], ...]} with exactly "
+        f"{n} inner lists in beat order. Rules: each alternate 1-3 words, "
+        "plain ASCII, portrait-friendly concrete nouns; keep proper names "
+        "anchored with the subject noun (e.g. 'Eclipse yacht' -> "
+        "['luxury yacht', 'superyacht deck']); no abstract concepts, "
+        "no extra keys.\n"
+        + "\n".join(lines) + "\nOutput only the JSON object."
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.3,
+            "maxOutputTokens": 512,
+        },
+        "safetySettings": _GEMINI_SAFETY_SETTINGS,
+    }
+    for model in GEMINI_MODELS:
+        try:
+            url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"{model}:generateContent")
+            raw = _fetch_gemini(url, payload, timeout=20)
+            text = raw["candidates"][0]["content"]["parts"][0]["text"]
+            text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            lists = json.loads(text).get("synonyms")
+            if not isinstance(lists, list) or len(lists) != n:
+                raise ValueError("synonyms shape mismatch")
+            out = []
+            for idx, alts in enumerate(lists):
+                keep: list[str] = []
+                orig = str(((beats or [])[idx] or {}).get("query", "")).strip().casefold()
+                if isinstance(alts, list):
+                    for a in alts:
+                        if not isinstance(a, str):
+                            continue
+                        s = a.strip()
+                        if (not s or len(s) > 40 or not s.isascii()
+                                or not 1 <= len(s.split()) <= 3
+                                or s.casefold() == orig
+                                or s in keep):
+                            continue
+                        keep.append(s)
+                        if len(keep) >= 3:
+                            break
+                out.append(keep)
+            log(f"Beat synonyms: {sum(len(k) for k in out)} alternates for "
+                f"{n} beats.")
+            return out
+        except Exception as e:
+            log(f"Synonym model {model} unusable ({e}), trying next...")
+            time.sleep(2)
+    log("Beat synonyms unavailable, exact/family/topic tiers unchanged.")
+    return [[] for _ in range(n)]
+
+
 def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
                       topic: str = "") -> list[tuple]:
     """Per beat: STILLS_PER_BEAT cuts (Pexels video vs photos -> card).
@@ -1978,12 +2328,16 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
     vs best-photo 2*alt + url); higher wins, ties go to video (motion
     preferred). Labeled beats (#5..#1, positionally zipped with `items`
     like board_filter) search in tiers: exact (beat query + distinctive
-    item word: long >=6-char word, else any word) -> family (item's last
-    word as the family guess, e.g. 'Green Anaconda' -> 'anaconda', gated
-    on that word, so a close relative fills in) -> topic (the topic's
-    generic plural noun, e.g. 'snakes', gated on both spellings) ->
-    Pillow title card. Wrong-family stock never airs at any tier; the
-    card is the last resort only. Unlabeled beats (hook/closer) keep the
+    item word: long >=6-char word, else any word) -> synonyms (AI alternate
+    phrasings of the same subject, in order, same gates) -> family (item's
+    last word as the family guess, e.g. 'Green Anaconda' -> 'anaconda',
+    gated on that word, so a close relative fills in) -> topic (the
+    topic's generic plural noun, e.g. 'snakes', gated on both spellings)
+    -> topic-loose (same topic query, domain-guard only, no item gates:
+    same-family generic footage beats a text card) -> Pillow title card.
+    Wrong-family stock never airs at any tier; the card fires only when
+    Pexels itself is unreachable/empty-handed. Unlabeled beats (hook/closer)
+    keep the
     single ungated search. A video win reuses ONE clip across the beat's
     cuts (later cuts seek via _stock_offset for continuity); a photo win
     emits one DISTINCT photo per cut (cycling plist[0] only when Pexels
@@ -2009,6 +2363,12 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
         gate_for[beat_idx] = _item_require_words(name, domain=domain_kw) if name else {}
         fam_for[beat_idx] = _family_query_for_item(name, topic) if name else ("", [])
     tqueries = _topic_stock_queries(topic)
+    # ONE batched synonym fetch per run; skipped when Pexels is keyless
+    # (cards inevitable) or no beat is gated (nothing to paraphrase).
+    need_syn = bool(PEXELS_KEY and use_beat
+                    and any(gate_for.get(idx)
+                            for idx in range(len(beats or []))))
+    syn_for = _beat_synonyms(beats) if need_syn else [[] for _ in (beats or [])]
     still_n = 0
     n_video = n_photo = n_card = 0
     for i, b in enumerate(beats):
@@ -2031,6 +2391,18 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
                              is_wild=is_wild, phrase=item_phrase)
         tier, eff_query = "exact", query
         if tiered and vpath is None and not plist:
+            for syn in (syn_for[i] if i < len(syn_for) else []):
+                spath, sraw, skey = _best_video(
+                    syn, used_pexels, mood=niche.USE_MOOD, require=require,
+                    is_wild=is_wild, phrase=syn)
+                splist = _best_photos(syn, used_pexels, len(parts),
+                                      require=require, is_wild=is_wild,
+                                      phrase=syn)
+                if spath is not None or splist:
+                    vpath, vraw, vkey, plist = spath, sraw, skey, splist
+                    tier, eff_query = "synonym", syn
+                    break
+        if tiered and vpath is None and not plist:
             fquery, frequire = fam_for.get(i, ("", []))
             if fquery and frequire:
                 fpath, fraw, fkey = _best_video(
@@ -2051,6 +2423,24 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
                 if tpath is not None or tplist:
                     vpath, vraw, vkey, plist = tpath, traw, tkey, tplist
                     tier, eff_query = "topic", tq
+                    break
+        # Loosest real-footage tier: same topic query, domain-guard only
+        # (no item gates) — same-family generic footage beats a text card,
+        # and the domain list keeps homonym territory out.
+        if vpath is None and not plist and tqueries and domain_kw:
+            loose = sorted(domain_kw)
+            for tq, _treq in tqueries:
+                for u in (used_pexels, None):
+                    lpath, lraw, lkey = _best_video(
+                        tq, u, mood=niche.USE_MOOD, require=loose,
+                        is_wild=is_wild, phrase=tq)
+                    lplist = _best_photos(tq, u, len(parts), require=loose,
+                                          is_wild=is_wild, phrase=tq)
+                    if lpath is not None or lplist:
+                        vpath, vraw, vkey, plist = lpath, lraw, lkey, lplist
+                        tier, eff_query = "topic-loose", tq
+                        break
+                if vpath is not None or plist:
                     break
         # If still no stock for this beat, relax used_pexels to reuse good topic stock
         if vpath is None and not plist and tqueries:
@@ -2128,13 +2518,14 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
 
 # Glob patterns for per-run FFmpeg intermediates. The pexels_*.mp4 cache
 # is intentionally NOT listed: re-downloads waste time/bandwidth on re-runs.
+# assets/wiki_cache.json is likewise kept (no pattern matches it).
 INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png",
                          "bed.mp3", "concat.txt", "video_only.mp4",
                          "tts_*")
 
 
 def cleanup_intermediates():
-    """Delete per-run intermediates from assets/. Keeps the Pexels cache."""
+    """Delete per-run intermediates from assets/. Keeps the Pexels + wiki caches."""
     for pattern in INTERMEDIATE_PATTERNS:
         for p in ASSETS.glob(pattern):
             try:

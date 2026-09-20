@@ -57,33 +57,14 @@ TOPICS = (
     "biggest wild cats in the world",
     "largest primates in the world",
     "largest owls in the world",
-    "largest eagles in the world",
     "fastest sea animals in the ocean",
     "largest fish in the ocean",
-    "most dangerous creatures in the ocean",
     "longest-lived animals on Earth",
-    "strongest bite forces in the animal kingdom",
-    "loudest animals in the world",
     "smartest dog breeds in the world",
-    "fastest dog breeds in the world",
     "most popular pets in the world",
-    "largest insects in the world",
-    "smallest wild cats in the world",
-    "longest living dog breeds in the world",
-    "smartest birds in the world",
-    "strangest deep sea creatures in the world",
     "largest spiders in the world",
-    "most venomous spiders in the world",
-    "largest farm animals in the world",
-    "most colorful frogs in the world",
-    "most colorful snakes in the world",
-    "longest migrations in the animal kingdom",
-    "largest rodents in the world",
-    "fastest insects in the world",
-    "biggest crabs in the world",
     # Geography and nature.
     "tallest waterfalls in the world",
-    "largest lakes in the world",
     "longest mountain ranges on Earth",
     "largest glaciers in the world",
     "most active volcanoes in the world",
@@ -91,19 +72,8 @@ TOPICS = (
     "largest coral reefs in the world",
     "biggest waves for surfing in the world",
     "tallest trees on Earth",
-    "largest flowers in the world",
-    "hottest places on Earth",
-    "coldest inhabited places on Earth",
-    "longest coastlines in the world",
-    "most famous beaches in the world",
     "most dangerous roads in the world",
     "largest caves in the world",
-    "most famous cliffs in the world",
-    "most famous mountains in the world",
-    "largest forests in the world",
-    "most famous geysers in the world",
-    "most famous islands in the world",
-    "largest bays in the world",
     "most visited national parks in the world",
     # Structures, cities, landmarks.
     "longest bridges in the world",
@@ -115,19 +85,10 @@ TOPICS = (
     "tallest roller coasters in the world",
     "biggest Ferris wheels in the world",
     "largest cruise ships in the world",
-    "most famous landmarks in the world",
-    "most visited cities in the world",
-    "most visited museums in the world",
-    "largest aquariums in the world",
     "oldest buildings on Earth",
     "biggest shipwrecks in history",
     "most famous towers in the world",
     "largest palaces in the world",
-    "largest churches in the world",
-    "most famous mosques in the world",
-    "largest libraries in the world",
-    "most famous markets in the world",
-    "most famous fountains in the world",
     "most famous lighthouses in the world",
     "longest walls in the world",
     # Vehicles and machines.
@@ -148,23 +109,182 @@ TOPICS = (
     # Space, sports, food.
     "largest planets in the solar system",
     "biggest moons in the solar system",
-    "most popular sports in the world",
     "hottest chili peppers in the world",
     "most expensive fruits in the world",
-    "brightest stars in the night sky",
-    "most famous constellations in the night sky",
     "most famous space missions in history",
     "largest telescopes in the world",
-    "most popular cheeses in the world",
-    "most popular breads in the world",
-    "most popular coffee drinks in the world",
-    "most popular street foods in the world",
-    "most popular desserts in the world",
-    "largest theme parks in the world",
-    "largest zoos in the world",
     # More variety: recurring light celebrations (filmable, no dates).
     "most famous festivals of lights in the world",
+    # Money traps: price-ranked, stock-filmable subjects, rounded costs.
+    "hotel room traps that overcharge you",
+    "supercars that bankrupt owners",
+    "watches that beat stocks",
+    "stadium foods that cost more than tickets",
+    # Danger jobs/machines: danger- or price-ranked workhorses.
+    "farm machines worth more than houses",
+    "fire trucks the world envies",
+    "tools that send DIYers to ER",
+    "fastest police interceptors by country",
+    # Insider secrets: danger-ranked places and jobs with hidden rules.
+    "airport secrets gate agents never say",
+    "foods chefs never order",
+    "cruise-ship jobs with secret perks",
+    "subway systems thieves love most",
+    # Infra extremes: size- or danger-ranked structures and routes.
+    "bridges truckers fear most",
+    "winter roads only pros drive",
+    "cargo ships bigger than skyscrapers",
+    "smallest apartments at luxury prices",
+    "lighthouses that still save ships",
+    # Wave 2 money traps: fee/scam-ranked, rounded costs.
+    "rental traps that steal deposits",
+    "phone scams that steal millions",
+    "parking-garage traps that steal cash",
+    "tow fees that trap drivers",
+    "toll roads that cost a fortune",
+    "rest-stop scams that steal cash",
+    "night-shift jobs that beat day pay",
+    # Wave 2 danger-work: ER- or damage-ranked jobs and machines.
+    "kitchen dangers that send cooks to ER",
+    "truck-stop nightmares that trap drivers",
+    "marathon rescues that save runners",
+    "delivery-van breakdowns that cost fleets",
+    "highway pileups that trap drivers in fog",
+    "gym machines that send beginners to ER",
+    "e-bike battery fire risks",
+    "ski lifts that trap riders mid-air",
+    # Wave 2 insider secrets: theft- and hidden-camera-ranked spots.
+    "locker-room thefts that steal gear",
+    "roadside motels with secret cameras",
+    # Wave 2 infra extremes: storm- and fear-ranked crossings.
+    "dam releases kayakers fear",
+    "ferry crossings that risk lives in storms",
+    "lighthouse storms sailors fear most",
 )
+
+# Topic synonyms normalized to canonical form before same-topic compares,
+# so "biggest sharks" vs "largest sharks" counts as the same topic.
+_TOPIC_CANON = (("biggest", "largest"), ("quickest", "fastest"),
+                ("highest", "tallest"), ("deepest", "longest"))
+
+
+def _canon_topic(topic: str) -> str:
+    """Casefolded topic with synonym superlatives in canonical form."""
+    t = str(topic or "").casefold()
+    for variant, canon in _TOPIC_CANON:
+        t = re.sub(rf"\b{variant}\b", canon, t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+# Leading superlatives: proposing the same one twice in a row is rejected.
+_LEADING_SUPERLATIVES = ("largest", "biggest", "tallest", "longest",
+                         "fastest", "most")
+
+
+def _leading_superlative(topic: str) -> str:
+    """First-word superlative of a topic ("" when it leads with none)."""
+    words = re.findall(r"[a-z]+", str(topic or "").lower())
+    if words and words[0] in _LEADING_SUPERLATIVES:
+        return words[0]
+    return ""
+
+
+# Cross-vertical rotation: every topic maps to one vertical; AI proposals
+# must avoid the last 2 aired verticals so the channel stops stacking the
+# same lane back to back. New-vertical keywords win over legacy ones
+# ("fire trucks" is danger-work, not vehicles; "cargo ships" is infra).
+# Order matters: danger-work/insider/infra win over money ("farm machines
+# worth more than houses" is danger-work, "smallest apartments at luxury
+# prices" is infra), and all four new lanes win over legacy buckets.
+_VERTICAL_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("danger-work", ("farm machine", "fire truck", "fire", "diy",
+                     "interceptor", "police", "tool", "send", "envies",
+                     "kitchen", "nightmare", "rescue", "marathon",
+                     "delivery", "van", "breakdown", "pileup", "highway",
+                     "fog", "gym", "ski", "lift")),
+    ("insider", ("secret", "gate agent", "chef", "never order", "never say",
+                 "perk", "cruise", "subway", "thief", "thieves", "airport",
+                 "theft", "locker", "motel", "camera", "hidden")),
+    ("infra", ("bridge", "trucker", "winter road", "cargo ship",
+               "skyscraper", "apartment", "lighthouse", "fear most",
+               "pros drive", "save ships", "kayak", "ferry", "storm")),
+    ("money", ("overcharge", "bankrupt", "stock", "stadium food",
+               "hotel room trap", "supercar", "watch", "ticket",
+               "cost more", "worth more", "luxury price", "trap", "scam",
+               "deposit", "rental", "fee", "toll", "fortune", "cost",
+               "pay")),
+    ("animals", ("animal", "bird", "reptile", "snake", "bear", "wild cat",
+                 "primate", "owl", "fish", "shark", "dog breed", "cat breed",
+                 "pet", "insect", "spider", "crocodile", "hippo", "elephant",
+                 "giraffe", "whale")),
+    ("nature", ("mountain", "river", "desert", "ocean", "island", "lake",
+                "volcano", "waterfall", "glacier", "canyon", "reef", "wave",
+                "tree", "flower", "beach", "cliff", "cave", "forest",
+                "national park", "chili", "planet", "moon", "star",
+                "constellation", "space", "telescope")),
+    ("structures", ("building", "castle", "temple", "dam", "tunnel",
+                    "airport", "coaster", "ferris", "cruise ship", "landmark",
+                    "city", "museum", "aquarium", "shipwreck", "tower",
+                    "palace", "church", "mosque", "library", "market",
+                    "lighthouse", "wall", "stadium", "pyramid", "statue")),
+    ("vehicles", ("car", "airplane", "helicopter", "jet", "motorcycle",
+                  "train", "yacht", "submarine", "truck", "container ship",
+                  "rocket", "tank", "cable car", "race track", "sailing")),
+    ("food-life", ("sport", "fruit", "cheese", "bread", "coffee",
+                   "street food", "dessert", "theme park", "zoo",
+                   "festival")),
+)
+
+
+def _topic_vertical(topic: str) -> str:
+    """Vertical lane for a topic ("" when unclassifiable)."""
+    t = str(topic or "").lower()
+    for vertical, keywords in _VERTICAL_KEYWORDS:
+        if any(k in t for k in keywords):
+            return vertical
+    return ""
+
+
+# Rank-metric lexicon: an AI proposal must rank by price, speed, danger,
+# or size. Insider/infra framings count via their threat/extreme cues
+# (secret/never/fear/save/pro/drive), so the mandated new verticals pass.
+_METRIC_WORDS = frozenset({
+    "price", "cost", "expensive", "cheap", "overcharge", "bankrupt",
+    "worth", "luxury", "ticket", "stock", "money", "paid", "beat",
+    "fastest", "quickest", "speed", "fast", "slow", "interceptor",
+    "police", "danger", "dangerous", "deadly", "fear", "risk", "trap",
+    "thief", "thieves", "steal", "pro", "pros", "drive", "trucker",
+    "winter", "secret", "never", "envy", "envies", "save", "tool",
+    "diy", "fire", "agent", "largest", "biggest", "tallest", "longest",
+    "smallest", "bigger", "big", "tall", "long", "small", "large",
+    "tiny", "huge", "giant", "highest", "deepest",
+})
+_ER_TOKEN_RE = re.compile(r"\ber\b", re.IGNORECASE)
+
+
+def _topic_has_metric(topic: str) -> bool:
+    """True when the topic names a price/speed/danger/size rank metric."""
+    t = str(topic or "").lower()
+    tokens = set(re.findall(r"[a-z0-9]+", t))
+    if _ER_TOKEN_RE.search(t):
+        return True
+    return any(w in _METRIC_WORDS for w in tokens
+               ) or any(w in t for w in ("diy", "trucker", "skyscraper"))
+
+
+def _title_clause(title: str) -> str:
+    """Closing clause of a title: text after the last dash/colon split
+    ("5 Largest Animals — Number 1 Is Huge" -> "number 1 is huge").
+    Plain titles with no dash/colon suffix have no clause (""). Compared
+    casefolded against recent titles."""
+    t = str(title or "").strip()
+    t = re.sub(r"^[\W_]*((top\s+)?5)\b", "", t,
+               flags=re.IGNORECASE).strip()
+    parts = re.split(r"[–—\-:|;,.]+", t)
+    if len(parts) < 2:
+        return ""
+    return re.sub(r"\s+", " ", parts[-1].strip().casefold())
+
 
 AVOID_INTRO = ("Already-used countdowns — do NOT reuse any of these topics, "
                "titles, or ranked items, and do NOT rank the same 5 things "
@@ -215,9 +335,26 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
     if not AI_TOPICS or not C.GEMINI_KEYS:
         return None, None
     recent = _recent_topic_names(history)
+    # Cross-vertical rotation: the last 2 aired verticals are off-limits,
+    # matched via history topic text (older entries may lack a recorded
+    # vertical). Same leading superlative twice in a row is also banned.
+    same_niche = [h for h in (history or [])
+                  if h.get("niche", "horror") == MODE]
+    excluded_verticals = {_topic_vertical(h.get("topic", ""))
+                          for h in same_niche[-2:]}
+    excluded_verticals.discard("")
+    last_superlative = (_leading_superlative(same_niche[-1].get("topic", ""))
+                        if same_niche else "")
     avoid = "".join(f"- {h.get('topic', '?')}\n"
                     for h in (history or [])[-C.HISTORY_PROMPT_N:]
                     if h.get("niche", "horror") == MODE)
+    rotation_rule = (
+        f" Rotate verticals: do NOT propose these recently aired lanes: "
+        f"{sorted(excluded_verticals) or '(none yet)'}. "
+        if excluded_verticals else " ")
+    superlative_rule = (
+        f" Do NOT start the topic with the superlative '{last_superlative}'. "
+        if last_superlative else " ")
     prompt = (
         "Propose ONE Top-5 countdown YouTube Shorts topic. Reply with ONLY "
         "valid JSON: {\"topic\": <noun phrase>, \"items\": [5 names]}. "
@@ -225,9 +362,12 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
         "stock footage on free stock sites like Pexels (popular animals, famous places, "
         "common vehicle types, iconic structures; avoid ultra-rare species or obscure "
         "subspecies that lack stock footage — NO people names, NO events, NO abstract concepts); "
+        "rank by ONE concrete metric (price, speed, danger, or size); keep the "
+        "topic itself hookable and under 40 characters; "
         "each item 1-3 words, unique, plain ASCII. Topic examples: 'largest owls on "
         "Earth', 'longest bridges in the world'. No questions, no hooks, "
         "no clickbait, no markdown, no extra keys.\n"
+        f"{rotation_rule}{superlative_rule}"
         f"Do NOT reuse any of these recent topics or their subjects:\n{avoid or '(none yet)'}\n"
         "Output only the JSON object."
     )
@@ -264,7 +404,17 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
         problems = []
         if not (8 <= len(topic) <= 80) or "?" in topic:
             problems.append("bad topic shape")
-        if topic.casefold() in recent:
+        if len(topic) >= 40:
+            problems.append("topic not hookable (40+ chars)")
+        if not _topic_has_metric(topic):
+            problems.append("no price/speed/danger/size rank metric")
+        if excluded_verticals and _topic_vertical(topic) in excluded_verticals:
+            problems.append(
+                f"vertical '{_topic_vertical(topic)}' aired in last 2 runs")
+        if last_superlative and _leading_superlative(topic) == last_superlative:
+            problems.append(
+                f"leading superlative '{last_superlative}' aired last run")
+        if _canon_topic(topic) in {_canon_topic(t) for t in recent}:
             problems.append("topic already used")
         if len(items) < 5:
             problems.append("fewer than 5 subjects")
@@ -619,9 +769,19 @@ def similarity_reason(data: dict, slots: dict, recent: list[dict],
     for hook in BANNED_TITLE_HOOKS:
         if hook in title:
             return f"title uses banned overused hook '{hook}'"
-    if str(slots.get("topic", "")).casefold() in {
-            str(h.get("topic", "")).casefold() for h in recent}:
+    # Same-topic compare on canonical form: synonym superlatives
+    # (largest/biggest, fastest/quickest, tallest/highest, longest/deepest)
+    # count as the same topic.
+    if _canon_topic(slots.get("topic", "")) in {
+            _canon_topic(h.get("topic", "")) for h in recent}:
         return f"topic '{slots.get('topic')}' already used"
+    # Same closing title clause twice in the last 10 airs is a repeat.
+    clause = _title_clause(data.get("title", ""))
+    if clause:
+        for h in [x for x in (recent or []) if x.get("niche", "horror") == MODE][-10:]:
+            if _title_clause(h.get("title", "")) == clause:
+                return (f"closing title clause '{clause}' already aired in "
+                        f"'{h.get('title', '?')}'")
     scope = item_recent if item_recent is not None else recent
     new_items = {str(i).strip().casefold()
                  for i in (data.get("items") or []) if str(i).strip()}
@@ -638,6 +798,7 @@ def history_fields(slots: dict, meta: dict) -> dict:
     return {"topic": slots.get("topic", ""),
             "topicSource": slots.get("topic_source", "pool"),
             "hookStyle": slots.get("hook_style", ""),
+            "vertical": _topic_vertical(slots.get("topic", "")),
             "items": list(meta.get("items", [])[:10])}
 
 
