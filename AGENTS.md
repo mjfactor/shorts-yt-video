@@ -21,7 +21,7 @@ Run: `python pipeline.py` → Gemini script (beats) → TTS mp3+srt → visuals 
 
 ## Config (all env, see `.env.example`; never hardcode/commit)
 
-- `GEMINI_API_KEY` (+ `GEMINI_API_KEY_2..10` failover; comma-separated keys in one var also work). Sticks with working key; 429 backs off with jitter on SAME key, other 4xx/timeout fail over immediately; 2 keys failing with only 5xx/timeout trips a breaker skipping the rest
+- `GEMINI_API_KEY` (+ `GEMINI_API_KEY_2..10` failover; comma-separated keys in one var also work). Sticks with working key; 429 backs off with jitter on SAME key, other 4xx/timeout fail over immediately; HTTP 5xx is per-project overload so all keys are tried (never trips the breaker); 2 keys failing with only timeouts/network errors trips a breaker skipping the rest
 - `VISIBILITY` default `private` — keep until OAuth app passes YouTube audit
 - `GEMINI_MODELS` / `GEMINI_TTS_MODELS` tried in order, first win
 - `MIN_AUDIO_SEC=10` / `MAX_AUDIO_SEC=180`; `STILLS_PER_BEAT` default 3 (`.env.example` comment saying 2 is stale); `PEXELS_MIN_WIDTH` default 1080 (1:1 with canvas)

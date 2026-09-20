@@ -509,7 +509,12 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
     timing-out endpoint won't heal in one backoff — fast 5xx responses may
     still retry). HTTP 429 is per-project quota, so it backs off with
     jitter on the SAME key instead of rotating (key-hopping would deepen
-    exhaustion); 429 retries count toward the key's tries. Raises the last
+    exhaustion); 429 retries count toward the key's tries. HTTP 5xx
+    (including 503 UNAVAILABLE) is per-project overload — different keys
+    are different projects — so a 5xx key retries its own tries, then fails
+    over to the next key WITHOUT tripping the endpoint-down breaker; only
+    timeouts/network errors (true endpoint-down signals) count toward it
+    (2 such keys skips the rest). Raises the last
     error when all keys fail. Defaults come from the GEMINI_TIMEOUT (text)
     / GEMINI_TTS_TIMEOUT (voice), GEMINI_TRIES, GEMINI_BACKOFF env tunables.
 
@@ -533,12 +538,12 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
         raise ValueError("GEMINI_API_KEY missing")
     n = len(GEMINI_KEYS)
     last_err: Exception | None = None
-    server_only_failures = 0  # keys that exhausted attempts with only 5xx/timeout/network errors
+    server_only_failures = 0  # keys exhausted by timeout/network errors only (5xx is per-project, never counts)
     for k in range(n):
         idx = (_GEMINI_KEY_IDX + k) % n
         sep = "&" if "?" in url else "?"
         keyed = f"{url}{sep}key={GEMINI_KEYS[idx]}"
-        key_server_only = True  # stays True unless this key sees a 4xx rejection
+        key_server_only = True  # stays True only for pure timeout/network failures (4xx/429/5xx/validate clear it)
         for attempt in range(1, tries + 1):
             try:
                 r = requests.post(keyed, json=payload, timeout=timeout)
@@ -581,6 +586,12 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
                         log(f"Gemini key {idx + 1}/{n} rejected (HTTP {status}), "
                             "failing over to next key...")
                     break  # 4xx won't heal with retries — try next key
+                if status is not None and 500 <= status < 600:
+                    # Per-project overload (503 = that key's project is full,
+                    # other keys are other projects): retry this key's own
+                    # tries, then fail over — never count toward the
+                    # endpoint-down breaker.
+                    key_server_only = False
                 if isinstance(e, requests.exceptions.Timeout):
                     if k < n - 1:
                         log(f"Gemini key {idx + 1}/{n} timed out "
