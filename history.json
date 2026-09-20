@@ -764,5 +764,32 @@
       "Shanghai Tower",
       "Burj Khalifa"
     ]
+  },
+  {
+    "date": "2026-09-20_091025",
+    "title": "5 Largest Hydroelectric Dams in the World",
+    "niche": "ranking",
+    "tags": [
+      "dams",
+      "engineering",
+      "infrastructure",
+      "hydroelectric",
+      "power"
+    ],
+    "narration": "Water crashes against concrete with enough force to power entire cities, holding back over thirty billion cubic meters of liquid weight. This final massive structure stands as a titan of modern engineering. At number 5, the Guri Dam. It sits in Venezuela and produces nearly ten thousand megawatts of power. At number 4, the Tucurui Dam. This Brazilian giant spans a wide river and holds back a massive reservoir of water. At number 3, the Xiluodu Dam. It rises high in a narrow canyon and provides electricity to millions of people nearby. At number 2, the Itaipu Dam. This structure shares a border between two countries and creates a lake that stretches for many miles. At number 1, the Three Gorges Dam. It is the largest power station on the planet, stretching over two kilometers across the Yangtze River. The scale of this wall is hard to grasp until you see the ships passing through its locks. This concrete barrier changes the flow of a major river and powers a huge portion of a nation. Which of these engineering marvels do you find the most impressive to see in person? Tell us your favorite in the comments below.",
+    "bed": "bgm6.mp3",
+    "videoId": "-Kx7cLleobg",
+    "tiktokBufferPostId": "6aafa6e2566e1a89bc29e02b",
+    "topic": "largest dams in the world",
+    "topicSource": "pool",
+    "hookStyle": "sensory",
+    "vertical": "structures",
+    "items": [
+      "Guri Dam",
+      "Tucurui Dam",
+      "Xiluodu Dam",
+      "Itaipu Dam",
+      "Three Gorges Dam"
+    ]
   }
 ]
