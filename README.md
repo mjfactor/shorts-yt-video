@@ -76,7 +76,7 @@ the on-screen banner sanitizer strips any emoji that slips through. Fallback run
 - Runs are serialized (`concurrency: shorts-single`) so the `history.json`
    commit-back can't race; every run records its topic + ranked items and
    the next run is forced onto a fresh topic (Gemini proposes one, validated;
-   `TOPICS`, 86 evergreen categories, is the backstop). Same-topic and ≥2 shared items trigger a regeneration.
+       `TOPICS`, 123 evergreen categories, is the backstop). Same-topic and ≥2 shared items trigger a regeneration.
 
 ## Visuals (item-matched stock)
 

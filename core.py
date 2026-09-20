@@ -399,7 +399,24 @@ def similar_to_history(data: dict, slots: dict, history: list[dict], niche):
         return "title already used"
     item_window = [h for h in history[-DEDUP_ITEM_WINDOW:]
                    if h.get("niche", "horror") == niche.MODE]
-    reason = niche.similarity_reason(data, slots, window, item_window)
+    # Same-topic compare on canonical form: synonym superlatives
+    # (biggest->largest, quickest->fastest, highest->tallest,
+    # deepest->longest) count as the same topic. Core never imports a
+    # niche, so the map is duplicated locally (mirrors niche _canon_topic).
+    def _canon_topic(t: str) -> str:
+        c = str(t or "").casefold()
+        for variant, canon in (("biggest", "largest"),
+                               ("quickest", "fastest"),
+                               ("highest", "tallest"),
+                               ("deepest", "longest")):
+            c = re.sub(rf"\b{variant}\b", canon, c)
+        return re.sub(r"\s+", " ", c).strip()
+    norm_slots = dict(slots or {},
+                      topic=_canon_topic((slots or {}).get("topic", "")))
+    norm_window = [dict(h, topic=_canon_topic(h.get("topic", "")))
+                   for h in window]
+    reason = niche.similarity_reason(data, norm_slots, norm_window,
+                                     item_window)
     if reason is not None:
         return reason
     new_sig = _story_signature(
@@ -585,6 +602,167 @@ def _fetch_gemini(url: str, payload: dict, tries: int | None = None,
     raise last_err
 
 
+# Advisory Wikipedia existence check (MediaWiki Action API, NOT the
+# deprecated RESTBase rest_v1 summary path). One batched GET per run over
+# the 5 ranked item names: rejects hallucinations (missing/disambiguation
+# pages get a warn()), never certifies stats — no numbers are injected
+# into the script (rounded-numbers-only policy stays). Fail-open everywhere:
+# never raises, never triggers a Gemini regen, offline/no-network skips
+# with a warn (same ethos as pexels_clip returning None). Successes are
+# cached in assets/wiki_cache.json (TTL 14d, casefold keys); the Pexels
+# cache pattern is reused and cleanup_intermediates() keeps the file.
+WIKI_CONTACT = ((os.getenv("WIKI_CONTACT") or "").strip()
+                or "mailto:shorts-pipeline@localhost")
+WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
+WIKI_CACHE_PATH = ASSETS / "wiki_cache.json"
+WIKI_CACHE_TTL_SEC = 14 * 24 * 3600
+
+
+def _wiki_user_agent() -> str:
+    """Mandatory custom UA (never the default python-requests UA)."""
+    rv = getattr(requests, "__version__", "unknown")
+    return f"YoutubeShortsPipeline/1.0 ({WIKI_CONTACT}) requests/{rv}"
+
+
+def _load_wiki_cache() -> dict:
+    try:
+        if WIKI_CACHE_PATH.exists():
+            data = json.loads(WIKI_CACHE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        warn(f"Wiki cache unreadable ({e}), rechecking live.")
+    return {}
+
+
+def _save_wiki_cache(cache: dict):
+    try:
+        ASSETS.mkdir(exist_ok=True)
+        WIKI_CACHE_PATH.write_text(json.dumps(cache, indent=2,
+                                              ensure_ascii=False),
+                                   encoding="utf-8")
+    except Exception as e:
+        warn(f"Wiki cache unwritable ({e}).")
+
+
+def wiki_fact_check(items) -> dict:
+    """Advisory per-subject Wikipedia existence: ok|missing|disambiguation|no_extract|error.
+
+    ONE batched GET per run (pipe-joined titles, max 50), timeout (5, 10),
+    single retry on 429/5xx honoring Retry-After, else fail-open. Cached
+    successes (TTL 14d) skip the network. Missing/disambiguation/no_extract
+    outcomes warn naming the entity and continue. Never raises.
+    """
+    outcomes: dict = {}
+    try:
+        names = [str(i).strip() for i in (items or [])
+                 if str(i or "").strip()]
+        names = list(dict.fromkeys(names))[:50]
+        if not names:
+            return outcomes
+        now = time.time()
+        cache = _load_wiki_cache()
+        fresh = {}
+        for n in names:
+            entry = cache.get(n.casefold())
+            if (isinstance(entry, dict) and entry.get("outcome") == "ok"
+                    and isinstance(entry.get("ts"), (int, float))
+                    and now - entry["ts"] < WIKI_CACHE_TTL_SEC):
+                outcomes[n] = "ok"
+            else:
+                fresh[n] = entry
+        if not fresh:
+            log(f"Wiki check: {len(outcomes)} cached ok, no live lookup needed.")
+            return outcomes
+        params = {
+            "action": "query",
+            "format": "json",
+            "formatversion": "2",
+            "redirects": "1",
+            "converttitles": "1",
+            "titles": "|".join(fresh),
+            "prop": "info|extracts|pageprops",
+            "inprop": "url",
+            "exintro": "1",
+            "explaintext": "1",
+            "exchars": "1200",
+            "ppprop": "disambiguation|wikibase_item",
+        }
+        headers = {"User-Agent": _wiki_user_agent()}
+        resp = None
+        for attempt in (1, 2):
+            try:
+                resp = requests.get(WIKI_API_URL, params=params,
+                                    headers=headers, timeout=(5, 10))
+                if resp.status_code in (429,) or 500 <= resp.status_code < 600:
+                    raise requests.exceptions.HTTPError(
+                        f"HTTP {resp.status_code}", response=resp)
+                resp.raise_for_status()
+                break
+            except Exception as e:
+                status = _http_status(e)
+                retryable = (status is None or status == 429
+                             or (isinstance(status, int)
+                                 and 500 <= status < 600))
+                if attempt == 2 or not retryable:
+                    raise
+                wait = 0.0
+                try:
+                    ra = (resp.headers.get("Retry-After")
+                          if resp is not None else None)
+                    wait = float(ra) if ra else 0.0
+                except (TypeError, ValueError):
+                    wait = 0.0
+                if wait <= 0:
+                    wait = 5.0 * attempt
+                log(f"Wiki check retryable ({e}), waiting {wait:.0f}s...")
+                time.sleep(wait)
+        if resp is None:
+            raise ValueError("wiki request produced no response")
+        payload = resp.json()
+        query = payload.get("query", {}) if isinstance(payload, dict) else {}
+        # Resolve redirects/normalizations to final page titles.
+        alias = {}
+        conversions = (list(query.get("redirects", []) or [])
+                       + list(query.get("normalized", []) or []))
+        for conv in conversions:
+            if isinstance(conv, dict) and conv.get("from") and conv.get("to"):
+                alias[str(conv["from"]).casefold()] = str(conv["to"])
+        pages = {}
+        for p in query.get("pages", []) or []:
+            if isinstance(p, dict) and p.get("title"):
+                pages[str(p["title"]).casefold()] = p
+        for n in fresh:
+            final = alias.get(n.casefold(), n).casefold()
+            page = pages.get(final)
+            if page is None or page.get("missing"):
+                outcomes[n] = "missing"
+                warn(f"Wiki check: '{n}' has no Wikipedia page "
+                     f"(possible hallucination).")
+            elif isinstance(page.get("pageprops"), dict) and \
+                    page["pageprops"].get("disambiguation"):
+                outcomes[n] = "disambiguation"
+                warn(f"Wiki check: '{n}' is a Wikipedia disambiguation page.")
+            elif not str(page.get("extract", "") or "").strip():
+                outcomes[n] = "no_extract"
+                warn(f"Wiki check: '{n}' has no Wikipedia intro extract.")
+            else:
+                outcomes[n] = "ok"
+                cache[n.casefold()] = {"outcome": "ok", "ts": now,
+                                       "title": page.get("title", n)}
+        _save_wiki_cache(cache)
+        log(f"Wiki check: {sum(1 for v in outcomes.values() if v == 'ok')}/"
+            f"{len(names)} subjects ok.")
+        return outcomes
+    except Exception as e:
+        warn(f"Wiki check skipped (fail-open): {e}")
+        for n in (items or []):
+            key = str(n or "").strip()
+            if key and key not in outcomes:
+                outcomes[key] = "error"
+        return outcomes
+
+
 def gen_script(niche):
     """Call Gemini free API. Returns (meta, slots).
 
@@ -615,6 +793,9 @@ def gen_script(niche):
                     # strip markdown fences
                     text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
                     data = _validate_script(json.loads(text), niche)
+                    # Advisory hallucination gate on raw titles (Option A):
+                    # warn-only, never regens, never injects numbers.
+                    wiki_fact_check(data.get("items"))
                     break
                 except Exception as e:
                     log(f"Gemini model {model} unusable ({e}), trying next...")
@@ -2128,13 +2309,14 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
 
 # Glob patterns for per-run FFmpeg intermediates. The pexels_*.mp4 cache
 # is intentionally NOT listed: re-downloads waste time/bandwidth on re-runs.
+# assets/wiki_cache.json is likewise kept (no pattern matches it).
 INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png",
                          "bed.mp3", "concat.txt", "video_only.mp4",
                          "tts_*")
 
 
 def cleanup_intermediates():
-    """Delete per-run intermediates from assets/. Keeps the Pexels cache."""
+    """Delete per-run intermediates from assets/. Keeps the Pexels + wiki caches."""
     for pattern in INTERMEDIATE_PATTERNS:
         for p in ASSETS.glob(pattern):
             try:
