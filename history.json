@@ -845,5 +845,32 @@
       "Boston Marathon Rescue",
       "Ironman World Rescue"
     ]
+  },
+  {
+    "date": "2026-09-21_144848",
+    "title": "5 Tallest Ferris Wheels in the World 🎡",
+    "niche": "ranking",
+    "tags": [
+      "ferris wheel",
+      "tallest structures",
+      "amusement rides",
+      "engineering",
+      "travel"
+    ],
+    "narration": "Most people assume the London Eye holds the top spot for height. It is not even close to the record holder. The largest wheel stands over two hundred fifty meters tall. That is nearly twice the height of many famous city landmarks. At number 5, the London Eye. It sits on the Thames and reaches nearly one hundred thirty-five meters high. At number 4, the Star of Nanchang. This wheel features sixty cabins and stands about one hundred sixty meters tall. At number 3, the Singapore Flyer. It offers views of the city from about one hundred sixty-five meters above the ground. At number 2, the High Roller. This massive Las Vegas attraction reaches a height of over one hundred sixty-seven meters. At number 1, Ain Dubai. This giant structure stands at a staggering height of over two hundred fifty meters. It dominates the skyline with its incredible scale. It is truly a marvel of modern engineering design. Each rotation takes a long time to complete because of its massive size. Would you ever take a ride on the tallest wheel in the world, or do you prefer to stay on the ground? Share your own ranking of these giant wheels in the comments section below.",
+    "bed": "bgm9.mp3",
+    "videoId": "ubLn_bko_T8",
+    "tiktokBufferPostId": "6ab1476290086f12a156fb5f",
+    "topic": "tallest ferris wheels in the world",
+    "topicSource": "ai",
+    "hookStyle": "contrarian",
+    "vertical": "structures",
+    "items": [
+      "London Eye",
+      "Star of Nanchang",
+      "Singapore Flyer",
+      "High Roller",
+      "Ain Dubai"
+    ]
   }
 ]
