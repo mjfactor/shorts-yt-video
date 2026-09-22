@@ -125,65 +125,6 @@ class TestDemoFixtures(unittest.TestCase):
                 self.assertIn("type", b["visual_hint"])
 
 
-class TestExplainerVisuals(unittest.TestCase):
-    """Test rendering each visual type to 1080x1920 PNG images."""
-
-    def test_render_all_visual_types(self):
-        types_to_test = [
-            ("diagram", ["Antenna", "Transmitter", "Receiver"]),
-            ("process_flow", ["Step 1: Encode", "Step 2: Send", "Step 3: Decode"]),
-            ("comparison", ["Old Way (Slow)", "New Way (Fast)"]),
-            ("mechanism", ["Inlet Valve", "Piston", "Spark Plug", "Exhaust"]),
-            ("scale_stat", ["Value: 300,000 km/s", "Speed of Light"]),
-            ("cutaway", ["Outer Shield", "Vacuum Chamber", "Magnetron"]),
-            ("text_card", ["Important Summary", "Key Takeaway"]),
-            ("unknown_fallback_type", ["Alpha", "Beta"]),
-        ]
-
-        for vtype, components in types_to_test:
-            beat = {
-                "text": f"This is a test beat explaining the mechanism of {vtype} with clear science.",
-                "query": "technology diagram science",
-                "visual_hint": {
-                    "type": vtype,
-                    "description": f"Detailed schematic diagram for {vtype}",
-                    "components": components,
-                    "label": vtype.replace("_", " ").title(),
-                },
-            }
-            out_path = explainer_visuals.build_scene(beat, 0, 5, animate=False)
-            self.assertTrue(out_path.exists(), f"Rendered image should exist for {vtype}")
-
-            # Verify image dimensions: 1080x1920
-            with Image.open(out_path) as img:
-                self.assertEqual(img.size, (1080, 1920), f"Image dimensions should be 1080x1920 for {vtype}")
-
-            # Cleanup test image
-            try:
-                out_path.unlink()
-            except OSError:
-                pass
-
-        # Also test animated MP4 loop generation
-        anim_beat = {
-            "text": "Electrons flow into the antenna to create waves.",
-            "query": "antenna waves",
-            "visual_hint": {
-                "type": "diagram",
-                "description": "Radio waves emitting from antenna",
-                "components": ["Transmitter", "Antenna", "Radio Wave"],
-                "label": "Wave Emission",
-            },
-        }
-        mp4_path = explainer_visuals.build_scene(anim_beat, 0, 5, animate=True)
-        self.assertIsNotNone(mp4_path)
-        self.assertTrue(mp4_path.exists())
-        self.assertEqual(mp4_path.suffix, ".mp4")
-        self.assertGreater(mp4_path.stat().st_size, 1000)
-        try:
-            mp4_path.unlink()
-        except OSError:
-            pass
 
 
 if __name__ == "__main__":

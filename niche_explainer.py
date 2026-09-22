@@ -313,13 +313,13 @@ def build_prompt(history: list[dict]):
         "}\n\n"
         'Visual hint types:\n'
         '- "stock_footage": real-world footage (person using phone, water flowing, car driving)\n'
-        '- "diagram": a labeled diagram showing components and connections\n'
+        '- "diagram": a dynamic generative AI drawing. Can be any crazy 2D graphic: fractals, particle systems, waveforms, physics simulations, node graphs, 3D wireframes, scatter plots, molecular vibrations, etc. Feel free to describe extremely complex math or geometric animations! This will be coded by an AI using Python Pillow.\n'
         '- "process_flow": sequential steps with arrows showing a process\n'
         '- "text_card": key fact or definition displayed as styled text\n\n'
         "Rules:\n"
         "1. The beat texts joined in order must equal the full narration exactly.\n"
         "2. Each beat's query should match what is being explained in that moment.\n"
-        "3. Visual hints should describe WHAT to show, not HOW to render it.\n"
+        "3. Visual hints for 'diagram' should be incredibly detailed and describe complex, aesthetic math/physics/geometric layouts to showcase the AI's rendering capabilities.\n"
         "4. Use stock_footage for real-world scenes, diagrams for technical concepts.\n"
         "5. The explanation must be accurate and not oversimplified to the point of being wrong.\n\n"
         "Do not include markdown, notes, or any extra keys. Output only the JSON object."
