@@ -899,5 +899,32 @@
       "Red Force",
       "Kingda Ka"
     ]
+  },
+  {
+    "date": "2026-09-22_130300",
+    "title": "5 Fastest Shark Species in the Ocean",
+    "niche": "ranking",
+    "tags": [
+      "sharks",
+      "ocean",
+      "nature",
+      "wildlife",
+      "marine"
+    ],
+    "narration": "The fastest of these predators reaches speeds over 45 miles per hour, faster than a professional athlete can sprint on land. It is a blur of muscle and speed. At number 5, the Tiger Shark. This predator swims at speeds of about 20 miles per hour while hunting in warm waters. It grows to nearly 14 feet in length. At number 4, the Blue Shark. This sleek fish cruises at about 25 miles per hour across vast distances. It is known for its deep blue color. At number 3, the Salmon Shark. This cold water hunter reaches speeds of nearly 30 miles per hour to catch its prey. It looks like a miniature great white. At number 2, the Great White Shark. This famous hunter can burst at speeds of about 35 miles per hour when attacking. It is the king of the coastal seas. At number 1, the Shortfin Mako Shark. This rocket of the ocean hits incredible top speeds of over 45 miles per hour with ease. It is the undisputed king of underwater velocity. Which of these sharks do you think is the most impressive hunter in the deep blue sea?",
+    "bed": "bgm2.mp3",
+    "videoId": "6bK5t1SvqVY",
+    "tiktokBufferPostId": "6ab2805f5cfcad806a3e47cc",
+    "topic": "fastest sharks in the ocean",
+    "topicSource": "ai",
+    "hookStyle": "stakes",
+    "vertical": "animals",
+    "items": [
+      "Tiger Shark",
+      "Blue Shark",
+      "Salmon Shark",
+      "Great White Shark",
+      "Shortfin Mako Shark"
+    ]
   }
 ]
