@@ -1,0 +1,57 @@
+{
+  "topic": "What happens when you open a website",
+  "title": "\ud83c\udf10 What Happens When You Open a Website?",
+  "description": "\ud83c\udf10 Ever wonder what happens in the split second after you type a URL? #shorts #internet #explained",
+  "tags": ["shorts", "internet", "howthingswork", "explained", "technology"],
+  "narration": "Every time you type a website address, something incredible happens in less than a second. Your browser does not actually know where that website lives. So it asks a special server called a DNS server, which works like a phone book for the internet. It translates the name you typed into a number address. Your request then travels through cables, sometimes under the ocean, to reach the server that holds the website. That server reads your request and sends back all the pieces. Your browser collects all those pieces and assembles them into the page you see. All of this happens in about 200 milliseconds. So the next time a website loads instantly, remember: your request just traveled halfway around the world and back.",
+  "beats": [
+    {
+      "text": "Every time you type a website address, something incredible happens in less than a second.",
+      "query": "person typing laptop",
+      "visual_hint": {
+        "type": "text_card",
+        "description": "What happens when you open a website?",
+        "label": "What Happens When You\nOpen a Website?"
+      }
+    },
+    {
+      "text": "Your browser does not actually know where that website lives. So it asks a special server called a DNS server, which works like a phone book for the internet. It translates the name you typed into a number address.",
+      "query": "server room data center",
+      "visual_hint": {
+        "type": "process_flow",
+        "description": "Browser sends request to DNS server, gets IP address back",
+        "components": ["Browser", "DNS Server", "IP Address"],
+        "label": "DNS Lookup"
+      }
+    },
+    {
+      "text": "Your request then travels through cables, sometimes under the ocean, to reach the server that holds the website. That server reads your request and sends back all the pieces.",
+      "query": "undersea cable ocean",
+      "visual_hint": {
+        "type": "diagram",
+        "description": "Data traveling through undersea cables to a web server",
+        "components": ["Computer", "Cable", "Ocean", "Server"],
+        "label": "Data Request"
+      }
+    },
+    {
+      "text": "Your browser collects all those pieces and assembles them into the page you see. All of this happens in about 200 milliseconds.",
+      "query": "website loading browser",
+      "visual_hint": {
+        "type": "process_flow",
+        "description": "Browser assembling HTML, CSS, and images into a webpage",
+        "components": ["HTML", "CSS", "Images", "Webpage"],
+        "label": "Page Rendering"
+      }
+    },
+    {
+      "text": "So the next time a website loads instantly, remember: your request just traveled halfway around the world and back.",
+      "query": "earth globe network",
+      "visual_hint": {
+        "type": "text_card",
+        "description": "Your request just traveled around the world",
+        "label": "Halfway Around\nthe World in 200ms"
+      }
+    }
+  ]
+}

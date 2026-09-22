@@ -1,0 +1,57 @@
+{
+  "topic": "Why does a microwave heat food",
+  "title": "\ud83d\udd25 Why Does a Microwave Heat Food?",
+  "description": "\ud83d\udd25 Your microwave doesn't cook with heat \u2014 it moves molecules. #shorts #science #explained",
+  "tags": ["shorts", "science", "microwave", "explained", "howthingswork"],
+  "narration": "A microwave does not actually heat your food the way an oven does. It does something completely different. Inside the microwave, there is a device called a magnetron. It converts electricity into invisible waves called microwaves. These waves pass through the food and hit water molecules. Water molecules have a positive end and a negative end, like tiny magnets. When the microwaves hit them, the molecules start spinning back and forth, millions of times per second. All that spinning creates friction. And friction creates heat. That is how your food gets hot from the inside out. This is also why dry foods do not heat well in a microwave, because there are fewer water molecules to spin. So your microwave is not really cooking with heat. It is shaking water molecules until they get hot on their own.",
+  "beats": [
+    {
+      "text": "A microwave does not actually heat your food the way an oven does. It does something completely different.",
+      "query": "microwave oven kitchen",
+      "visual_hint": {
+        "type": "text_card",
+        "description": "Not what you think",
+        "label": "How Does a Microwave\nActually Work?"
+      }
+    },
+    {
+      "text": "Inside the microwave, there is a device called a magnetron. It converts electricity into invisible waves called microwaves.",
+      "query": "electromagnetic waves",
+      "visual_hint": {
+        "type": "diagram",
+        "description": "Magnetron emitting microwave radiation",
+        "components": ["Magnetron", "Waves", "Food"],
+        "label": "The Magnetron"
+      }
+    },
+    {
+      "text": "These waves pass through the food and hit water molecules. Water molecules have a positive end and a negative end, like tiny magnets. When the microwaves hit them, the molecules start spinning back and forth, millions of times per second.",
+      "query": "water molecule model",
+      "visual_hint": {
+        "type": "diagram",
+        "description": "Water molecules vibrating when hit by microwaves",
+        "components": ["Microwave Beam", "Water Molecule", "Rotation"],
+        "label": "Molecular Friction"
+      }
+    },
+    {
+      "text": "All that spinning creates friction. And friction creates heat. That is how your food gets hot from the inside out.",
+      "query": "hot food steam",
+      "visual_hint": {
+        "type": "process_flow",
+        "description": "Spinning creates friction creates heat",
+        "components": ["Spinning", "Friction", "Heat"],
+        "label": "Friction = Heat"
+      }
+    },
+    {
+      "text": "This is also why dry foods do not heat well in a microwave, because there are fewer water molecules to spin. So your microwave is not really cooking with heat. It is shaking water molecules until they get hot on their own.",
+      "query": "microwave plate food",
+      "visual_hint": {
+        "type": "text_card",
+        "description": "Summary: Microwaves shake water molecules",
+        "label": "Not Heat \u2014 Vibration"
+      }
+    }
+  ]
+}
