@@ -237,6 +237,7 @@ def propose_topic(history: list[dict]) -> str | None:
                 text = raw["candidates"][0]["content"]["parts"][0]["text"]
                 text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
                 data = json.loads(text)
+                C.mark_model_working(model)
                 break
             except Exception as e:
                 C.log(f"AI topic model {model} unusable ({e}), trying next...")

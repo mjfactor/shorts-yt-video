@@ -290,6 +290,7 @@ Define `def render_frame(...)`. Do not call it. Do not import anything.
             raw = core._fetch_gemini(url, payload)
             code = raw["candidates"][0]["content"]["parts"][0]["text"]
             code = code.strip().removeprefix("```python").removeprefix("```").removesuffix("```").strip()
+            core.mark_model_working(model)
             return code
         except Exception as e:
             core.warn(f"Code gen failed with {model}: {e}")

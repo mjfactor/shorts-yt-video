@@ -86,6 +86,13 @@ GEMINI_MODELS = [m.strip() for m in
                  os.getenv("GEMINI_MODELS",
                             "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
                  if m.strip()]
+
+def mark_model_working(model: str):
+    """Move the working model to the front of GEMINI_MODELS so subsequent calls don't retry bad models."""
+    if model in GEMINI_MODELS and GEMINI_MODELS[0] != model:
+        GEMINI_MODELS.remove(model)
+        GEMINI_MODELS.insert(0, model)
+
 # Pacing delay between Gemini TTS beats (default 15s to respect 3 RPM free-tier ceiling)
 GEMINI_TTS_PACE_SEC = _env_int("GEMINI_TTS_PACE_SEC", 15)
 
@@ -900,6 +907,7 @@ def gen_script(niche):
                     # Advisory hallucination gate on raw titles (Option A):
                     # warn-only, never regens, never injects numbers.
                     wiki_fact_check(data.get("items"))
+                    mark_model_working(model)
                     break
                 except Exception as e:
                     log(f"Gemini model {model} unusable ({e}), trying next...")
