@@ -899,5 +899,24 @@
       "Red Force",
       "Kingda Ka"
     ]
+  },
+  {
+    "date": "2026-09-22_054617",
+    "title": "How Do Noise-Canceling Headphones Work? 🎧?",
+    "niche": "explainer",
+    "tags": [
+      "headphones",
+      "technology",
+      "physics",
+      "science",
+      "audio"
+    ],
+    "narration": "Ever wonder how active noise-canceling headphones can make a noisy airplane cabin suddenly feel completely silent? It feels like magic, but your headphones are actually creating brand new sounds to erase the unwanted ones. It all starts with tiny microphones built into the outside of the earcups. These microphones constantly listen to incoming background rumbles, like busy traffic or loud jet engines. Remember, all sound travels through the air in waves, just like ripples on water with high peaks and low valleys. An electronic chip inside the headphones instantly analyzes this incoming sound wave. Then, it creates a mirror image called anti-noise. When the outside noise wave peaks upward, the headphone speakers generate an exact wave dipping downward. Think of it like simple math, where positive one plus negative one equals zero. The two opposing sound waves crash into each other and cancel out before reaching your eardrum. So that is why blasting an invisible inverted sound wave creates pure peace and quiet.",
+    "bed": "bgm2.mp3",
+    "videoId": "1FLakVeCQ3I",
+    "tiktokBufferPostId": "6ab218619609314f6219a104",
+    "topic": "How do noise-canceling headphones work?",
+    "topicSource": "ai",
+    "category": ""
   }
 ]
