@@ -1,12 +1,14 @@
 # AGENTS.md
 
-Top-5 countdown Shorts automation. `pipeline.py` thin entry (`main()` → `core.run(niche_ranking)`); `core.py` owns shared machinery (Gemini/TTS/Pexels/FFmpeg/upload/history); `niche_ranking.py` is the self-contained niche behind the interface at top of `core.py`. Imports flow one way (niche → core); core never imports a niche.
-Run: `python pipeline.py` → Gemini script (beats) → TTS mp3+srt → visuals → FFmpeg 1080x1920 → YouTube (+ optional TikTok via Buffer). Output `out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
+Explainer Shorts automation ("How the world around you actually works" — ~60-75s single-concept explainers with diagrams, process flows, and stock footage). `pipeline.py` thin entry (`main()` → `core.run(niche_explainer)`); `core.py` owns shared machinery (Gemini/TTS/Pexels/FFmpeg/upload/history); `niche_explainer.py` is the active niche; `niche_ranking.py` remains importable for rollback to Top-5 countdowns. Imports flow one way (niche → core); core never imports a niche.
+Run: `python pipeline.py` → Gemini script (beats + visual hints) → TTS mp3+srt → visuals (diagrams/stock) → FFmpeg 1080x1920 → YouTube (+ optional TikTok via Buffer). Output `out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
 
 ## Commands
 
 - Full run (needs `ffmpeg` + `ffprobe` on PATH): `python pipeline.py`
-- Syntax check (no tests/lint/typecheck in repo, Python `3.11` per CI): `python -m py_compile pipeline.py core.py niche_ranking.py get_refresh_token.py`
+- Offline demo (zero API keys, renders 3 sample Shorts to `out/demo_*.mp4`): `python demo.py`
+- Unit tests: `python -m unittest tests/test_explainer.py`
+- Syntax check (Python `3.11` per CI): `python -m py_compile pipeline.py core.py niche_ranking.py niche_explainer.py explainer_visuals.py demo.py get_refresh_token.py`
 - Deps: `pip install -r requirements.txt`
 - OAuth helper, local-only with browser, never CI: `python get_refresh_token.py` (needs `YT_CLIENT_ID`/`YT_CLIENT_SECRET`)
 

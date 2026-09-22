@@ -36,6 +36,7 @@ jobs:
       GEMINI_TRIES: ${{ vars.GEMINI_TRIES || '2' }}
       GEMINI_BACKOFF: ${{ vars.GEMINI_BACKOFF || '5' }}
       AI_TOPICS: ${{ vars.AI_TOPICS || 'on' }}
+      EXPLAINER_STILLS_PER_BEAT: ${{ vars.EXPLAINER_STILLS_PER_BEAT || '2' }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
       YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}

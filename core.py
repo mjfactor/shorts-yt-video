@@ -165,7 +165,21 @@ def pick_tts_style(topic: str, text: str, beat_idx: int = -1, total_beats: int =
     """Choose a narrator style tuned to the topic, narration content, and beat position."""
     haystack = f"{topic} {text}".lower()
 
+    # Explainer topics: clear, conversational, educational tone
     if any(k in haystack for k in [
+        "how does", "why does", "what happens", "how do", "how is",
+        "work?", "works?", "explained", "explainer",
+        "wifi", "gps", "battery", "circuit", "algorithm", "encrypt",
+        "molecule", "photon", "frequency", "voltage", "protein",
+        "immune", "dna", "cell tower", "fiber optic", "microwave",
+        "elevator", "thermostat", "solar panel", "turbine",
+    ]):
+        mood = (
+            "Read in a warm, clear, conversational explainer voice with natural pacing "
+            "(~145 words per minute), genuine curiosity, and the tone of a knowledgeable "
+            "friend explaining something fascinating."
+        )
+    elif any(k in haystack for k in [
         "planet", "space", "galaxy", "moon", "star", "ocean", "mountain",
         "building", "statue", "island", "river", "desert", "volcano", "pyramid"
     ]):
@@ -202,15 +216,15 @@ def pick_tts_style(topic: str, text: str, beat_idx: int = -1, total_beats: int =
             "authoritative delivery, and articulate pacing (~145 words per minute)."
         )
 
-    # Dynamic beat-role adaptation: hook intrigue -> countdown momentum -> #1 reveal -> warm closer
+    # Dynamic beat-role adaptation: varies by niche type
     if beat_idx == 0:
         role = " Hook the listener with intriguing curiosity and immediate presence."
-    elif 0 < beat_idx < total_beats - 2:
-        role = " Keep a confident countdown momentum, making the facts clear and compelling."
-    elif beat_idx == total_beats - 2:
-        role = " Give maximum dramatic weight and awe to this final number one reveal."
     elif beat_idx == total_beats - 1:
         role = " Transition into a warm, conversational, and direct closing tone."
+    elif 0 < beat_idx < total_beats - 2:
+        role = " Keep a confident momentum, making the facts clear and compelling."
+    elif beat_idx == total_beats - 2:
+        role = " Give maximum emphasis and weight to this key reveal."
     else:
         role = ""
 
@@ -449,8 +463,11 @@ def _validate_script(data, niche) -> dict:
     if not isinstance(narration, str) or len(narration.split()) < 20:
         raise ValueError("'narration' missing or too short (<20 words)")
     _nwords = len(narration.split())
-    if _nwords < 180:
-        raise ValueError(f"'narration' too short ({_nwords} words, need 180+ for ~80-85s at 145 WPM)")
+    # Word count floor depends on niche: explainer targets 150-170 words (~60-75s),
+    # ranking targets 195-205 words (~80-85s). Both at ~145 WPM.
+    _min_words = 120 if getattr(niche, 'MODE', 'ranking') == 'explainer' else 180
+    if _nwords < _min_words:
+        raise ValueError(f"'narration' too short ({_nwords} words, need {_min_words}+)")
     if not isinstance(description, str) or not description.strip():
         raise ValueError("missing/invalid 'description' (must be non-empty string)")
     if (not isinstance(tags, list) or not tags
@@ -473,7 +490,11 @@ def _validate_script(data, niche) -> dict:
         if not isinstance(lab, str):
             lab = ""
         lab = "".join(c for c in lab if c.isdigit())[:2]
-        norm_beats.append({"text": t.strip(), "query": q.strip(), "label": lab})
+        # Preserve visual_hint for explainer niche (validated by niche.validate_extra)
+        norm_b = {"text": t.strip(), "query": q.strip(), "label": lab}
+        if isinstance(b.get("visual_hint"), dict):
+            norm_b["visual_hint"] = b["visual_hint"]
+        norm_beats.append(norm_b)
     for b in norm_beats:
         # Bare homonym heads ('Eclipse', 'Hyperion') pull unrelated stock
         # (solar eclipses, theaters); the prompt demands anchored queries, so
@@ -486,8 +507,8 @@ def _validate_script(data, niche) -> dict:
     if sum(len(b["text"].split()) for b in norm_beats) < 20:
         raise ValueError("'beats' cover too little text (<20 words total)")
     _bwords = sum(len(b["text"].split()) for b in norm_beats)
-    if _bwords < 180:
-        raise ValueError(f"'beats' cover too little text ({_bwords} words, need 180+ for ~80-85s at 145 WPM)")
+    if _bwords < _min_words:
+        raise ValueError(f"'beats' cover too little text ({_bwords} words, need {_min_words}+)")
     # Normalize so downstream steps never choke on oversized input.
     out = {
         "title": title.strip()[:100],
@@ -1238,9 +1259,19 @@ def _srt_to_ass(srt: Path) -> Path:
     return ass
 
 
-def _subtitles_vf(srt: Path):
-    """Burn-in video filter with styled captions, or None if no subs."""
+def _subtitles_vf(srt: Path, niche=None):
+    """Burn-in video filter with styled captions, or None if disabled or no subs."""
     if not srt.exists():
+        return None
+    # Allow disabling burned subtitles via env var or niche property.
+    # For explainer Shorts, diagrams already display clear typography; burning
+    # yellow subtitles directly onto the canvas obscures visual components.
+    burn_env = os.getenv("BURN_SUBTITLES", "").strip().lower()
+    if burn_env in ("0", "false", "no", "off"):
+        return None
+    if getattr(niche, "BURN_SUBTITLES", None) is False:
+        return None
+    if getattr(niche, "MODE", "") == "explainer" and burn_env not in ("1", "true", "yes", "on"):
         return None
     try:
         target = _srt_to_ass(srt)
@@ -2320,32 +2351,18 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
                       topic: str = "") -> list[tuple]:
     """Per beat: STILLS_PER_BEAT cuts (Pexels video vs photos -> card).
 
-    The niche decides the stock policy: ranking searches each beat's OWN
-    query (literal item match); horror uses ambient B-roll from
-    niche.AMBIENT_QUERIES, deliberately not story-matched. Returns
-    [(clip, seek_or_None, beat_idx)]. Video and photos compete head to
-    head at beat level on normalized accuracy (video raw slug score * 2
-    vs best-photo 2*alt + url); higher wins, ties go to video (motion
-    preferred). Labeled beats (#5..#1, positionally zipped with `items`
-    like board_filter) search in tiers: exact (beat query + distinctive
-    item word: long >=6-char word, else any word) -> synonyms (AI alternate
-    phrasings of the same subject, in order, same gates) -> family (item's
-    last word as the family guess, e.g. 'Green Anaconda' -> 'anaconda',
-    gated on that word, so a close relative fills in) -> topic (the
-    topic's generic plural noun, e.g. 'snakes', gated on both spellings)
-    -> topic-loose (same topic query, domain-guard only, no item gates:
-    same-family generic footage beats a text card) -> Pillow title card.
-    Wrong-family stock never airs at any tier; the card fires only when
-    Pexels itself is unreachable/empty-handed. Unlabeled beats (hook/closer)
-    keep the
-    single ungated search. A video win reuses ONE clip across the beat's
-    cuts (later cuts seek via _stock_offset for continuity); a photo win
-    emits one DISTINCT photo per cut (cycling plist[0] only when Pexels
-    returned fewer than parts), each Ken Burns'd at render. Both missing
-    renders Pillow title cards. Durations stay per-beat, split at render
-    time. Fallback tiers only run on a miss, so extra Pexels searches are
-    bounded (~2 per empty tier, never on a hit).
+    Explainer niche: tries explainer_visuals.build_scene() first (diagrams,
+    process flows, text cards); falls through to Pexels stock on stock_footage
+    hints or when the visual system returns None.
+
+    Ranking niche: searches each beat's OWN query (literal item match) with
+    tiered fallbacks (exact -> synonym -> family -> topic -> topic-loose).
+    Returns [(clip, seek_or_None, beat_idx)].
     """
+    # Explainer niche: simplified visual pipeline with programmatic visuals
+    if getattr(niche, 'MODE', '') == 'explainer':
+        return _visuals_for_explainer(beats, niche, topic)
+
     clips = []
     used_pexels: set = set()
     use_beat = niche.USE_BEAT_QUERY
@@ -2516,10 +2533,106 @@ def visuals_for_beats(beats: list[dict], niche, items: list | None = None,
     return clips
 
 
+def _visuals_for_explainer(beats: list[dict], niche, topic: str = "") -> list[tuple]:
+    """Explainer visual pipeline: programmatic visuals first, Pexels fallback.
+
+    For each beat:
+    1. If visual_hint.type is diagram/process_flow/text_card → render via
+       explainer_visuals.build_scene() → PNG slide
+    2. If stock_footage or build_scene returns None → try Pexels
+    3. If Pexels fails → beat_card fallback
+    """
+    clips = []
+    used_pexels: set = set()
+    n_diagram = n_stock = n_card = 0
+    stills_n = int(os.getenv("EXPLAINER_STILLS_PER_BEAT", "2"))
+
+    # Try to import explainer visuals (not a hard dependency for ranking niche)
+    try:
+        import explainer_visuals
+    except ImportError:
+        explainer_visuals = None  # type: ignore[assignment]
+        warn("explainer_visuals not available, falling back to stock/cards.")
+
+    for i, b in enumerate(beats or []):
+        parts = _split_beat(b["text"], stills_n)
+        hint = b.get("visual_hint") or {}
+        vtype = str(hint.get("type", "")).strip().lower()
+        query = b.get("query", "")
+        scene_path = None
+
+        # Step 1: Try programmatic visual for non-stock hints
+        if explainer_visuals is not None and vtype and vtype != "stock_footage":
+            try:
+                scene_path = explainer_visuals.build_scene(b, i, len(beats))
+            except Exception as e:
+                warn(f"Explainer visual failed for beat {i + 1} ({e}), trying stock.")
+
+        # Step 2: If we got a diagram PNG, use it for all cuts of this beat
+        if scene_path is not None and scene_path.exists():
+            log(f"Beat {i + 1} ('{query}'): diagram tier=explainer winner={scene_path.name}.")
+            n_diagram += len(parts)
+            for j in range(len(parts)):
+                clips.append((scene_path, None, i))
+            continue
+
+        # Step 3: Try Pexels stock footage (simplified: exact query only)
+        if PEXELS_KEY and query:
+            vpath, vraw, vkey = _best_video(query, used_pexels, mood=False)
+            plist = _best_photos(query, used_pexels, len(parts))
+            vnorm = vraw * 2
+            pbest = plist[0][1] if plist else 0
+
+            if plist and (vpath is None or pbest > vnorm):
+                for (_, _, k, *_rest) in plist:
+                    used_pexels.add(k)
+                n_stock += len(parts)
+                log(f"Beat {i + 1} ('{query}'): {len(parts)}xphoto tier=exact.")
+                for j, part in enumerate(parts):
+                    clip = plist[j][0] if j < len(plist) else plist[0][0]
+                    clips.append((clip, None, i))
+                continue
+            elif vpath is not None:
+                used_pexels.add(vkey)
+                n_stock += len(parts)
+                log(f"Beat {i + 1} ('{query}'): video tier=exact.")
+                for j in range(len(parts)):
+                    clips.append((vpath, _stock_offset(vpath, j, len(parts)), i))
+                continue
+
+        # Step 4: Fall back — try to render a text_card via explainer_visuals
+        if explainer_visuals is not None:
+            try:
+                fallback_hint = {"type": "text_card", "label": "",
+                                 "description": b.get("text", "")[:200]}
+                fb = {"text": b.get("text", ""), "query": query,
+                      "visual_hint": fallback_hint}
+                scene_path = explainer_visuals.build_scene(fb, i, len(beats))
+                if scene_path is not None and scene_path.exists():
+                    n_diagram += len(parts)
+                    log(f"Beat {i + 1} ('{query}'): text_card fallback.")
+                    for j in range(len(parts)):
+                        clips.append((scene_path, None, i))
+                    continue
+            except Exception:
+                pass
+
+        # Step 5: Emergency beat_card (Pillow text on dark bg)
+        n_card += len(parts)
+        warn(f"Beat {i + 1} ('{query}'): emergency beat_card fallback.")
+        for j, part in enumerate(parts):
+            card = beat_card(i * stills_n + j, part)
+            clips.append((card, None, i))
+
+    log(f"Explainer visuals: {len(clips)} cuts for {len(beats or [])} beats "
+        f"({n_diagram} diagram, {n_stock} stock, {n_card} card).")
+    return clips
+
+
 # Glob patterns for per-run FFmpeg intermediates. The pexels_*.mp4 cache
 # is intentionally NOT listed: re-downloads waste time/bandwidth on re-runs.
 # assets/wiki_cache.json is likewise kept (no pattern matches it).
-INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png",
+INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png", "explainer_scene_*",
                          "bed.mp3", "concat.txt", "video_only.mp4",
                          "tts_*")
 
@@ -2665,11 +2778,21 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
                           "-preset", "veryfast", "-crf", "20", "-maxrate", "12M",
                           "-bufsize", "24M", str(seg)], f"segment-{i}-kenburns")
         elif c.suffix == ".png":
+            # Subtle cinematic documentary camera push-in / drift
+            frames = max(60, int(seg_dur * 30))
+            if i % 2 == 0:
+                zb = (f"zoompan=z='min(zoom+0.0006,1.06)':d={frames}:"
+                      f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H}")
+            else:
+                zb = (f"zoompan=z='if(eq(on,1),1.06,max(zoom-0.0006,1.0))':d={frames}:"
+                      f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H}")
             _run_ffmpeg(["ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", str(c),
-                         "-t", str(seg_dur), "-vf", f"scale={W}:{H},fps=30",
-                          "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
-                          "-crf", "20", "-maxrate", "12M", "-bufsize", "24M",
-                          str(seg)], f"segment-{i}-slide")
+                         "-t", str(seg_dur),
+                         "-vf", f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,"
+                                f"crop={W * 2}:{H * 2},{zb},fps=30",
+                         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+                         "-crf", "20", "-maxrate", "12M", "-bufsize", "24M",
+                         str(seg)], f"segment-{i}-slide")
         else:
             # Stock halves seek into different footage; loop guards short stock
             # so a segment can never run dry and truncate the narration.
@@ -2695,7 +2818,7 @@ def render(clips: list[tuple], audio: Path, bed: Path, srt: Path,
     # Bed is mixed quietly under the voice (normalize=0 keeps narration full).
     # The overlay lives here (not per-segment): only the finished timeline has
     # absolute timestamps for between(t,a,b) reveal windows.
-    vf_subs = _subtitles_vf(srt)
+    vf_subs = _subtitles_vf(srt, niche)
     board = niche.board_filter(beats or [], items or [], durations,
                                _rank_font, _has_drawtext, title)
     blur = _mystery_blur_filter(beats or [], durations)
