@@ -806,13 +806,18 @@ _HOOK_STAKES_RE = re.compile(
 _HOOK_NAMES_ONE_RE = re.compile(r"number\s*1|#1|number one", re.IGNORECASE)
 
 
-def _hook_violation(data) -> str | None:
+def _hook_violation(data, niche=None) -> str | None:
     """Reason the hook beat violates the stakes rule, else None."""
     try:
         beats = data.get("beats") or []
         hook = str(beats[0].get("text", "")) if beats else ""
     except (AttributeError, IndexError, TypeError):
         return "hook beat unreadable"
+        
+    # The stakes/number 1 rule only applies to Top-5 Ranking videos
+    if niche and getattr(niche, "MODE", "") != "ranking":
+        return None
+        
     if _HOOK_NAMES_ONE_RE.search(hook):
         return "hook names number 1 instead of teasing it"
     if not _HOOK_STAKES_RE.search(hook):
@@ -905,7 +910,7 @@ def gen_script(niche):
                 if data is None:
                     log("OpenRouter failed too, using fallback.")
                     break
-            hook_problem = _hook_violation(data)
+            hook_problem = _hook_violation(data, niche)
             if hook_problem is not None and not hook_regen_used:
                 hook_regen_used = True
                 warn(f"Hook weak ({hook_problem}), "

@@ -280,7 +280,7 @@ Define `def render_frame(...)`. Do not call it. Do not import anything.
 """
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048},
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
         "safetySettings": core._GEMINI_SAFETY_SETTINGS,
     }
     
