@@ -209,7 +209,7 @@ def propose_topic(history: list[dict]) -> str | None:
         "Propose ONE explainer YouTube Shorts topic about how something in the "
         "real world works. Reply with ONLY valid JSON: {\"topic\": <question phrase>}. "
         "Rules: the topic must be a clear 'How does X work?' or 'Why does X happen?' "
-        "question; it must be explainable in 60-75 seconds to a general audience; "
+        "question; it must be explainable in 80-85 seconds to a general audience; "
         "the concept must be filmable with stock footage and simple diagrams; "
         "no people names, no current events, no brand-specific topics. "
         "Good examples: 'How does GPS know where you are', "
@@ -289,18 +289,18 @@ def build_prompt(history: list[dict]):
         "Title: must be a clear question, starting with 'How', 'Why', or 'What'. "
         "Example: 'How Does Face ID Work?' or 'Why Does a Microwave Heat Food?'. "
         "Keep it under 60 characters. One emoji allowed at the start or end only.\n\n"
-        "Narration: exactly 150-170 words (~60-75 seconds spoken at ~145 WPM). "
+        "Narration: exactly 195-205 words (~80-85 seconds spoken at ~145 WPM). "
         "Present tense, conversational, fifth-grade reading level. "
         "Short punchy sentences. One clear idea per sentence. No emojis in the spoken text. "
         "Structure: "
         "(1) A 1-2 sentence hook that makes the viewer curious — state something surprising "
         "about the concept or ask a relatable question. "
-        "(2) 3-4 clear explanation steps, each building on the last — walk through HOW the "
+        "(2) 4-5 clear explanation steps, each building on the last — walk through HOW the "
         "thing actually works, step by step. Use analogies and comparisons to everyday things. "
-        "(3) A 1-sentence closer with a satisfying 'so that's why...' conclusion.\n\n"
+        "(3) A 1-2 sentence closer with a satisfying 'so that's why...' conclusion.\n\n"
         "Description: exactly 2 sentences with 1-2 fitting emojis and 3 hashtags.\n\n"
         "Tags: array of exactly 5 plain-ASCII strings, no emoji.\n\n"
-        "Beats: array of 5-6 objects in video order (hook, 3-4 explanation steps, closer). "
+        "Beats: array of 6-7 objects in video order (hook, 4-5 explanation steps, closer). "
         "Each object must be:\n"
         "{\n"
         '  "text": <exact narration chunk for this scene>,\n'
@@ -340,50 +340,57 @@ _FALLBACK_VARIANTS = (
         "tags": ["shorts", "internet", "howthingswork", "explained", "technology"],
         "narration": (
             "Every time you type a website address, something incredible happens in less than a second. "
-            "Your browser does not actually know where that website lives. So it asks a special server "
-            "called a DNS server, which works like a phone book for the internet. It translates the name "
-            "you typed into a number address. "
-            "Your request then travels through cables, sometimes under the ocean, to reach the server "
-            "that holds the website. That server reads your request and sends back all the pieces: the "
-            "text, the images, the layout instructions. "
-            "Your browser collects all those pieces and assembles them into the page you see. It reads "
-            "the layout code to know where every element goes, downloads the images, and applies the "
-            "styling. All of this happens in about 200 milliseconds. "
-            "So the next time a website loads instantly, remember: your request just traveled halfway "
-            "around the world and back."
+            "Your browser does not actually know where that website lives. "
+            "So it asks a special server called a DNS server, which works like a phone book for the internet. "
+            "It translates the human-readable name you typed into a unique number address, called an IP address. "
+            "Without this step, your browser would have no idea where to go. "
+            "Next, your request travels through cables, sometimes stretching thousands of miles under the ocean, "
+            "to reach the server that holds the website. That server reads your request and sends back all the "
+            "pieces: the text, the images, the layout instructions. "
+            "Your browser then collects all those pieces and assembles them into the page you see. "
+            "It reads the layout code to know where every element goes, downloads the images one by one, "
+            "and applies the styling rules. "
+            "All of this happens in about 200 milliseconds — faster than the blink of an eye. "
+            "So the next time a page loads instantly, remember: your request just traveled halfway "
+            "around the world and back, all before you noticed."
         ),
         "beats": [
-            {"text": "Every time you type a website address, something incredible happens in less "
-                     "than a second.",
+            {"text": "Every time you type a website address, something incredible happens in less than a second. "
+                     "Your browser does not actually know where that website lives.",
              "query": "person typing laptop",
              "visual_hint": {"type": "stock_footage",
                              "description": "Person typing a URL into a browser"}},
-            {"text": "Your browser does not actually know where that website lives. So it asks a "
-                     "special server called a DNS server, which works like a phone book for the "
-                     "internet. It translates the name you typed into a number address.",
+            {"text": "So it asks a special server called a DNS server, which works like a phone book for the internet. "
+                     "It translates the human-readable name you typed into a unique number address, called an IP address. "
+                     "Without this step, your browser would have no idea where to go.",
              "query": "server room data center",
              "visual_hint": {"type": "process_flow",
                              "description": "Browser sends request to DNS server, gets IP address back",
                              "components": ["browser", "arrow", "dns_server", "arrow", "ip_address"],
                              "label": "DNS Lookup"}},
-            {"text": "Your request then travels through cables, sometimes under the ocean, to reach "
-                     "the server that holds the website. That server reads your request and sends back "
-                     "all the pieces: the text, the images, the layout instructions.",
+            {"text": "Next, your request travels through cables, sometimes stretching thousands of miles under the ocean, "
+                     "to reach the server that holds the website. That server reads your request and sends back all the "
+                     "pieces: the text, the images, the layout instructions.",
              "query": "undersea internet cable",
              "visual_hint": {"type": "diagram",
-                             "description": "Data traveling through undersea cables to a web server",
+                             "description": "Animated data packet traveling through undersea fiber cables to a web server",
                              "components": ["computer", "cable", "ocean", "server"],
                              "label": "Data Request"}},
-            {"text": "Your browser collects all those pieces and assembles them into the page you see. "
-                     "It reads the layout code to know where every element goes, downloads the images, "
-                     "and applies the styling. All of this happens in about 200 milliseconds.",
+            {"text": "Your browser then collects all those pieces and assembles them into the page you see. "
+                     "It reads the layout code to know where every element goes, downloads the images one by one, "
+                     "and applies the styling rules.",
              "query": "website loading browser",
              "visual_hint": {"type": "process_flow",
                              "description": "Browser assembling HTML, CSS, and images into a webpage",
                              "components": ["html_code", "css_style", "images", "arrow", "webpage"],
                              "label": "Page Rendering"}},
-            {"text": "So the next time a website loads instantly, remember: your request just traveled "
-                     "halfway around the world and back.",
+            {"text": "All of this happens in about 200 milliseconds — faster than the blink of an eye.",
+             "query": "fast speed light",
+             "visual_hint": {"type": "text_card",
+                             "description": "200ms — faster than a blink",
+                             "label": "200 Milliseconds"}},
+            {"text": "So the next time a page loads instantly, remember: your request just traveled halfway "
+                     "around the world and back, all before you noticed.",
              "query": "earth globe network",
              "visual_hint": {"type": "stock_footage",
                              "description": "Globe with network connections lighting up"}},
@@ -397,48 +404,56 @@ _FALLBACK_VARIANTS = (
         "tags": ["shorts", "ai", "rag", "explained", "technology"],
         "narration": (
             "When you ask an AI a question, it normally guesses from what it memorized during training. "
-            "But what if you need a real, sourced answer? That is where RAG comes in. "
-            "RAG stands for Retrieval Augmented Generation. Instead of guessing, the AI first searches "
-            "a database of real documents, like a student checking their notes before answering a test. "
-            "It finds the most relevant passages and reads them. Then it uses those passages as context "
-            "to generate an answer grounded in actual information. "
-            "The key difference is that the AI is not making things up. It is quoting from real sources, "
-            "which means you can verify what it says. "
-            "Think of it like this: a regular AI is answering from memory, but a RAG-powered AI is "
-            "answering with its textbook open. That is why RAG answers tend to be more accurate and "
-            "more trustworthy."
+            "But what if you need a real, verified answer? That is where RAG comes in. "
+            "RAG stands for Retrieval Augmented Generation. "
+            "Instead of relying only on memory, the AI first searches a database of real documents, "
+            "like a student checking their notes before answering a test question. "
+            "It scores thousands of passages in milliseconds and pulls the most relevant ones to the top. "
+            "It finds the best matching passages and reads them carefully. "
+            "Then it uses those passages as context to write an answer grounded in actual information. "
+            "The key difference is that the AI is not inventing facts. It is drawing directly from real sources, "
+            "which means you can check and verify exactly what it says. "
+            "Think of it like this: a regular AI answers from memory alone, "
+            "but a RAG-powered AI answers with its textbook open right in front of it. "
+            "That is why RAG-powered answers tend to be far more accurate, more detailed, and far more trustworthy."
         ),
         "beats": [
-            {"text": "When you ask an AI a question, it normally guesses from what it memorized during "
-                     "training. But what if you need a real, sourced answer? That is where RAG comes in.",
+            {"text": "When you ask an AI a question, it normally guesses from what it memorized during training. "
+                     "But what if you need a real, verified answer? That is where RAG comes in.",
              "query": "artificial intelligence chatbot",
              "visual_hint": {"type": "text_card",
                              "description": "Title: What is RAG?",
                              "label": "Retrieval Augmented Generation"}},
-            {"text": "RAG stands for Retrieval Augmented Generation. Instead of guessing, the AI first "
-                     "searches a database of real documents, like a student checking their notes before "
-                     "answering a test.",
+            {"text": "RAG stands for Retrieval Augmented Generation. "
+                     "Instead of relying only on memory, the AI first searches a database of real documents, "
+                     "like a student checking their notes before answering a test question.",
              "query": "database search documents",
              "visual_hint": {"type": "process_flow",
                              "description": "Query goes to document database, retrieves relevant passages",
                              "components": ["question", "arrow", "database", "arrow", "documents"],
                              "label": "Step 1: Retrieve"}},
-            {"text": "It finds the most relevant passages and reads them. Then it uses those passages as "
-                     "context to generate an answer grounded in actual information.",
+            {"text": "It scores thousands of passages in milliseconds and pulls the most relevant ones to the top. "
+                     "It finds the best matching passages and reads them carefully.",
+             "query": "data ranking search results",
+             "visual_hint": {"type": "diagram",
+                             "description": "Animated ranking bars of scored document passages being sorted in real time",
+                             "components": ["passages", "score_bars", "arrow", "top_results"],
+                             "label": "Relevance Scoring"}},
+            {"text": "Then it uses those passages as context to write an answer grounded in actual information. "
+                     "The key difference is that the AI is not inventing facts.",
              "query": "ai processing data",
              "visual_hint": {"type": "diagram",
-                             "description": "AI model receiving retrieved documents as context input",
+                             "description": "AI model receiving retrieved documents as context input, generating a verified answer",
                              "components": ["documents", "arrow", "ai_model", "arrow", "answer"],
                              "label": "Step 2: Generate"}},
-            {"text": "The key difference is that the AI is not making things up. It is quoting from real "
-                     "sources, which means you can verify what it says.",
+            {"text": "It is drawing directly from real sources, which means you can check and verify exactly what it says.",
              "query": "verified checkmark document",
              "visual_hint": {"type": "text_card",
                              "description": "Key difference: answers grounded in real sources",
                              "label": "Verifiable Answers"}},
-            {"text": "Think of it like this: a regular AI is answering from memory, but a RAG-powered AI "
-                     "is answering with its textbook open. That is why RAG answers tend to be more accurate "
-                     "and more trustworthy.",
+            {"text": "Think of it like this: a regular AI answers from memory alone, "
+                     "but a RAG-powered AI answers with its textbook open right in front of it. "
+                     "That is why RAG-powered answers tend to be far more accurate, more detailed, and far more trustworthy.",
              "query": "student reading textbook",
              "visual_hint": {"type": "stock_footage",
                              "description": "Student studying with an open textbook"}},
@@ -451,59 +466,59 @@ _FALLBACK_VARIANTS = (
                        "Here's the science in 60 seconds. #shorts #science #explained",
         "tags": ["shorts", "science", "microwave", "explained", "howthingswork"],
         "narration": (
-            "A microwave does not actually heat your food the way an oven does. It does something "
-            "completely different. "
-            "Inside the microwave, there is a device called a magnetron. It converts electricity into "
-            "invisible waves called microwaves, which are a type of electromagnetic radiation. "
-            "These waves pass through the food and hit water molecules. Water molecules have a positive "
-            "end and a negative end, like tiny magnets. When the microwaves hit them, the molecules start "
-            "spinning back and forth, millions of times per second. "
-            "All that spinning creates friction. And friction creates heat. That is how your food gets "
-            "hot from the inside out. "
-            "This is also why dry foods do not heat well in a microwave, because there are fewer water "
-            "molecules to spin. And why the plate sometimes stays cool while the food is burning hot. "
-            "So your microwave is not really cooking with heat. It is shaking water molecules until they "
-            "get hot on their own."
+            "A microwave does not actually heat your food the way an oven does. "
+            "It does something completely different, and the science behind it is fascinating. "
+            "Inside every microwave, there is a device called a magnetron. "
+            "It converts electrical energy into invisible waves called microwaves, "
+            "which are a form of electromagnetic radiation, sitting between radio waves and infrared light on the spectrum. "
+            "These waves travel through your food and specifically target water molecules. "
+            "Water molecules are not perfectly balanced. They have a positive end and a negative end, just like a tiny magnet. "
+            "When the alternating microwave field hits them, the molecules start frantically flipping back and forth, "
+            "billions of times per second. "
+            "All that rapid movement creates friction between the molecules. "
+            "And friction generates heat. That is how your food gets hot from the inside out, not from the outside in. "
+            "This is also why dry foods like crackers barely warm up in a microwave: almost no water molecules to spin. "
+            "And it explains why the plate stays cool while the food gets scalding hot. "
+            "So your microwave is not really cooking at all. It is just shaking water molecules until they heat themselves."
         ),
         "beats": [
-            {"text": "A microwave does not actually heat your food the way an oven does. It does something "
-                     "completely different.",
+            {"text": "A microwave does not actually heat your food the way an oven does. "
+                     "It does something completely different, and the science behind it is fascinating.",
              "query": "microwave oven kitchen",
              "visual_hint": {"type": "stock_footage",
                              "description": "Person putting food in a microwave oven"}},
-            {"text": "Inside the microwave, there is a device called a magnetron. It converts electricity "
-                     "into invisible waves called microwaves, which are a type of electromagnetic radiation.",
-             "query": "electromagnetic waves",
+            {"text": "Inside every microwave, there is a device called a magnetron. "
+                     "It converts electrical energy into invisible waves called microwaves, "
+                     "which are a form of electromagnetic radiation, sitting between radio waves and infrared light on the spectrum.",
+             "query": "electromagnetic waves spectrum",
              "visual_hint": {"type": "diagram",
-                             "description": "Magnetron emitting microwave radiation inside the oven",
-                             "components": ["magnetron", "waves", "food"],
-                             "label": "Magnetron"}},
-            {"text": "These waves pass through the food and hit water molecules. Water molecules have a "
-                     "positive end and a negative end, like tiny magnets. When the microwaves hit them, the "
-                     "molecules start spinning back and forth, millions of times per second.",
+                             "description": "Electromagnetic spectrum showing microwave band between radio and infrared, with animated wave patterns",
+                             "components": ["spectrum_bar", "microwave_zone", "magnetron", "waves"],
+                             "label": "Magnetron → Microwaves"}},
+            {"text": "These waves travel through your food and specifically target water molecules. "
+                     "Water molecules are not perfectly balanced. They have a positive end and a negative end, just like a tiny magnet.",
              "query": "water molecule model",
              "visual_hint": {"type": "diagram",
-                             "description": "Water molecules vibrating and spinning when hit by microwaves",
-                             "components": ["microwave_beam", "water_molecule", "rotation_arrows"],
+                             "description": "Zoomed-in animated diagram of a water molecule with positive and negative poles labeled, sitting in a microwave field",
+                             "components": ["water_molecule", "positive_pole", "negative_pole", "field_arrows"],
+                             "label": "Polar Molecule"}},
+            {"text": "When the alternating microwave field hits them, the molecules start frantically flipping back and forth, "
+                     "billions of times per second. All that rapid movement creates friction between the molecules.",
+             "query": "molecular vibration physics",
+             "visual_hint": {"type": "diagram",
+                             "description": "Dozens of water molecules spinning and vibrating chaotically, collision sparks between them",
+                             "components": ["molecules", "rotation_arrows", "friction_sparks"],
                              "label": "Molecular Friction"}},
-            {"text": "All that spinning creates friction. And friction creates heat. That is how your food "
-                     "gets hot from the inside out.",
+            {"text": "And friction generates heat. That is how your food gets hot from the inside out, not from the outside in. "
+                     "This is also why dry foods like crackers barely warm up: almost no water molecules to spin.",
              "query": "hot food steam",
              "visual_hint": {"type": "text_card",
-                             "description": "Spinning → Friction → Heat",
+                             "description": "Spinning → Friction → Heat (inside-out)",
                              "label": "Friction = Heat"}},
-            {"text": "This is also why dry foods do not heat well in a microwave, because there are fewer "
-                     "water molecules to spin. And why the plate sometimes stays cool while the food is "
-                     "burning hot.",
-             "query": "microwave plate food",
-             "visual_hint": {"type": "stock_footage",
-                             "description": "Hot food on a cool plate from a microwave"}},
-            {"text": "So your microwave is not really cooking with heat. It is shaking water molecules until "
-                     "they get hot on their own.",
+            {"text": "So your microwave is not really cooking at all. It is just shaking water molecules until they heat themselves.",
              "query": "microwave oven close up",
-             "visual_hint": {"type": "text_card",
-                             "description": "Summary: Microwaves shake water molecules → heat",
-                             "label": "Not Heat — Vibration"}},
+             "visual_hint": {"type": "stock_footage",
+                             "description": "Close-up of food rotating inside a microwave"}},
         ],
     },
 )
