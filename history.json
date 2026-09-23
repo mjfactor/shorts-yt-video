@@ -926,5 +926,24 @@
       "Great White Shark",
       "Shortfin Mako Shark"
     ]
+  },
+  {
+    "date": "2026-09-23_042845",
+    "title": "How Do Noise-Canceling Headphones Work? 🎧?",
+    "niche": "explainer",
+    "tags": [
+      "noise canceling",
+      "headphones",
+      "science",
+      "physics",
+      "how it works"
+    ],
+    "narration": "Have you ever wondered how headphones can magically delete the loud world around you? It feels like actual magic, but it is pure science. Sound does not just float around in the air as random noise. Sound travels in waves, exactly like ripples moving across water when you drop a tiny stone into it. Inside your headphones, a tiny microphone listens constantly to the noises outside in your room. This microphone acts like a tiny spy, quickly recording every single outside sound wave rushing toward your ears. Next, a tiny computer chip inside the headphones looks at that incoming sound wave right away. The computer chip does something super clever. It creates a brand new sound wave that is the exact opposite of the outside noise. Think of it like taking a wave on water and adding another wave that fills in the exact low spots. When these two opposite sound waves smash straight into each other, they cancel each other out completely. This special trick is called phase inversion. The crashing waves trap the sound energy and turn it into total silence before it reaches your eardrum. So that is why your headphones use clever math and colliding sound waves to give you peace and quiet.",
+    "bed": "bgm3.mp3",
+    "videoId": "0v9anZFnY_A",
+    "tiktokBufferPostId": "6ab3582b98ae6feaa624abd5",
+    "topic": "How do noise-canceling headphones work",
+    "topicSource": "ai",
+    "category": ""
   }
 ]
