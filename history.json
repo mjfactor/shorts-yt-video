@@ -945,5 +945,24 @@
     "topic": "How do noise-canceling headphones work",
     "topicSource": "ai",
     "category": ""
+  },
+  {
+    "date": "2026-09-23_052523",
+    "title": "How Does a Smoke Detector Work? 🚨?",
+    "niche": "explainer",
+    "tags": [
+      "smoke detector",
+      "how it works",
+      "science experiment",
+      "home safety",
+      "physics"
+    ],
+    "narration": "Have you ever wondered how a tiny plastic box on your ceiling knows a fire is starting before you even smell smoke? Inside that plastic cover sits a microscopic piece of a radioactive metal. It sounds scary, but it is totally safe and actually saves lives every single day. This special metal shoots out a tiny, invisible stream of electrically charged particles into a small open chamber. These particles bump into air molecules and create a steady, tiny electrical current that flows through the space. Normal air flows through freely, and the current stays completely stable. But the moment a fire starts, invisible smoke particles drift up into the ceiling box and float right into that open chamber. The heavy smoke gets in the way and blocks the tiny charged particles from moving freely. The electrical current suddenly drops and weakens. The smart computer chip inside the detector notices this drop instantly. It sends a loud, piercing signal to the built-in speaker. So that is how a microscopic metal speck and a tiny electrical current team up to wake you up and keep you safe from danger.",
+    "bed": "bgm4.mp3",
+    "videoId": "K6hE4i91phI",
+    "tiktokBufferPostId": "6ab36677340f92dcbe21efbb",
+    "topic": "How does a smoke detector work?",
+    "topicSource": "ai",
+    "category": "engineering"
   }
 ]
