@@ -386,7 +386,7 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
             try:
                 url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                        f"{model}:generateContent")
-                raw = C._fetch_gemini(url, payload)
+                raw = C._fetch_gemini(url, payload, tries=1, backoff=0)
                 text = raw["candidates"][0]["content"]["parts"][0]["text"]
                 text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
                 data = json.loads(text)

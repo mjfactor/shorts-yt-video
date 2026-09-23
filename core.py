@@ -138,9 +138,9 @@ GEMINI_TTS_VOICES = ([v.strip() for v in
 # Calibrated via gentle atempo adjustment. 0 = unadjusted natural speed.
 GEMINI_TTS_TARGET_WPM = _env_int("GEMINI_TTS_TARGET_WPM", 145)
 DEFAULT_GEMINI_TTS_STYLE = (
-    "Read in a natural, articulate documentary voice with steady, engaging "
+    "Read in a natural, articulate documentary voice with steady, even "
     "pacing (~145 words per minute), confident delivery, and authentic storytelling tone. "
-    "Polished and dynamic, with clear, grounded emphasis on each reveal."
+    "Polished and steady, with clear, grounded emphasis throughout."
 )
 # Resonant alternate body style: authoritative countdown delivery, confident and weighty.
 DEEP_GEMINI_TTS_STYLE = (
@@ -1011,16 +1011,16 @@ def _gemini_tts_beat(text: str, voice: str, topic: str = "",
     """
     if not GEMINI_KEYS:
         raise ValueError("GEMINI_API_KEY missing (TTS_ENGINE=gemini needs it)")
-    if topic:
-        base_style = pick_tts_style(topic, text, beat_idx, total_beats)
-    elif GEMINI_TTS_STYLE_EXPLICIT:
+    if GEMINI_TTS_STYLE_EXPLICIT:
         base_style = GEMINI_TTS_STYLE
+    elif topic:
+        base_style = pick_tts_style(topic, text, beat_idx, total_beats)
     elif (RUN_TONE or "adaptive") == "deep":
         base_style = DEEP_GEMINI_TTS_STYLE
     else:
         base_style = pick_tts_style("", text, beat_idx, total_beats) if beat_idx >= 0 else DEFAULT_GEMINI_TTS_STYLE
 
-    prefix = (GEMINI_TTS_HOOK_PREFIX if (is_hook or beat_idx == 0) and not topic else "")
+    prefix = (GEMINI_TTS_HOOK_PREFIX if (is_hook or beat_idx == 0) and not topic and not GEMINI_TTS_STYLE_EXPLICIT else "")
     prompt = f"{prefix}{base_style} Say the following text:\n\n{text}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -1219,7 +1219,7 @@ def notify_failure(error: Exception):
 SUB_STYLE = ("FontName=DejaVu Sans,FontSize=34,Bold=-1,"
              "PrimaryColour=&H0000FFFF,OutlineColour=&HFF000000,"
              "BorderStyle=1,Outline=3,Shadow=1,"
-             "Alignment=8,MarginV=320,WrapStyle=0")
+             "Alignment=8,MarginV=240,WrapStyle=0")
 
 
 def _srt_to_ass(srt: Path) -> Path:
@@ -1263,7 +1263,7 @@ def _srt_to_ass(srt: Path) -> Path:
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         "Style: Default,DejaVu Sans,34,&H0000FFFF,&H000019FF,&HFF000000,"
-        "&H00000000,-1,0,0,0,100,100,0,0,1,3,1,8,10,10,320,1\n"
+        "&H00000000,-1,0,0,0,100,100,0,0,1,3,1,8,10,10,240,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -2322,7 +2322,7 @@ def _beat_synonyms(beats: list[dict] | None) -> list[list[str]]:
         try:
             url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                    f"{model}:generateContent")
-            raw = _fetch_gemini(url, payload, timeout=20)
+            raw = _fetch_gemini(url, payload, timeout=20, tries=1, backoff=0)
             text = raw["candidates"][0]["content"]["parts"][0]["text"]
             text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             lists = json.loads(text).get("synonyms")
