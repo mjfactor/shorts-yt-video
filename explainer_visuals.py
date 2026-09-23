@@ -248,7 +248,11 @@ Write a Python function `def render_frame(t: float, W: int, H: int, draw, pal: d
 `t` goes from 0.0 to 1.0 representing time. W=1080, H=1920.
 `pal` is a color palette dict with keys: bg_top, bg_bot, accent, accent2, text, muted (all RGB tuples).
 The visual should explain this concept: {json.dumps(hint)}
-The narrator is saying: "{text}"
+
+CRITICAL LAYOUT RULE: Keep ALL drawing within y=400 to y=1920 (bottom 87% of frame).
+The top 400px (y=0 to y=400) is reserved for burned-in subtitles at the top of the screen — do NOT draw anything there.
+
+DO NOT draw the narration text anywhere in the frame. Do NOT render what the narrator is saying as a caption, subtitle, label, or any text block. The subtitle system handles that separately. Focus 100% on diagrams, animations, and visual elements only.
 
 You have access to these pre-defined helper functions in the global scope (do NOT redefine them):
 - _draw_box_component(draw, x, y, w, h, label, palette, is_active=False)
@@ -262,12 +266,39 @@ You have access to these pre-defined helper functions in the global scope (do NO
 Output ONLY raw valid Python code. No markdown formatting, no explanations, no ` ```python ` blocks.
 Define `def render_frame(...)`. Do not call it. Do not import anything.
 """
+    # Try OpenRouter first (Qwen is a strong coder and avoids burning Gemini quota)
+    if core.OPENROUTER_KEY:
+        import requests
+        or_model = os.getenv(
+            "OPENROUTER_VISUAL_MODEL", "qwen/qwen3-8-27b:free"
+        ).strip()
+        try:
+            core.log(f"Beat {beat_idx + 1}: Generating Pillow code via OpenRouter ({or_model})...")
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {core.OPENROUTER_KEY}",
+                         "Content-Type": "application/json"},
+                json={"model": or_model,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "temperature": 0.2,
+                      "max_tokens": 8192},
+                timeout=40,
+            )
+            r.raise_for_status()
+            code = r.json()["choices"][0]["message"]["content"]
+            code = code.strip().removeprefix("```python").removeprefix("```").removesuffix("```").strip()
+            if code:
+                core.log(f"Beat {beat_idx + 1}: Pillow code generated via OpenRouter ({or_model}).")
+                return code
+        except Exception as e:
+            core.warn(f"Beat {beat_idx + 1}: OpenRouter visual failed ({e}), falling back to Gemini...")
+
+    # Fallback: Gemini
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
         "safetySettings": core._GEMINI_SAFETY_SETTINGS,
     }
-    
     for model in core.GEMINI_MODELS:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -275,10 +306,11 @@ Define `def render_frame(...)`. Do not call it. Do not import anything.
             code = raw["candidates"][0]["content"]["parts"][0]["text"]
             code = code.strip().removeprefix("```python").removeprefix("```").removesuffix("```").strip()
             core.mark_model_working(model)
+            core.log(f"Beat {beat_idx + 1}: Pillow code generated via Gemini ({model}).")
             return code
         except Exception as e:
-            core.warn(f"Code gen failed with {model}: {e}")
-            
+            core.warn(f"Beat {beat_idx + 1}: Gemini model {model} failed ({e}).")
+
     return ""
 
 
