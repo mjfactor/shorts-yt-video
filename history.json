@@ -945,5 +945,24 @@
     "topic": "How do noise-canceling headphones work",
     "topicSource": "ai",
     "category": ""
+  },
+  {
+    "date": "2026-09-23_045724",
+    "title": "How Does a Touchscreen Detect Your Finger?",
+    "niche": "explainer",
+    "tags": [
+      "touchscreen",
+      "how it works",
+      "technology",
+      "science",
+      "smartphone"
+    ],
+    "narration": "Have you ever wondered how glass knows exactly where you are pointing? Your phone screen is actually hiding a secret invisible web. It is made of millions of tiny microscopic wires. These wires store tiny amounts of invisible electricity. They form a giant grid right beneath the smooth surface. Your body is full of water and salt. This means your body naturally carries a tiny electrical charge. When your finger gets close to the glass, it attracts that electricity. It steals a tiny bit of the charge from the grid. The sensors underneath instantly notice that specific spot loses power. The phone computer measures the exact coordinates of the missing electricity. It calculates your finger position in a fraction of a millisecond. That is how a simple sheet of glass turns your touch into digital magic.",
+    "bed": "bgm4.mp3",
+    "videoId": "t5LpGrP2uaw",
+    "tiktokBufferPostId": "6ab3605e98ae6feaa625be86",
+    "topic": "How does a touchscreen detect your finger?",
+    "topicSource": "ai",
+    "category": "technology"
   }
 ]
