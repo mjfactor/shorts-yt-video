@@ -270,7 +270,7 @@ Define `def render_frame(...)`. Do not call it. Do not import anything.
     if core.OPENROUTER_KEY:
         import requests
         or_model = os.getenv(
-            "OPENROUTER_VISUAL_MODEL", "qwen/qwen3-8-27b:free"
+            "OPENROUTER_VISUAL_MODEL", "qwen/qwen3.8-27b:free"
         ).strip()
         try:
             core.log(f"Beat {beat_idx + 1}: Generating Pillow code via OpenRouter ({or_model})...")

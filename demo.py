@@ -133,7 +133,6 @@ def render_demo(name: str, fixture_path: Path):
     # Create a dummy niche for the board_filter (no overlay)
     class _DemoNiche:
         MODE = "explainer"
-        BURN_SUBTITLES = False
         @staticmethod
         def board_filter(*a, **kw):
             return ""

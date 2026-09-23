@@ -14,7 +14,6 @@ import core as C
 
 MODE = "explainer"
 NICHE_LABEL = "how things actually work"
-BURN_SUBTITLES = False
 
 # ---------------------------------------------------------------------------
 # Topic pool: evergreen explainer topics across categories. One is drawn per
