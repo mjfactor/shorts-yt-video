@@ -926,5 +926,32 @@
       "Great White Shark",
       "Shortfin Mako Shark"
     ]
+  },
+  {
+    "date": "2026-09-23_131846",
+    "title": "5 Largest Commercial Airplanes",
+    "niche": "ranking",
+    "tags": [
+      "aviation",
+      "airplanes",
+      "aircraft",
+      "travel",
+      "engineering"
+    ],
+    "narration": "A massive shadow stretches across the tarmac, blocking out the sun as a double-decker giant settles onto the runway. This steel titan spans over eighty meters in width and carries nearly six hundred passengers at once. It is the king of the skies. Number 5 is the Boeing 777. This long-range jet features two powerful engines and carries over three hundred people across oceans. Number 4 is the Antonov An-124. This heavy lifter moves massive cargo loads and spans nearly seventy-five meters in length. Number 3 is the Boeing 747. This iconic plane changed travel forever with its distinctive hump and carries over four hundred travelers. Number 2 is the Airbus A350. This modern marvel uses advanced materials to fly over fifteen thousand kilometers without stopping to refuel. Number 1 is the Airbus A380. This enormous aircraft offers two full decks of cabin space and remains the largest passenger plane ever built. It dominates the airport with its sheer scale and impressive wingspan. Do you have a favorite commercial airplane that you prefer to fly on during your long international journeys or vacations? Please share your own ranking in the comments section below.",
+    "bed": "bgm3.mp3",
+    "videoId": "-ozpNgimulE",
+    "tiktokBufferPostId": "6ab3d55061c6feefc7ee9a23",
+    "topic": "largest commercial airplanes",
+    "topicSource": "ai",
+    "hookStyle": "sensory",
+    "vertical": "vehicles",
+    "items": [
+      "Boeing 777",
+      "Antonov An-124",
+      "Boeing 747",
+      "Airbus A350",
+      "Airbus A380"
+    ]
   }
 ]
