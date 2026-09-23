@@ -187,22 +187,6 @@ def _draw_box_component(draw: ImageDraw.Draw, x: int, y: int,
                   fill=text_color, font=font)
 
 
-def _draw_narration_card(draw: ImageDraw.Draw, text: str, palette: dict):
-    """Draw a dedicated lower card for spoken narration so it never collides with diagrams."""
-    card_x1, card_y1 = 60, 1480
-    card_x2, card_y2 = W - 60, 1820
-    bg = (palette["bg_bot"][0] // 2, palette["bg_bot"][1] // 2, palette["bg_bot"][2] // 2)
-    _draw_rounded_rect(draw, (card_x1, card_y1, card_x2, card_y2), radius=24,
-                       fill=bg, outline=(*palette["accent"], 60), width=2)
-
-    font = _font_regular(28)
-    lines = textwrap.wrap(text[:260], width=36)[:5]
-    total_h = len(lines) * 38
-    start_y = card_y1 + (card_y2 - card_y1 - total_h) // 2
-    for i, line in enumerate(lines):
-        bbox = draw.textbbox((0, 0), line, font=font)
-        tw = bbox[2] - bbox[0]
-        draw.text(((W - tw) // 2, start_y + i * 38), line, fill=palette["text"], font=font)
 
 
 def _draw_centered_text(draw: ImageDraw.Draw, text: str, y: int,
@@ -347,8 +331,6 @@ def build_scene(beat: dict, beat_idx: int, total_beats: int = 6,
     _draw_gradient_bg(base, pal["bg_top"], pal["bg_bot"])
     d_base = ImageDraw.Draw(base)
 
-    # Draw narration card on base so it doesn't have to be redrawn every frame
-    _draw_narration_card(d_base, text, pal)
 
     cmd = [
         "ffmpeg", "-y",

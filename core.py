@@ -1277,14 +1277,10 @@ def _subtitles_vf(srt: Path, niche=None):
     if not srt.exists():
         return None
     # Allow disabling burned subtitles via env var or niche property.
-    # For explainer Shorts, diagrams already display clear typography; burning
-    # yellow subtitles directly onto the canvas obscures visual components.
     burn_env = os.getenv("BURN_SUBTITLES", "").strip().lower()
     if burn_env in ("0", "false", "no", "off"):
         return None
     if getattr(niche, "BURN_SUBTITLES", None) is False:
-        return None
-    if getattr(niche, "MODE", "") == "explainer" and burn_env not in ("1", "true", "yes", "on"):
         return None
     try:
         target = _srt_to_ass(srt)
