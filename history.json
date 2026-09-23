@@ -918,5 +918,24 @@
     "topic": "How do noise-canceling headphones work?",
     "topicSource": "ai",
     "category": ""
+  },
+  {
+    "date": "2026-09-22_100737",
+    "title": "How Do Touchscreens Know Where You Touch? 📱?",
+    "niche": "explainer",
+    "tags": [
+      "touchscreen",
+      "how it works",
+      "smartphone",
+      "technology",
+      "science"
+    ],
+    "narration": "Have you ever wondered how your phone knows exactly where your finger is? The secret is an invisible grid of electricity hiding right beneath the glass. Inside your screen, there are tiny wires running up and down. Together, they create a weak electrical field across the entire surface. Your human body naturally holds a tiny electrical charge. When you bring your finger close to the screen, that tiny charge steals a little bit of electricity from the grid. The phone measures this sudden drop in power at different points along the wires. A computer chip instantly calculates the exact spot where the power dropped the most. That is how the screen instantly turns your invisible body electricity into a tap.",
+    "bed": "bgm3.mp3",
+    "videoId": "CMm3H0ChGsA",
+    "tiktokBufferPostId": "6ab2559eb093a512d288e5ab",
+    "topic": "How do touchscreens detect your finger?",
+    "topicSource": "ai",
+    "category": "technology"
   }
 ]
