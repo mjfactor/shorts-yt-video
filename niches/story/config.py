@@ -71,8 +71,10 @@ class StoryConfig(NicheConfig):
     # (typical portrait clips are smaller; the id cache skips re-downloads
     # on retry). Lower to 1 to restore one-clip-per-query behavior.
     clips_per_query: int = 2
-    # Optional BGM bed file (preview tools); empty = synthesized drone.
+    # Optional BGM bed file (preview tools); empty = pool/drone path.
     bed_path: str = ""
+    # Repo-root-relative glob for the random per-video BGM pool.
+    bgm_glob: str = "bgm*.mp3"
     story_genres: tuple[str, ...] = DEFAULT_GENRES
     # Word-timing model for the FINAL mix only.
     whisper_model: str = "base"
@@ -153,6 +155,7 @@ class StoryConfig(NicheConfig):
             pexels_key=env_str("PEXELS_API_KEY", "", "STORY_"),
             clips_per_query=env_int("CLIPS_PER_QUERY", 2, "STORY_"),
             bed_path=env_str("BED_PATH", "", "STORY_"),
+            bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_"),
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),
             whisper_model=env_str("WHISPER_MODEL", "base", "STORY_"),
             history_wps=env_float("HISTORY_WPS", 2.9, "STORY_"),

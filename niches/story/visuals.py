@@ -253,6 +253,23 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
     return clips, credits, used_ids
 
 
+def _pick_bgm(cfg: StoryConfig) -> Path | None:
+    """Bed source priority: explicit STORY_BED_PATH file → one random
+    bgm*.mp3 from the repo-root pool (sorted glob, random.choice per
+    video, logged) → None (caller synthesizes the drone)."""
+    if cfg.bed_path:
+        explicit = Path(cfg.bed_path)
+        if explicit.exists():
+            return explicit
+        warn(f"Story bed file missing ({explicit}); trying bgm pool.")
+    pool = sorted(Path().glob(cfg.bgm_glob or "bgm*.mp3"))
+    if pool:
+        pick = random.choice(pool)
+        log(f"Story BGM pool: picked {pick.name} ({len(pool)} files).")
+        return pick
+    return None
+
+
 def _seg_filter(speed: float) -> str:
     """Scale-to-cover + center-crop, then speed, fps, pixfmt.
 
@@ -418,13 +435,10 @@ def build_visuals(content: Content, narration: NarrationResult,
     log(f"Stage 4/6 captions: {len(words)} timed words → ASS burn "
         f"(after {card_end:.1f}s) + SRT upload.")
 
-    # Stage 5: BGM bed loop (mixed with voice in the final graph).
-    bed_src = Path(cfg.bed_path) if cfg.bed_path else None
-    if bed_src is not None and not bed_src.exists():
-        warn(f"Story bed file missing ({bed_src}); synthesizing drone.")
-        bed_src = None
+    # Stage 5: BGM bed (explicit file → random bgm pool → drone → silent).
     try:
-        bed = loop_bed(bed_src or synth_drone(total, workdir / "bed_raw.mp3"),
+        picked = _pick_bgm(cfg)
+        bed = loop_bed(picked or synth_drone(total, workdir / "bed_raw.mp3"),
                        total, workdir / "bed.mp3")
     except Exception as e:
         warn(f"Story bed failed ({e}); using silent bed.")

@@ -1554,5 +1554,48 @@ class TestClipUniqueness(unittest.TestCase):
             self.assertEqual(StoryConfig.from_env().clips_per_query, 3)
 
 
+class TestStoryBed(unittest.TestCase):
+    def _pool(self):
+        return [Path(f"bgm{i}.mp3") for i in (1, 2, 3)]
+
+    def test_pool_pick_random_logged(self):
+        cfg = StoryConfig(bed_path="", bgm_glob="bgm*.mp3")
+        with mock.patch.object(Path, "glob", return_value=self._pool()), \
+            mock.patch("niches.story.visuals.random.choice",
+                       side_effect=lambda seq: seq[1]), \
+            mock.patch("niches.story.visuals.log") as log_mock:
+            pick = story_visuals._pick_bgm(cfg)
+        self.assertEqual(pick, Path("bgm2.mp3"))
+        logged = " ".join(c[0][0] for c in log_mock.call_args_list)
+        self.assertIn("bgm2.mp3", logged)
+
+    def test_explicit_override_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            track = Path(tmp) / "mine.mp3"
+            track.write_bytes(b"fake")
+            cfg = StoryConfig(bed_path=str(track), bgm_glob="bgm*.mp3")
+            with mock.patch.object(Path, "glob",
+                                   side_effect=AssertionError("no glob")):
+                self.assertEqual(story_visuals._pick_bgm(cfg), track)
+
+    def test_empty_pool_means_drone(self):
+        cfg = StoryConfig(bed_path="", bgm_glob="bgm*.mp3")
+        with mock.patch.object(Path, "glob", return_value=[]):
+            self.assertIsNone(story_visuals._pick_bgm(cfg))
+
+    def test_missing_override_warns_then_drone(self):
+        cfg = StoryConfig(bed_path="no-such-track.mp3", bgm_glob="bgm*.mp3")
+        with mock.patch.object(Path, "glob", return_value=[]), \
+            mock.patch("niches.story.visuals.warn") as warn_mock:
+            self.assertIsNone(story_visuals._pick_bgm(cfg))
+        warned = " ".join(c[0][0] for c in warn_mock.call_args_list)
+        self.assertIn("no-such-track.mp3", warned)
+
+    def test_bgm_glob_config(self):
+        self.assertEqual(StoryConfig().bgm_glob, "bgm*.mp3")
+        with mock.patch.dict(os.environ, {"STORY_BGM_GLOB": "music/*.mp3"}):
+            self.assertEqual(StoryConfig.from_env().bgm_glob, "music/*.mp3")
+
+
 if __name__ == "__main__":
     unittest.main()

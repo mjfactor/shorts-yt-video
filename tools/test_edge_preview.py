@@ -111,7 +111,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--card", default=None,
                     help="card text; card overlay renders iff set")
     ap.add_argument("--bgm", default=None,
-                    help="BGM bed file (default: synthesized drone)")
+                    help="BGM bed file (default: random bgm pool, "
+                         "else synthesized drone)")
     args = ap.parse_args(argv)
 
     try:
