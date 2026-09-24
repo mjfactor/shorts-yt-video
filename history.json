@@ -980,5 +980,32 @@
       "African Bush Elephant",
       "Blue Whale"
     ]
+  },
+  {
+    "date": "2026-09-24_130808",
+    "title": "5 Deepest Lakes on Earth",
+    "niche": "ranking",
+    "tags": [
+      "lakes",
+      "geography",
+      "nature",
+      "earth",
+      "science"
+    ],
+    "narration": "Picture a massive slab of ice nearly four kilometers thick, hiding a dark, secret world locked away from the sun. This frozen giant sits at the top of our list as the deepest point of all. At number 5, Lake Malawi. This African lake reaches depths of over seven hundred meters. It holds a huge variety of unique fish species. At number 4, Lake Vostok. This subglacial lake sits under nearly four kilometers of Antarctic ice. It stays liquid due to extreme pressure. At number 3, the Caspian Sea. This giant saltwater lake plunges to over one thousand meters deep. It is the largest inland body of water on our planet. At number 2, Lake Tanganyika. This long rift lake drops down over one thousand four hundred meters. It is one of the oldest lakes in the world. At number 1, Lake Baikal. This Russian wonder reaches a staggering depth of nearly one thousand six hundred meters. It contains about twenty percent of all the unfrozen surface fresh water on Earth. Which of these mysterious deep lakes would you want to visit first? Share your thoughts and tell us your own personal ranking in the comments below.",
+    "bed": "bgm5.mp3",
+    "videoId": "Y5qtBn3dlSo",
+    "tiktokBufferPostId": "6ab524e5154cd864e5bdd003",
+    "topic": "deepest lakes in the world",
+    "topicSource": "ai",
+    "hookStyle": "sensory",
+    "vertical": "nature",
+    "items": [
+      "Lake Malawi",
+      "Lake Vostok",
+      "Caspian Sea",
+      "Lake Tanganyika",
+      "Lake Baikal"
+    ]
   }
 ]
