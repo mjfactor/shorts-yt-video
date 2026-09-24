@@ -66,6 +66,11 @@ class StoryConfig(NicheConfig):
     bg_dir: str = "assets/backgrounds"
     pexels_key: str = ""
     pexels_cache_dir: str = "assets/pexels_cache"
+    # Clips fetched per Pexels query (distinct videos). Cap math for a
+    # full run: ~20 queries x K=2 x ~10MB worst case ≈ ~400MB transient
+    # (typical portrait clips are smaller; the id cache skips re-downloads
+    # on retry). Lower to 1 to restore one-clip-per-query behavior.
+    clips_per_query: int = 2
     # Optional BGM bed file (preview tools); empty = synthesized drone.
     bed_path: str = ""
     story_genres: tuple[str, ...] = DEFAULT_GENRES
@@ -146,6 +151,7 @@ class StoryConfig(NicheConfig):
             avatar_path=env_str("AVATAR_PATH", "assets/avatar.png", "STORY_"),
             bg_dir=env_str("BG_DIR", "assets/backgrounds", "STORY_"),
             pexels_key=env_str("PEXELS_API_KEY", "", "STORY_"),
+            clips_per_query=env_int("CLIPS_PER_QUERY", 2, "STORY_"),
             bed_path=env_str("BED_PATH", "", "STORY_"),
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),
             whisper_model=env_str("WHISPER_MODEL", "base", "STORY_"),

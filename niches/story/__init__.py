@@ -1,4 +1,4 @@
-"""Story niche: 80-85s Reddit-style stories with BG visuals + card.
+"""Story niche: 100-120s Reddit-style stories with BG visuals + card.
 
 Stages: content.generate_content -> narration.narrate ->
 visuals.build_visuals. Engine helpers only; never imports core.py.
@@ -16,7 +16,7 @@ from . import visuals as _visuals
 from .config import MODE, StoryConfig
 
 NAME = "story"
-LABEL = "reddit-style stories (80-85s)"
+LABEL = "reddit-style stories (100-120s)"
 
 
 class StoryNiche(Niche):

@@ -57,18 +57,34 @@ def _ensure_local_clips(cfg, total: float, workdir: Path) -> None:
         return
     gen = workdir / "preview_bg"
     gen.mkdir(parents=True, exist_ok=True)
-    seg = max(0.5, float(total) / 3)
-    for i, src in enumerate(("testsrc", "rgbtestsrc", "smptebars")):
+    # Enough DISTINCT clips that the strict no-repeat planner never hits
+    # SHORTFALL on long previews: one clip per ~2.5s of video, capped.
+    import math
+    n = min(48, max(12, math.ceil(float(total) / 2.5)))
+    palette = ("0x1a3a5c", "0x5c1a3a", "0x1a5c3a", "0x5c4a1a", "0x3a1a5c",
+               "0x1a5c5c", "0x6b2d0f", "0x0f4c4c")
+    for i in range(n):
+        kind = i % 4
+        if kind == 0:
+            lavfi = (f"testsrc=size=1280x720:rate=30:duration=8:"
+                     f"decimals={i % 3 + 1}")
+        elif kind == 1:
+            lavfi = "rgbtestsrc=size=1280x720:rate=30:duration=8"
+        elif kind == 2:
+            lavfi = (f"gradients=size=1280x720:rate=30:duration=8:"
+                     f"speed={0.1 + 0.05 * (i % 5)}")
+        else:
+            lavfi = (f"color=c={palette[i % len(palette)]}:"
+                     f"s=1280x720:r=30:d=8")
         run_ffmpeg(["ffmpeg", "-y",
-                    "-f", "lavfi", "-i",
-                    f"{src}=size=1280x720:rate=30:duration={seg}",
+                    "-f", "lavfi", "-i", lavfi,
                     "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,"
                            "crop=1080:1920",
                     "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                    "-preset", "veryfast", str(gen / f"bg{i}.mp4")],
+                    "-preset", "veryfast", str(gen / f"bg{i:02d}.mp4")],
                    f"preview-bg-{i}")
     cfg.bg_dir = str(gen)
-    log(f"Preview BG: generated 3 testsrc clips ({seg:.1f}s each).")
+    log(f"Preview BG: generated {n} distinct clips (8.0s each).")
 
 
 def _preview_wav(src_mp3: Path, out_wav: Path) -> Path:

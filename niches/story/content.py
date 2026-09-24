@@ -167,6 +167,9 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
     if card_text and not _starts_with_card(story, card_text):
         raise ValueError("'story_text' must open with the card line "
                          "verbatim as its first sentence")
+    if card_text and len(card_text.split()) > 8:
+        raise ValueError(f"'card_text' must be <=8 words "
+                         f"(got {len(card_text.split())})")
     key_words = _str_list(data.get("key_words"))
     bg_queries = _str_list(data.get("bg_queries"))[:8]
     if len(bg_queries) < 5:
@@ -174,19 +177,25 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
     ending = str(data.get("ending_type", "") or "").strip().lower()
     if ending not in ("payoff", "cliffhanger"):
         raise ValueError("'ending_type' must be 'payoff' or 'cliffhanger'")
+    want_slots = ("20-30s", "50-60s", "80-90s")
     rehooks = []
     for rh in (data.get("rehooks") or []):
         if not isinstance(rh, dict):
             raise ValueError("each 'rehooks' entry must be an object")
         at = str(rh.get("at", "")).strip()
         line = str(rh.get("line", "")).strip()
-        if at not in ("20-30s", "50-60s"):
-            raise ValueError("'rehooks[].at' must be '20-30s' or '50-60s'")
+        if at not in want_slots:
+            raise ValueError("'rehooks[].at' must be '20-30s', '50-60s' "
+                             "or '80-90s'")
         if not line or line not in story:
             raise ValueError("'rehooks[].line' must be a line from the story")
         rehooks.append({"at": at, "line": line})
-    if len(rehooks) < 2:
-        raise ValueError("'rehooks' must hold the 20-30s and 50-60s re-hooks")
+    if len(rehooks) != 3:
+        raise ValueError("'rehooks' must hold exactly 3 re-hooks "
+                         "(20-30s, 50-60s and 80-90s)")
+    if sorted(r["at"] for r in rehooks) != sorted(want_slots):
+        raise ValueError("'rehooks' must cover each slot once: 20-30s, "
+                         "50-60s and 80-90s")
     beats = data.get("beats") or []
     joined = " ".join(str(b.get("text", "")) for b in beats
                       if isinstance(b, dict)).strip()
@@ -312,9 +321,17 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "stake or question that re-grabs scrollers).\n"
         "5. Twist: one surprising turn, with a second re-hook line that "
         "lands around 50-60 seconds in.\n"
-        "6. Ending: a punchy payoff line, or a cliffhanger that begs for part 2 "
+        "6. Post-twist escalation into the payoff: a THIRD re-hook line "
+        "landing around 80-90 seconds in (a fresh stake or question for "
+        "the back half, keeping late scrollers to the final line).\n"
+        "7. Ending: a punchy payoff line, or a cliffhanger that begs for part 2 "
         "(set ending_type to 'payoff' or 'cliffhanger'; only cliffhangers may "
         "include part_2_seed, one sentence teasing the next part).\n\n"
+        "Hook style examples (voice reference only — never copy these lines, "
+        "always invent a fresh hook): 'My landlord kept my entire deposit "
+        "over a single nail hole.' 'My roommate ate my leftovers for the "
+        "last time tonight.' 'The hallway light flickered at exactly three "
+        "in the morning.' Each lands a stakes signal in the first second.\n\n"
         "story_text and narration must be IDENTICAL: the full spoken story, "
         f"{lo}-{hi} words (card line included in the total). "
         f"genre must echo '{genre}'. "
@@ -322,9 +339,9 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "moods) for dedup and visuals. bg_queries: 5-8 background-footage "
         "search queries, 1-3 concrete filmable words each "
         "(e.g. 'office desk night').\n\n"
-        "rehooks: exactly 2 objects {\"at\": \"20-30s\" | \"50-60s\", "
-        "\"line\": <exact story line>}. Each line must appear verbatim in "
-        "the story.\n\n"
+        "rehooks: exactly 3 objects {\"at\": \"20-30s\" | \"50-60s\" | "
+        "\"80-90s\", \"line\": <exact story line>}. Each line must appear "
+        "verbatim in the story.\n\n"
         "TTS-friendly text (strict): short sentences of at most 20 words, "
         "plain words, no emojis, no markdown, no symbols (* # _ ` | ~ @ ^ < > etc). "
         "Write numbers and ages naturally ('three in the morning', 'twenty bucks'). "
@@ -450,6 +467,8 @@ _FALLBACK_VARIANTS = (
              "line": "Then I found out my boss told everyone I was putting the whole project at risk."},
             {"at": "50-60s",
              "line": "So I printed every late night email and every weekend text, and I brought them to the big meeting."},
+            {"at": "80-90s",
+             "line": "The room went silent, and my boss never asked me to work a weekend again."},
         ],
         "beats": [
             {"text": ("I said no, then they moved my desk. My boss asked me "
@@ -490,6 +509,8 @@ _FALLBACK_VARIANTS = (
              "line": "So I learned his schedule. He slept until noon after his night shifts, every single day."},
             {"at": "50-60s",
              "line": "On day three, he knocked on my door, half asleep, and begged for mercy."},
+            {"at": "80-90s",
+             "line": "We made a deal that same morning."},
         ],
         "beats": [
             {"text": ("He drummed at midnight, I blended at seven. My "
@@ -499,8 +520,9 @@ _FALLBACK_VARIANTS = (
             {"text": ("So I learned his schedule. He slept until noon after "
                       "his night shifts, every single day."),
              "query": "man sleeping bed"},
-            {"text": ("I bought the loudest blender I could find, and every "
-                      "morning at seven, I made the thickest smoothie of my life. "
+            {"text": ("I bought the loudest blender I could find. "
+                      "Every morning at seven, I made the thickest smoothie "
+                      "of my life. "
                       "On day three, he knocked on my door, half asleep, and "
                       "begged for mercy. We made a deal that same morning. No "
                       "drums after ten, no blender before nine. We have been "
@@ -532,10 +554,12 @@ _FALLBACK_VARIANTS = (
              "line": "A small voice whispered, do not turn around, and then the line went dead."},
             {"at": "50-60s",
              "line": "Then every screen froze on the same frame, the back hallway, where something tall was standing."},
+            {"at": "80-90s",
+             "line": "I grabbed my keys and ran, and I never looked back."},
         ],
         "beats": [
             {"text": ("Do not turn around. I work the night shift at a gas "
-                      "station, and last Tuesday the phone rang at exactly "
+                      "station. Last Tuesday the phone rang at exactly "
                       "three in the morning."),
              "query": "gas station night"},
             {"text": ("A small voice whispered, do not turn around, and then "

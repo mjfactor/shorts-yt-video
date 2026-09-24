@@ -156,6 +156,16 @@ class TestSpecCard(unittest.TestCase):
         self.assertGreater(total, 0)
         self.assertLess(abs(left - right) / total, 0.15)
 
+    def test_worst_case_eight_words_fit_at_floor(self):
+        # Eight 12-char words must fit in 3 lines (32px floor), never clip.
+        from engine.overlay_card import _spec_wrap_text
+
+        worst = " ".join(["abcdefghijkl"] * 8)
+        lines, _font, size, _lh = _spec_wrap_text(
+            worst, "", 684, dict(overlay_card.SPEC_CARD_THEME))
+        self.assertLessEqual(len(lines), 3)
+        self.assertGreaterEqual(size, 32)
+
     def test_missing_avatar_fallback_initial(self):
         # nonexistent path -> solid circle + handle first letter, no crash
         tmp, result = _render(avatar_path="definitely/missing.png",
@@ -192,6 +202,38 @@ class TestSpecCard(unittest.TestCase):
                 "Montserrat ExtraBold", font_dir=d, _opener=opener)
             self.assertEqual(hit, d / "Montserrat-ExtraBold.ttf")
 
+    def test_find_bundled_font_family_and_subfamily_forms(self):
+        # Family-only, subfamily-only, combined, and split-token queries
+        # must all resolve the same cut (getname()[1] carries the weight).
+        mapping = {"M.ttf": ("Montserrat", "ExtraBold")}
+        opener = _fake_opener(mapping)
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "M.ttf").write_bytes(b"fake")
+            for needles in (("Montserrat",), ("ExtraBold",),
+                            ("Montserrat ExtraBold",),
+                            ("Montserrat", "ExtraBold")):
+                hit = overlay_card.find_bundled_font(
+                    *needles, font_dir=d, _opener=opener)
+                self.assertEqual(hit, d / "M.ttf", f"needles={needles}")
+
+    def test_find_bundled_font_tolerant_getname_shape(self):
+        # 1- and 3-tuple getname() shapes must not crash the matcher.
+        mapping = {"One.ttf": ("Solo",), "Three.ttf": ("Tri", "Bold", "X")}
+        opener = _fake_opener(mapping)
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "One.ttf").write_bytes(b"fake")
+            (d / "Three.ttf").write_bytes(b"fake")
+            self.assertEqual(
+                overlay_card.find_bundled_font(
+                    "Solo", font_dir=d, _opener=opener),
+                d / "One.ttf")
+            self.assertEqual(
+                overlay_card.find_bundled_font(
+                    "Tri", "Bold", font_dir=d, _opener=opener),
+                d / "Three.ttf")
+
     def test_find_bundled_font_filename_alone_never_matches(self):
         # internal name rules: a Montserrat filename with an Arial
         # interior must NOT match.
@@ -221,6 +263,73 @@ class TestSpecCard(unittest.TestCase):
                 avatar_path="no-such-avatar.png", out_png=out)
             self.assertTrue(result.exists())
             self.assertGreater(result.stat().st_size, 0)
+
+    def test_share_reads_as_forward_share(self):
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        overlay_card._draw_spec_share(d, 20, 20, color=(150, 150, 155, 255), size=44)
+        bbox = img.getchannel("A").getbbox()
+        assert bbox is not None
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        self.assertGreaterEqual(w, 36)
+        self.assertGreaterEqual(h, 36)
+
+    def test_custom_icon_stitching(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_d = Path(tmp)
+            # Create a bright green test icon
+            green_icon = tmp_d / "custom_heart.png"
+            test_img = Image.new("RGBA", (48, 48), (0, 255, 0, 255))
+            test_img.save(green_icon)
+
+            out = tmp_d / "stitched_card.png"
+            custom_theme = dict(overlay_card.SPEC_CARD_THEME)
+            custom_theme["heart_icon_path"] = str(green_icon)
+            overlay_card.render_spec_card(
+                CARD_TEXT, HIGHLIGHT, handle=HANDLE,
+                avatar_path="no-such-avatar.png", out_png=out,
+                theme=custom_theme)
+
+            with Image.open(out) as card_img:
+                px = card_img.convert("RGBA")
+                # Bright green pixel should be present from the stitched icon
+                has_green = any(p[0] < 50 and p[1] > 200 and p[2] < 50 and p[3] > 128
+                                for p in px.getdata())
+                self.assertTrue(has_green)
+
+    def test_upvote_reads_as_arrow(self):
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        overlay_card._draw_spec_upvote(d, 20, 20, color=(255, 69, 0, 255), size=44)
+        bbox = img.getchannel("A").getbbox()
+        assert bbox is not None
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        self.assertGreaterEqual(w, 30)
+        self.assertGreaterEqual(h, 35)
+
+    def test_satire_colors_present(self):
+        tmp, result = _render()
+        try:
+            from PIL import Image
+
+            with Image.open(result) as img:
+                px = img.convert("RGBA")
+                # Orange upvote pixels
+                has_orange = any(p[0] > 220 and p[1] > 50 and p[1] < 120 and p[2] < 50 and p[3] > 128
+                                 for p in px.getdata())
+                # Blue share pixels
+                has_blue = any(p[0] < 60 and p[1] > 120 and p[2] > 200 and p[3] > 128
+                               for p in px.getdata())
+                self.assertTrue(has_orange)
+                self.assertTrue(has_blue)
+        finally:
+            tmp.cleanup()
 
 
 class TestSpecCardFilter(unittest.TestCase):

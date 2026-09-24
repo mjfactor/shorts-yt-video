@@ -37,6 +37,10 @@ EVERGREEN_QUERIES = (
     "city night lights", "rain window night", "empty street dusk",
     "coffee shop morning", "highway cars night", "forest fog moody",
     "ocean waves dark", "office desk lamp",
+    # Satisfying-cleaning compilations (verified Pexels depth: 22K+ cleaning,
+    # 39.7K+ window-cleaning, 6-8K+ pressure-washing, 40K+ commercial).
+    "window cleaning", "pressure washing", "car wash",
+    "floor mopping", "soap sponge", "vacuum carpet",
 )
 GENRE_EVERGREEN = {
     "workplace": ("office desk night", "empty office hallway", "city office windows"),
@@ -68,13 +72,17 @@ def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
          clips: list[dict] | None = None) -> list[dict]:
     """Pure planner: segments summing to total_dur exactly (within 1 frame).
 
-    Rules: every out_duration in [SEG_MIN, SEG_MAX] (duration bounds win
-    over the segment-count range for tiny totals); last segment trims the
-    rounding drift; no clip in 4 consecutive segments; no overlapping
-    source window per video id; speeds in [1.15, 1.5]; each source window
-    (out_dur*speed) fits inside its clip. Aims for >=12 distinct clips
-    (logs when fewer are available). clips=[{id, duration}] overrides the
-    legacy n_clips count (which assumes 30s clips).
+    Hard rule: each clip id is used at most ONCE per video (no-repeat-4
+    and least-use stay as defense-in-depth but can never trigger a
+    repeat). Rules: every out_duration in [SEG_MIN, SEG_MAX] (duration
+    bounds win over the segment-count range for tiny totals); last
+    segment trims the rounding drift; no overlapping source window per
+    video id; speeds in [1.15, 1.5]; each source window (out_dur*speed)
+    fits inside its clip. Aims for >=12 distinct clips. When the pool is
+    smaller than the segments needed, the plan shrinks to pool-sized
+    longer cuts (capped at SEG_MAX) with a loud warning naming the
+    shortfall — repeats are refused, never silent. clips=[{id, duration}]
+    overrides the legacy n_clips count (which assumes 30s clips).
     """
     rng = random.Random(seed)
     total = max(0.0, float(total_dur))
@@ -92,14 +100,25 @@ def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
         n = max(1, int(n_clips or 1))
         table = [{"id": f"clip{i}", "duration": 30.0} for i in range(n)]
     n = len(table)
-    count = min(max_segments, max(min_segments, round(total / ((lo + hi) / 2))))
-    if total / count < lo:
-        count = max(1, min(max_segments, int(total // lo) or 1))
-    elif total / count > hi:
-        count = max(1, min(max_segments, int(total / hi) + 1))
-    base = total / count
-    durs = [round(base, 3)] * count
-    durs[-1] = round(total - sum(durs[:-1]), 3)
+    need = min(max_segments, max(min_segments, round(total / ((lo + hi) / 2))))
+    if total / need < lo:
+        need = max(1, min(max_segments, int(total // lo) or 1))
+    elif total / need > hi:
+        need = max(1, min(max_segments, int(total / hi) + 1))
+    if need > n:
+        # Shortfall: pool cannot cover total with unique clips. Shrink to
+        # pool-sized longer cuts (capped at SEG_MAX) and say so loudly;
+        # uniqueness is never relaxed, silently or otherwise.
+        count = max(1, n)
+        durs = [round(min(hi, total / count), 3)] * count
+        log(f"Story plan SHORTFALL: {n} clips < {need} segments needed "
+            f"for {total:.1f}s; using {count} longer cuts covering "
+            f"{sum(durs):.1f}s (repeats refused).")
+    else:
+        count = need
+        base = total / count
+        durs = [round(base, 3)] * count
+        durs[-1] = round(total - sum(durs[:-1]), 3)
     recent = {str(r) for r in (recent_ids or ())}
     segs: list[dict] = []
     prev: list[int] = []
@@ -107,11 +126,14 @@ def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
     used_windows: dict[int, list[tuple[float, float]]] = {}
     cursor: dict[int, float] = {}
     for dur in durs:
-        eligible = [i for i in range(n) if i not in prev[-4:]] or list(range(n))
+        # Unused clips first: with count <= pool size one always exists,
+        # so the trailing fallback is unreachable (kept as pure safety).
+        unused = [i for i in range(n) if uses[i] == 0]
+        eligible = ([i for i in unused if i not in prev[-4:]]
+                    or unused or list(range(n)))
         fresh = ([i for i in eligible if table[i]["id"] not in recent]
                  or eligible)
-        least = min(uses[i] for i in fresh)
-        idx = rng.choice([i for i in fresh if uses[i] == least])
+        idx = rng.choice(fresh)
         speed = round(rng.uniform(smin, smax), 3)
         window = round(dur * max(0.2, speed), 3)
         cdur = table[idx]["duration"]
@@ -145,9 +167,23 @@ def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
 def _fetch_one(query: str, api_key: str, cache_dir: Path,
                used: set[str]) -> tuple[Path | None, str, str]:
     """Fetch one clip for a query. Returns (path|None, video_id, credit)."""
+    res = _fetch_many(query, api_key, cache_dir, used, limit=1)
+    return res[0] if res else (None, "", "")
+
+
+def _fetch_many(query: str, api_key: str, cache_dir: Path,
+                used: set[str], limit: int = 2) -> list[tuple]:
+    """Fetch up to `limit` distinct clips for a query.
+
+    Returns [(path, video_id, credit), ...] (possibly fewer than limit).
+    Skips ids already used; skips re-download when the id cache hits.
+    """
+    out: list[tuple] = []
     try:
         for v in _px.search_videos(query, api_key, per_page=30,
                                    orientation="portrait", size="medium"):
+            if len(out) >= max(1, limit):
+                break
             vid = str(v.get("id", ""))
             if not vid or vid in used:
                 continue
@@ -160,10 +196,10 @@ def _fetch_one(query: str, api_key: str, cache_dir: Path,
                 _px.download(picked["link"], dest)
             used.add(vid)
             credit = _px.parse_photographer(v) or "Pexels"
-            return dest, vid, f"Pexels: {credit}"
+            out.append((dest, vid, f"Pexels: {credit}"))
     except Exception as e:
         warn(f"Pexels query failed '{query}' ({e}).")
-    return None, "", ""
+    return out
 
 
 def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
@@ -178,21 +214,23 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
     credits: list[str] = []
     used: set[str] = {str(r) for r in (recent_ids or ())}
     used_ids: list[str] = []
+    per_query = max(1, int(getattr(cfg, "clips_per_query", 2) or 2))
     if cfg.pexels_key:
         with ThreadPoolExecutor(max_workers=4) as pool:
-            futs = {pool.submit(_fetch_one, q, cfg.pexels_key, cache_dir, used): q
+            futs = {pool.submit(_fetch_many, q, cfg.pexels_key, cache_dir,
+                                used, per_query): q
                     for q in queries}
-            by_query: dict[str, tuple] = {}
+            by_query: dict[str, list] = {}
             for fut in as_completed(futs):
                 by_query[futs[fut]] = fut.result()
             for q in queries:  # keep query priority order, not finish order
-                res = by_query.get(q)
-                path, vid, credit = res if res is not None else (None, "", "")
-                if path is not None:
-                    clips.append(path)
-                    credits.append(credit)
-                    used_ids.append(vid)
-        log(f"Story BG: {len(clips)} Pexels clips for {len(queries)} queries.")
+                for path, vid, credit in by_query.get(q) or []:
+                    if path is not None:
+                        clips.append(path)
+                        credits.append(credit)
+                        used_ids.append(vid)
+        log(f"Story BG: {len(clips)} Pexels clips for {len(queries)} queries "
+            f"(up to {per_query}/query).")
     else:
         log("Story BG: no PEXELS key, using BG_DIR only.")
     bg_dir = Path(cfg.bg_dir)

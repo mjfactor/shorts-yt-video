@@ -63,7 +63,17 @@ def find_bundled_font(*needles: str, font_dir: str | Path = "assets/fonts",
         if path.suffix.lower() not in (".ttf", ".otf", ".ttc"):
             continue
         try:
-            fam, style = open_font(str(path), 40).getname()
+            name = open_font(str(path), 40).getname()
+        except Exception:
+            continue
+        # Tolerant unpack: getname() is usually (family, subfamily) but
+        # some files yield 1- or 3-tuples. Matching always runs against
+        # the COMBINED "family subfamily" string (never family[0] alone),
+        # so multi-token queries like ("Montserrat", "ExtraBold") resolve
+        # to the right cut instead of any same-family font.
+        try:
+            fam = str(name[0])
+            style = " ".join(str(p) for p in name[1:])
         except Exception:
             continue
         full = _norm_family(f"{fam} {style}")
@@ -144,20 +154,22 @@ def draw_verified_badge(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int,
 
 
 def draw_icon_row(draw: ImageDraw.ImageDraw, x0: int, y: int,
-                  color: tuple = (150, 150, 155, 255)) -> None:
-    """Subtle like/share/comment shapes only (no counts, ever)."""
+                  heart_color: tuple = (235, 32, 60, 255),
+                  share_color: tuple = (29, 155, 240, 255),
+                  upvote_color: tuple = (255, 69, 0, 255),
+                  comment_color: tuple = (16, 185, 129, 255),
+                  bookmark_color: tuple = (245, 158, 11, 255)) -> None:
+    """Subtle satire icon row: orange upvote, red heart, comment, blue share, bookmark."""
     hx = x0
-    draw.ellipse([hx, y, hx + 14, y + 14], outline=color, width=2)
-    draw.ellipse([hx + 14, y, hx + 28, y + 14], outline=color, width=2)
-    draw.polygon([(hx + 2, y + 8), (hx + 26, y + 8), (hx + 14, y + 26)], outline=color)
-    sx = hx + 56
-    for nx, ny in ((sx, y + 4), (sx + 22, y + 12), (sx, y + 20)):
-        draw.ellipse([nx - 4, ny - 4, nx + 4, ny + 4], outline=color, width=2)
-    draw.line([(sx, y + 4), (sx + 22, y + 12)], fill=color, width=2)
-    draw.line([(sx, y + 20), (sx + 22, y + 12)], fill=color, width=2)
-    bx = sx + 52
-    draw.rounded_rectangle([bx, y, bx + 30, y + 20], radius=6, outline=color, width=2)
-    draw.polygon([(bx + 8, y + 20), (bx + 8, y + 27), (bx + 16, y + 20)], outline=color)
+    _draw_spec_upvote(draw, hx, y, color=upvote_color, size=22)
+    sx = hx + 36
+    _draw_spec_heart(draw, sx, y, color=heart_color, r=6)
+    cx = sx + 36
+    _draw_spec_comment(draw, cx, y, color=comment_color, size=20)
+    shx = cx + 36
+    _draw_spec_share(draw, shx, y, color=share_color, size=20)
+    bx = shx + 36
+    _draw_spec_bookmark(draw, bx, y, color=bookmark_color, size=20)
 
 
 def render_card(text: str, highlight_word: str, *, handle: str,
@@ -180,10 +192,13 @@ def render_card(text: str, highlight_word: str, *, handle: str,
     img.paste(avatar, (av_x, av_y), avatar)
 
     hx = av_x + av_size + 18
-    handle_font = load_font(34, bold=True, theme=th)
-    d.text((hx, av_y + 6), handle, font=handle_font, fill=th["handle_color"])
+    handle_size = 34
+    handle_font = load_font(handle_size, bold=True, theme=th)
+    handle_y = av_y + (av_size - handle_size) // 2
+    d.text((hx, handle_y), handle, font=handle_font, fill=th["handle_color"])
     bx = hx + text_width(d, handle, handle_font) + 14
-    draw_verified_badge(d, bx + 12, av_y + 6 + 20, 13, color=th["badge_color"])
+    draw_verified_badge(d, bx + 12, handle_y + handle_size // 2 + 2, 13,
+                        color=th["badge_color"])
 
     words = (text or "").strip().split()
     hl = (highlight_word or "").strip().lower()
@@ -219,7 +234,14 @@ def render_card(text: str, highlight_word: str, *, handle: str,
             x += text_width(d, w, body_font) + space_w
         y += lh
 
-    draw_icon_row(d, hx, height - pad - 28, color=th["icon_color"])
+    draw_icon_row(
+        d, hx, height - pad - 28,
+        heart_color=th.get("heart_color", (235, 32, 60, 255)),
+        share_color=th.get("share_color", (29, 155, 240, 255)),
+        upvote_color=th.get("upvote_color", (255, 69, 0, 255)),
+        comment_color=th.get("comment_color", (16, 185, 129, 255)),
+        bookmark_color=th.get("bookmark_color", (245, 158, 11, 255)),
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(out, "PNG")
     return out
@@ -242,10 +264,21 @@ SPEC_CARD_THEME = {
     "text_color": (18, 18, 20, 255),
     "highlight_color": (224, 0, 0, 255),  # #E00000
     "body_size": 64,
-    "body_min_size": 36,
+    "body_min_size": 32,
     "body_max_lines": 3,
     "icon_color": (150, 150, 155, 255),
+    "heart_color": (235, 32, 60, 255),    # Vibrant Red
+    "share_color": (29, 155, 240, 255),   # Twitter/Verified Blue
+    "upvote_color": (255, 69, 0, 255),    # Reddit Orange-Red
+    "comment_color": (16, 185, 129, 255), # Emerald Green
+    "bookmark_color": (245, 158, 11, 255),# Amber Gold
+    "icon_spacing": 82,
     "pad": 36,
+    "heart_icon_path": "assets/icons/heart.png",
+    "share_icon_path": "assets/icons/share.png",
+    "upvote_icon_path": "assets/icons/upvote.png",
+    "comment_icon_path": "assets/icons/comment.png",
+    "bookmark_icon_path": "assets/icons/bookmark.png",
     "bold_fonts": DEFAULT_BOLD_FONTS,
     "reg_fonts": DEFAULT_REG_FONTS,
 }
@@ -271,7 +304,16 @@ def _spec_glyph_width(font, word: str) -> int:
 def _spec_wrap_text(text: str, highlight_word: str, max_w: int,
                     theme: dict) -> tuple[list, Any, int, int]:
     """Wrap body to width with font shrink on overflow. Returns
-    (lines, font, size, line_h); lines hold (word, color) pairs."""
+    (lines, font, size, line_h); lines hold (word, color) pairs.
+
+    Capacity (measured Montserrat ExtraBold, 684px body budget):
+    comfortable max at full 64px is ~13 words (~85 chars, 3 lines);
+    shrink runs 64px down to the 32px floor, which holds worst-case
+    8x12-char words in exactly 3 lines (measured: 4 lines at 36px,
+    3 lines at 32px — the floor exists for this case). 32px is the
+    legibility floor; beyond 3 lines there the card GROWS taller
+    (never clipped). validate_extra enforces the <=8-word card cap.
+    """
     words = (text or "").strip().split()
     hl = (highlight_word or "").strip().lower()
     size = int(theme.get("body_size", 64))
@@ -301,27 +343,136 @@ def _spec_wrap_text(text: str, highlight_word: str, max_w: int,
     return lines, font, size, size + 12
 
 
+def _bezier_point(p0: tuple[float, float], p1: tuple[float, float],
+                  p2: tuple[float, float], p3: tuple[float, float],
+                  t: float) -> tuple[float, float]:
+    mt = 1.0 - t
+    return (
+        mt * mt * mt * p0[0] + 3.0 * mt * mt * t * p1[0] + 3.0 * mt * t * t * p2[0] + t * t * t * p3[0],
+        mt * mt * mt * p0[1] + 3.0 * mt * mt * t * p1[1] + 3.0 * mt * t * t * p2[1] + t * t * t * p3[1],
+    )
+
+
+def _heart_points(cx: float, cy: float, width: float, height: float,
+                  num_points: int = 120) -> list[tuple[float, float]]:
+    top_cleft = (cx, cy - height * 0.22)
+    bottom_pt = (cx, cy + height * 0.50)
+    p0 = bottom_pt
+    p1 = (cx - width * 0.58, cy + height * 0.12)
+    p2 = (cx - width * 0.58, cy - height * 0.48)
+    p3 = (cx - width * 0.28, cy - height * 0.50)
+    p4 = p3
+    p5 = (cx - width * 0.08, cy - height * 0.50)
+    p6 = (cx - width * 0.02, cy - height * 0.26)
+    p7 = top_cleft
+
+    half = max(10, num_points // 2)
+    pts = []
+    for i in range(half):
+        t = i / half
+        pts.append(_bezier_point(p0, p1, p2, p3, t))
+    for i in range(half):
+        t = i / half
+        pts.append(_bezier_point(p4, p5, p6, p7, t))
+
+    right_pts = [(2.0 * cx - px, py) for px, py in reversed(pts)]
+    return pts + right_pts
+
+
 def _draw_spec_heart(draw: ImageDraw.ImageDraw, x: int, y: int,
                      color: tuple, r: int = 16) -> None:
-    """Filled heart (~4r wide): two lobe circles with a top-center dip,
-    tapering to a bottom point. Grey, no numbers.
-
-    The old thin-outline version read as two spectacles at card scale;
-    filled lobes + a real taper read as a heart at ~60-80px.
-    """
-    draw.ellipse([x, y, x + 2 * r, y + 2 * r], fill=color)
-    draw.ellipse([x + 2 * r, y, x + 4 * r, y + 2 * r], fill=color)
-    draw.polygon([(x + 2, y + r), (x + 4 * r - 2, y + r),
-                  (x + 2 * r, y + 4 * r)], fill=color)
+    """Smooth vector heart (~4r wide, ~4r high), grey, no numbers."""
+    w = 4 * r
+    h = int(w * 0.95)
+    cx = x + w / 2.0
+    cy = y + h / 2.0
+    pts = _heart_points(cx, cy, float(w), float(h), num_points=120)
+    draw.polygon(pts, fill=color)
 
 
 def _draw_spec_share(draw: ImageDraw.ImageDraw, x: int, y: int,
-                     color: tuple) -> None:
-    """Pillow-shape share icon: three nodes + two lines, grey."""
-    for nx, ny in ((x, y + 6), (x + 26, y + 16), (x, y + 26)):
-        draw.ellipse([nx - 5, ny - 5, nx + 5, ny + 5], outline=color, width=3)
-    draw.line([(x, y + 6), (x + 26, y + 16)], fill=color, width=3)
-    draw.line([(x, y + 26), (x + 26, y + 16)], fill=color, width=3)
+                     color: tuple, size: int = 46) -> None:
+    """Modern 3-node share icon: root on left, two branches on right."""
+    r = max(4.0, size * 0.16)
+    w_line = max(3, int(size * 0.10))
+    x_left = x + r
+    y_mid = y + size / 2.0
+    x_right = x + size - r
+    y_top = y + r + 2.0
+    y_bottom = y + size - r - 2.0
+    draw.line([(x_left, y_mid), (x_right, y_top)], fill=color, width=w_line)
+    draw.line([(x_left, y_mid), (x_right, y_bottom)], fill=color, width=w_line)
+    for nx, ny in ((x_left, y_mid), (x_right, y_top), (x_right, y_bottom)):
+        draw.ellipse([nx - r, ny - r, nx + r, ny + r], fill=color)
+
+
+def _draw_spec_upvote(draw: ImageDraw.ImageDraw, x: int, y: int,
+                      color: tuple, size: int = 44) -> None:
+    """Reddit-style upvote arrow in vibrant orange."""
+    cx = x + size / 2.0
+    stem_w = size * 0.38
+    head_w = size * 0.88
+    head_base_y = y + size * 0.48
+    stem_bottom_y = y + size
+    pts = [
+        (cx, y),
+        (cx + head_w / 2.0, head_base_y),
+        (cx + stem_w / 2.0, head_base_y),
+        (cx + stem_w / 2.0, stem_bottom_y),
+        (cx - stem_w / 2.0, stem_bottom_y),
+        (cx - stem_w / 2.0, head_base_y),
+        (cx - head_w / 2.0, head_base_y),
+    ]
+    draw.polygon(pts, fill=color)
+
+
+def _draw_spec_comment(draw: ImageDraw.ImageDraw, x: int, y: int,
+                       color: tuple, size: int = 42) -> None:
+    """Satire social comment bubble."""
+    w = size * 1.05
+    h = size * 0.74
+    draw.rounded_rectangle([x, y, x + w, y + h], radius=int(size * 0.28), fill=color)
+    tail_pts = [
+        (x + size * 0.22, y + h - 2),
+        (x + size * 0.10, y + size * 0.98),
+        (x + size * 0.48, y + h - 2),
+    ]
+    draw.polygon(tail_pts, fill=color)
+
+
+def _draw_spec_bookmark(draw: ImageDraw.ImageDraw, x: int, y: int,
+                        color: tuple, size: int = 40) -> None:
+    """Satire bookmark/save ribbon."""
+    w = size * 0.72
+    h = size
+    pts = [
+        (x, y),
+        (x + w, y),
+        (x + w, y + h),
+        (x + w / 2.0, y + h - size * 0.28),
+        (x, y + h),
+    ]
+    draw.polygon(pts, fill=color)
+
+
+def _paste_custom_icon(img: Image.Image, icon_path: str | Path | None,
+                       x: int, y: int, size: int) -> bool:
+    """Attempt to load and paste a custom PNG/image icon onto img at (x, y).
+
+    Returns True if an image was successfully loaded and pasted, False otherwise.
+    """
+    if not icon_path:
+        return False
+    try:
+        p = Path(icon_path)
+        if not p.is_file():
+            return False
+        resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", 1)
+        icon_img = Image.open(p).convert("RGBA").resize((size, size), resample)
+        img.paste(icon_img, (x, y), icon_img)
+        return True
+    except Exception:
+        return False
 
 
 def render_spec_card(text: str, highlight_word: str, *, handle: str,
@@ -334,8 +485,10 @@ def render_spec_card(text: str, highlight_word: str, *, handle: str,
     first letter when the file is missing), bold handle + small blue
     circle with a line-drawn white check (no emoji). Body: bold ~64px
     wrapped word-by-word (highlight in #E00000 red, case-insensitive),
-    shrunk on overflow via textbbox measurement. Bottom row: grey heart
-    + share shapes, no numbers. Height is dynamic but canvas-bounded.
+    shrunk on overflow via textbbox measurement. Bottom row: vibrant
+    satire action buttons (orange upvote, red heart, green comment,
+    blue share, amber bookmark, or custom image icons if provided).
+    Height is dynamic but canvas-bounded.
     """
     th = dict(SPEC_CARD_THEME)
     th.update(theme or {})
@@ -347,7 +500,7 @@ def render_spec_card(text: str, highlight_word: str, *, handle: str,
         text, highlight_word, max_w, th)
     top_h = pad + av_size + 28
     body_h = len(lines) * lh
-    height = top_h + body_h + 28 + 44 + pad
+    height = top_h + body_h + 28 + 48 + pad
     out = Path(out_png)
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -361,13 +514,15 @@ def render_spec_card(text: str, highlight_word: str, *, handle: str,
         theme={**th, "avatar_fallback_text": letter})
     img.paste(avatar, (pad, pad), avatar)
 
-    handle_font = load_font(int(th.get("handle_size", 44)), bold=True,
-                            theme=th)
-    handle_y = pad + 8
+    handle_h = int(th.get("handle_size", 44))
+    handle_font = load_font(handle_h, bold=True, theme=th)
+    # Vertically align handle with avatar midpoint instead of hugging the top edge
+    handle_y = pad + max(0, (av_size - handle_h) // 2)
     d.text((hx, handle_y), handle, font=handle_font,
            fill=th["handle_color"])
     badge_cx = hx + text_width(d, handle, handle_font) + 26
-    draw_verified_badge(d, badge_cx, handle_y + 24,
+    badge_cy = handle_y + handle_h // 2 + 3
+    draw_verified_badge(d, badge_cx, badge_cy,
                         int(th.get("badge_radius", 14)),
                         color=th["badge_color"])
 
@@ -381,8 +536,38 @@ def render_spec_card(text: str, highlight_word: str, *, handle: str,
         y += lh
 
     iy = top_h + body_h + 28
-    _draw_spec_heart(d, hx, iy, color=th["icon_color"])
-    _draw_spec_share(d, hx + 110, iy + 4, color=th["icon_color"])
+    spacing = int(th.get("icon_spacing", 82))
+    cur_x = hx
+
+    # 1. Orange Upvote (Reddit satire)
+    upvote_col = th.get("upvote_color", (255, 69, 0, 255))
+    if not _paste_custom_icon(img, th.get("upvote_icon_path"), cur_x, iy, 44):
+        _draw_spec_upvote(d, cur_x, iy, color=upvote_col, size=44)
+    cur_x += spacing
+
+    # 2. Red Heart (Like)
+    heart_col = th.get("heart_color", (235, 32, 60, 255))
+    if not _paste_custom_icon(img, th.get("heart_icon_path"), cur_x, iy, 48):
+        _draw_spec_heart(d, cur_x, iy, color=heart_col, r=13)
+    cur_x += spacing
+
+    # 3. Satire Comment Bubble
+    comment_col = th.get("comment_color", (16, 185, 129, 255))
+    if not _paste_custom_icon(img, th.get("comment_icon_path"), cur_x, iy + 2, 42):
+        _draw_spec_comment(d, cur_x, iy + 2, color=comment_col, size=42)
+    cur_x += spacing
+
+    # 4. Blue Share
+    share_col = th.get("share_color", (29, 155, 240, 255))
+    if not _paste_custom_icon(img, th.get("share_icon_path"), cur_x, iy + 2, 44):
+        _draw_spec_share(d, cur_x, iy + 2, color=share_col, size=44)
+    cur_x += spacing
+
+    # 5. Satire Bookmark
+    bookmark_col = th.get("bookmark_color", (245, 158, 11, 255))
+    if not _paste_custom_icon(img, th.get("bookmark_icon_path"), cur_x, iy + 2, 40):
+        _draw_spec_bookmark(d, cur_x, iy + 2, color=bookmark_col, size=40)
+
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(out, "PNG")
     return out

@@ -46,6 +46,7 @@ def _make_story(sentences=None):
     rehooks = [
         {"at": "20-30s", "line": sentences[3]},
         {"at": "50-60s", "line": sentences[6]},
+        {"at": "80-90s", "line": sentences[8]},
     ]
     third = len(sentences) // 3
     beats = [
@@ -490,19 +491,22 @@ class TestPickVideoFile(unittest.TestCase):
 
 class TestPlanner(unittest.TestCase):
     def test_total_segments_clips_no_repeat(self):
+        # Uniqueness caps segments at pool size: 40 clips for 25-40 segs.
         narration_dur = 82.5
         total = narration_dur + 0.4
-        segs = story_visuals.plan(total, n_clips=12, seed=123)
+        segs = story_visuals.plan(total, n_clips=40, seed=123)
         self.assertGreaterEqual(len(segs), 25)
         self.assertLessEqual(len(segs), 40)
         self.assertGreaterEqual(len(segs), 12 // 1)  # sanity
         self.assertAlmostEqual(sum(s["dur"] for s in segs), total, places=2)
         for seg in segs:
-            self.assertLess(seg["clip_idx"], 12)
+            self.assertLess(seg["clip_idx"], 40)
             self.assertGreater(seg["dur"], 0)
             self.assertGreaterEqual(seg["speed"], 1.15)
             self.assertLessEqual(seg["speed"], 1.5)
-        # no clip repeats within 4 segments
+        # hard rule: no clip id twice in one video ...
+        self.assertEqual(len({s["clip_idx"] for s in segs}), len(segs))
+        # ... so no clip repeats within 4 segments either
         for i, seg in enumerate(segs):
             window = [s["clip_idx"] for s in segs[max(0, i - 4):i]]
             self.assertNotIn(seg["clip_idx"], window,
@@ -517,8 +521,10 @@ class TestPlannerSpec(unittest.TestCase):
         return [{"id": f"vid{i}", "duration": dur} for i in range(n)]
 
     def test_exact_total_within_one_frame(self):
+        # Pools sized for uniqueness (shortfall path would shrink counts).
         for total in (26.9, 82.9, 103.5):
-            segs = story_visuals.plan(total, seed=7, clips=self._clips())
+            segs = story_visuals.plan(total, seed=7,
+                                      clips=self._clips(40, 30.0))
             self.assertAlmostEqual(sum(s["dur"] for s in segs), total,
                                    places=2)
             # within 1 frame @30fps
@@ -1315,6 +1321,93 @@ class TestCardFirst(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "card line"):
             story_content.validate_extra(data)
 
+    def test_prompt_requires_third_rehook_and_hook_examples(self):
+        prompt, _slots = story_content.build_prompt([], StoryConfig())
+        self.assertIn("80-90s", prompt)
+        self.assertIn("THIRD re-hook", prompt)
+        self.assertIn("never copy these lines", prompt)
+        self.assertIn("exactly 3 objects", prompt)
+
+    def test_validation_accepts_exactly_three_rehooks(self):
+        extra = story_content.validate_extra(_make_story())
+        self.assertEqual(len(extra["rehooks"]), 3)
+        self.assertEqual([r["at"] for r in extra["rehooks"]],
+                         ["20-30s", "50-60s", "80-90s"])
+
+    def test_validation_rejects_bad_rehook_sets(self):
+        base = _make_story()
+        # only 2 slots
+        two = dict(base, rehooks=base["rehooks"][:2])
+        with self.assertRaisesRegex(ValueError, "exactly 3"):
+            story_content.validate_extra(two)
+        # 4 entries
+        four = dict(base, rehooks=base["rehooks"] + [dict(base["rehooks"][0])])
+        with self.assertRaisesRegex(ValueError, "exactly 3"):
+            story_content.validate_extra(four)
+        # wrong `at` value
+        bad_at = dict(base, rehooks=[dict(r) for r in base["rehooks"]])
+        bad_at["rehooks"][2]["at"] = "30-40s"
+        with self.assertRaisesRegex(ValueError, "20-30s.*50-60s.*80-90s"):
+            story_content.validate_extra(bad_at)
+        # duplicated slot (missing 80-90s)
+        dup = dict(base, rehooks=[dict(r) for r in base["rehooks"]])
+        dup["rehooks"][2]["at"] = "20-30s"
+        with self.assertRaisesRegex(ValueError, "each slot once"):
+            story_content.validate_extra(dup)
+        # line not verbatim in story
+        bad_line = dict(base, rehooks=[dict(r) for r in base["rehooks"]])
+        bad_line["rehooks"][2]["line"] = "Never aired anywhere before."
+        with self.assertRaisesRegex(ValueError, "line from the story"):
+            story_content.validate_extra(bad_line)
+
+    def _recard(self, data, card):
+        """Swap the card line everywhere gates look (story/beats/hook)."""
+        old_first, rest = data["story_text"].split(". ", 1)
+        _ = old_first
+        data["story_text"] = f"{card}. {rest}"
+        data["narration"] = data["story_text"]
+        data["beats"][0]["text"] = f"{card}. " + data["beats"][0]["text"].split(". ", 1)[1]
+        data["hook"] = f"{card}."
+        data["card_text"] = card
+        return data
+
+    def test_card_text_word_cap(self):
+        ok = self._recard(_make_story(),
+                          "one two three four five six seven eight")
+        extra = story_content.validate_extra(ok)
+        self.assertEqual(extra["card_text"], ok["card_text"])
+        bad = self._recard(_make_story(),
+                           "one two three four five six seven eight nine")
+        with self.assertRaisesRegex(ValueError, "<=8 words"):
+            story_content.validate_extra(bad)
+
+    def test_fallback_cards_within_cap(self):
+        for variant in story_content._FALLBACK_VARIANTS:
+            n = len(variant["card_text"].split())
+            self.assertLessEqual(n, 8, variant["title"])
+            self.assertIn(variant["card_highlight_word"].lower(),
+                          variant["card_text"].lower())
+
+    def test_fallback_and_sample_three_rehooks(self):
+        for hist in ([], [{"niche": "story", "genre": "workplace"}]):
+            meta, _slots = story_content.fallback_script(hist)
+            self.assertEqual(len(meta["rehooks"]), 3)
+            self.assertEqual([r["at"] for r in meta["rehooks"]],
+                             ["20-30s", "50-60s", "80-90s"])
+            for r in meta["rehooks"]:
+                self.assertIn(r["line"], meta["story_text"])
+            validated = story_content.validate_extra(meta)
+            self.assertEqual(len(validated["rehooks"]), 3)
+        # every bundled variant is validation-clean (incl. card-first)
+        for variant in story_content._FALLBACK_VARIANTS:
+            meta, _slots = story_content._build_fallback_meta(variant)
+            validated = story_content.validate_extra(meta)
+            self.assertEqual(len(validated["rehooks"]), 3)
+            self.assertTrue(story_content._starts_with_card(
+                meta["story_text"], meta["card_text"]))
+        sample = story_content.sample_content()
+        self.assertEqual(len(sample.extras["rehooks"]), 3)
+
     def test_fallback_and_sample_card_first(self):
         for hist in ([], [{"niche": "story", "genre": "workplace"}]):
             meta, _slots = story_content.fallback_script(hist)
@@ -1359,6 +1452,106 @@ class TestCardFirst(unittest.TestCase):
         # mid-list repeat must NOT match: falls back to first-words timing
         self.assertAlmostEqual(
             story_narr.card_end_time(words, "mystery phrase", ""), 2.5)
+
+
+class TestEvergreenPool(unittest.TestCase):
+    def test_cleaning_queries_present_and_conventional(self):
+        pool = list(story_visuals.EVERGREEN_QUERIES)
+        for q in ("window cleaning", "pressure washing", "car wash",
+                  "floor mopping", "soap sponge", "vacuum carpet"):
+            self.assertIn(q, pool)
+        # bg_queries convention: 1-3 concrete filmable words each
+        for q in pool:
+            self.assertGreaterEqual(len(q.split()), 1)
+            self.assertLessEqual(len(q.split()), 3)
+        # no duplicates (gather_clips dedups anyway; keep the pool clean)
+        self.assertEqual(len(pool), len(set(pool)))
+
+    def test_gather_query_assembly_includes_cleaning(self):
+        # Offline: keyless gather fails on clips, but the assembled query
+        # list (the part under test) must carry the cleaning pool.
+        seen = {}
+
+        def _fake_fetch_many(query, api_key, cache_dir, used, limit=2):
+            seen[query] = True
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = StoryConfig(pexels_key="fake-key-for-assembly",
+                              bg_dir="no-such-dir",
+                              pexels_cache_dir=str(Path(tmp) / "cache"))
+            with mock.patch("niches.story.visuals._fetch_many",
+                            side_effect=_fake_fetch_many):
+                with self.assertRaises(RuntimeError):
+                    story_visuals.gather_clips(["office desk night"],
+                                               "workplace", cfg)
+        for q in ("window cleaning", "pressure washing", "car wash"):
+            self.assertIn(q, seen)
+
+
+class TestClipUniqueness(unittest.TestCase):
+    def _pool(self, n=40, dur=30.0):
+        return [{"id": f"vid{i}", "duration": dur} for i in range(n)]
+
+    def test_full_120s_plan_all_ids_distinct(self):
+        total = 120.0 + 0.4
+        segs = story_visuals.plan(total, seed=7, clips=self._pool())
+        ids = [s["clip_id"] for s in segs]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertGreaterEqual(len(segs), 25)
+        self.assertLessEqual(len(segs), 40)
+        self.assertAlmostEqual(sum(s["dur"] for s in segs), total, places=2)
+        for s in segs:
+            self.assertGreaterEqual(s["dur"], 2.5)
+            self.assertLessEqual(s["dur"], 4.5)
+
+    def test_pool_expansion_two_clips_per_query(self):
+        # Mocked Pexels: K=2 yields 2 distinct clips for one query.
+        videos = [
+            {"id": 101, "user": {"name": "A"},
+             "video_files": [{"link": "http://x/101.mp4", "width": 1080,
+                              "height": 1920, "file_type": "video/mp4"}]},
+            {"id": 102, "user": {"name": "B"},
+             "video_files": [{"link": "http://x/102.mp4", "width": 1080,
+                              "height": 1920, "file_type": "video/mp4"}]},
+            {"id": 103, "user": {"name": "C"},
+             "video_files": [{"link": "http://x/103.mp4", "width": 1080,
+                              "height": 1920, "file_type": "video/mp4"}]},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            used: set = set()
+            with mock.patch("engine.pexels.search_videos",
+                           return_value=videos), \
+                mock.patch("engine.pexels.download",
+                           side_effect=lambda url, dest: Path(dest)
+                           .write_bytes(b"fake") or Path(dest)):
+                res = story_visuals._fetch_many("window cleaning", "key",
+                                                cache, used, limit=2)
+            self.assertEqual(len(res), 2)
+            vids = [v for _, v, _ in res]
+            self.assertEqual(len(set(vids)), 2)
+            self.assertEqual(used, set(vids))
+            self.assertTrue(all((cache / f"{v}.mp4").exists() for v in vids))
+
+    def test_shortfall_longer_segs_plus_warning_no_repeats(self):
+        # 12 clips cannot cover 82.9s uniquely: longer capped cuts +
+        # a loud shortfall warning, still zero repeats.
+        clips = self._pool(12, 40.0)
+        with mock.patch("niches.story.visuals.log") as log_mock:
+            segs = story_visuals.plan(82.9, seed=7, clips=clips)
+        logged = " ".join(c[0][0] for c in log_mock.call_args_list)
+        self.assertIn("SHORTFALL", logged)
+        self.assertIn("12 clips", logged)
+        self.assertEqual(len(segs), 12)
+        self.assertEqual(len({s["clip_idx"] for s in segs}), 12)
+        for s in segs:
+            self.assertLessEqual(s["dur"], 4.5)
+
+    def test_clips_per_query_config(self):
+        self.assertEqual(StoryConfig().clips_per_query, 2)
+        with mock.patch.dict(os.environ, {"STORY_CLIPS_PER_QUERY": "3"}):
+            self.assertEqual(StoryConfig.from_env().clips_per_query, 3)
 
 
 if __name__ == "__main__":
