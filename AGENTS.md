@@ -1,62 +1,62 @@
 # AGENTS.md
 
-Explainer Shorts automation ("How the world around you actually works" — ~60-75s single-concept explainers with diagrams, process flows, and stock footage). `pipeline.py` thin entry (`main()` → `core.run(niche_explainer)`); `core.py` owns shared machinery (Gemini/TTS/Pexels/FFmpeg/upload/history); `niche_explainer.py` is the active niche; `niche_ranking.py` remains importable for rollback to Top-5 countdowns. Imports flow one way (niche → core); core never imports a niche.
-Run: `python pipeline.py` → Gemini script (beats + visual hints) → TTS mp3+srt → visuals (diagrams/stock) → FFmpeg 1080x1920 → YouTube (+ optional TikTok via Buffer). Output `out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
+Multi-niche Shorts automation (`story` default, `explainer` + `ranking` live). Layout: `pipeline.py` thin entry (`NICHE` env → `niches.load_niche()` → `core.run(niche)`); `core/` orchestration (stage chain + upload + history, imports only `niches.base` contracts); `engine/` policy-free toolbox (TTS/Pexels/FFmpeg/captions — never imports core or any niche); `niches/<name>/` 3 stages (`content.generate_content` → `narration.narrate` → `visuals.build_visuals`, engine helpers only). Imports flow one way (niche → engine/base); core never imports a niche.
+Run: `NICHE=story python pipeline.py` → Gemini script → TTS audio+timings → visuals → FFmpeg 1080x1920 → YouTube (+ optional TikTok via Buffer). Output `out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
 
 ## Commands
 
-- Full run (needs `ffmpeg` + `ffprobe` on PATH): `python pipeline.py`
-- Offline demo (zero API keys, renders 3 sample Shorts to `out/demo_*.mp4`): `python demo.py`
-- Unit tests: `python -m unittest tests/test_explainer.py`
-- Syntax check (Python `3.11` per CI): `python -m py_compile pipeline.py core.py niche_ranking.py niche_explainer.py explainer_visuals.py demo.py get_refresh_token.py`
-- Deps: `pip install -r requirements.txt`
+- Full run per niche (needs `ffmpeg` + `ffprobe` on PATH): `NICHE=story python pipeline.py` / `NICHE=explainer python pipeline.py` / `NICHE=ranking python pipeline.py` (bare `python pipeline.py` = story default)
+- Offline demo per niche (zero API keys, `out/demo_<niche>.mp4` 1080x1920, never uploads): `python demo.py --niche story` (also `explainer`, `ranking`; bare `python demo.py` = story)
+- Unit tests (all niches): `python -m unittest discover -s tests` (legacy single file: `python -m unittest tests/test_explainer.py`)
+- Dry-run order per niche: tests → `python demo.py --niche <name>` → `NICHE=<name> python pipeline.py`
+- Syntax check (Python `3.11` per CI): `python -m py_compile pipeline.py core.py demo.py get_refresh_token.py` (+ any `niches/<name>/*.py`, `engine/*.py` you touch)
+- Deps: `pip install -r requirements.txt` (must include `edge-tts`, `Pillow`, `requests`; no local transcription models)
 - OAuth helper, local-only with browser, never CI: `python get_refresh_token.py` (needs `YT_CLIENT_ID`/`YT_CLIENT_SECRET`)
+
+## New-niche guide (zero core edits)
+
+- Copy `niches/_template/` → `niches/<name>/` (skipped by discovery while prefixed `_`); rename `NAME`/`LABEL`, implement `content.py` / `narration.py` / `visuals.py` + `<Name>Config.from_env()` in `config.py` using `niches.base.env_*` (`<PREFIX>_` wins, bare name falls back); expose module-level `niche = <Name>Niche()`
+- Registry auto-discovery (`niches/__init__.py`): no core/pipeline edits — `available_niches()` picks up the subpackage, `load_niche()` serves it via `NICHE=<name>`; unknown names raise `ImportError` listing available niches
+- Stage rules: `generate_content` returns `Content` (beats + queries in extras, joined beat texts == narration); `narrate` returns `NarrationResult` (audio + duration + timed `words`); `build_visuals` returns `VisualsResult` (mp4 + srt + credits/used_ids); call `engine/*` helpers only, never import core; keep all knobs in config (never hardcode)
+- Wire-through: document vars in `.env.example` (generic + `<PREFIX>_` section), add them to `daily.yml` `env:`, add `sample_content()` coverage in `tests/` + verify `python demo.py --niche <name>`
 
 ## CI (`.github/workflows/daily.yml` is source of truth)
 
 - `ubuntu-latest`, Python `3.11`, `timeout-minutes: 30`, schedule `0 8,20 * * *` + `workflow_dispatch`
 - `concurrency.group: shorts-single`, `cancel-in-progress: false`; `permissions.contents: write` — each run commits `history.json` back, so runs must stay serial
+- `NICHE: ${{ vars.NICHE || 'story' }}` selects the niche (single-niche default; fan out with a `strategy.matrix.niche` + `NICHE: ${{ matrix.niche }}` for multi-niche); per-niche tuning via `STORY_*` / `EXPLAINER_*` / `RANKING_*` vars in the same `env:` block
 - Commit-back: `git add history.json` + `chore: record short history [skip ci]` + push (no-op when unchanged). Schedule/dispatch triggers only, so the push never loops
 - Artifacts: `out/*.json` on `always()` 90d; `out/*.mp4`+`*.mp3`+`*.srt` on `failure()` only 3d (YouTube is permanent storage)
-- New env vars must be wired through workflow `env:` — secrets/vars do not flow automatically. Several code defaults are unset there and win silently (`GEMINI_MODELS`, `GEMINI_TTS_MODELS`, `MIN/MAX_AUDIO_SEC`, `STILLS_PER_BEAT`, `PEXELS_MIN_WIDTH`, …)
-- Empty-string env counts as unset in code (`(os.getenv(...) or "").strip() or DEFAULT`), so CI's empty `GEMINI_TTS_STYLE` falls back safely; only non-blank wins and skips tone alternation
+- New env vars must be wired through workflow `env:` — secrets/vars do not flow automatically. Prefixed per-niche vars need explicit entries too (bare fallbacks alone won't pick up a repo Variable set under the prefixed name)
 
 ## Config (all env, see `.env.example`; never hardcode/commit)
 
-- `GEMINI_API_KEY` (+ `GEMINI_API_KEY_2..10` failover; comma-separated keys in one var also work). Sticks with working key; 429 backs off with jitter on SAME key, other 4xx/timeout fail over immediately; HTTP 5xx is per-project overload so all keys are tried (never trips the breaker); 2 keys failing with only timeouts/network errors trips a breaker skipping the rest
-- `VISIBILITY` default `private` — keep until OAuth app passes YouTube audit
-- `GEMINI_MODELS` / `GEMINI_TTS_MODELS` tried in order, first win
-- `MIN_AUDIO_SEC=10` / `MAX_AUDIO_SEC=180`; `STILLS_PER_BEAT` default 3 (`.env.example` comment saying 2 is stale); `PEXELS_MIN_WIDTH` default 1080 (1:1 with canvas)
-- `VOICE` (`en-US-ChristopherNeural`) hardcoded; only `TTS_RATE` (`-5%`) / `TTS_PITCH` (`-10Hz`) / `TTS_VOLUME` (`+0%`) / `BGM_VOLUME` (`0.08`) are env-tunable. No custom SSML (Microsoft rejects non-Edge SSML)
-- `TTS_ENGINE=gemini` default chain `gemini` → `edge`. `edge` = one edge-tts call, word-level SRT. `gemini` = per-beat synth, beat-level SRT, one voice per run (`Charon` default = no alternation; `GEMINI_TTS_VOICES` pool rotates by `history_len % len(pool)`). Delivery adapts per beat role + content mood (~145 WPM target via `GEMINI_TTS_TARGET_WPM`, atempo-calibrated). Explicit non-blank `GEMINI_TTS_STYLE` overrides.
-- `OPENROUTER_API_KEY` enables `:free` text failover in `gen_script` (between all-Gemini-failed and offline fallback; `OPENROUTER_MODELS` default 2 models, 1 try each, ≤3 calls/run to protect the 50/day free cap; never raises). Unset = skipped silently
-- `history.json` + root `bgm*.mp3` are committed (never gitignore, never store secrets in history). `out/`, `assets/`, `.env` stay uncommitted (per `.gitignore`)
-- Bed rotation is strict `pool[history_len % len(pool)]` over sorted pool (random only when history unreadable). Repo root wins for CI, `assets/` is local fallback
-- TikTok via Buffer (`core.buffer_tiktok_upload`): needs `BUFFER_API_KEY` only. Cloudinary host hardcoded (`epuxrxa5`/`buffer_shorts`, unsigned; env overrides win). Buffer has no upload endpoint — mp4 needs a public URL live until publish. `BUFFER_TIKTOK_CHANNEL_ID` optional (auto-picks `service==tiktok`)
-- Buffer caption cut to 2200 UTF-16 units. User text via `$input` GraphQL variables, never f-string interpolation (emoji/control chars → API 500). Never fails the run; post id recorded as `tiktokBufferPostId`. Do not add cookie/`sessionid` uploaders or self-registered TikTok app
+- `NICHE` (`story` default) — selects the subpackage; registry normalizes case/whitespace
+- Generic: `GEMINI_API_KEY` (+ `_2..10` failover, comma-separated ok), `PEXELS_API_KEY`, `VISIBILITY` (default `private` — keep until OAuth audit), `TTS_RATE`/`TTS_PITCH`/`TTS_VOLUME`/`BGM_VOLUME`, `MIN/MAX_AUDIO_SEC` (guard only), timeouts/tries/backoff
+- Per-niche (prefix wins, bare falls back): `STORY_*` (`TTS_MODEL/VOICES`, `NARRATION_SPEED`, `SEG_MIN/MAX`, `BG_SPEED_MIN/MAX`, `CAPTION_UPPER`, `CARD_SECONDS`, `CHANNEL_HANDLE`, `AVATAR_PATH`, `BG_DIR`, `MAX_SECONDS`, `TARGET_MIN/MAX` 80/85, `STORY_GENRES`, `WHISPER_MODEL`, `PEXELS_API_KEY`), `EXPLAINER_*` (`VOICE`, `TTS_RATE/PITCH/VOLUME/ENGINE`, `GEMINI_TTS_VOICES`, `STILLS_PER_BEAT`, `MIN/MAX_AUDIO_SEC`, `PEXELS_MIN_WIDTH`), `RANKING_*` (`VOICE/VOICES`, `TTS_RATE/PITCH/VOLUME/STYLE`, `TONE`, `TARGET_WPM`, `STILLS_PER_BEAT`, `MIN/MAX_AUDIO_SEC`, `PEXELS_MIN_WIDTH`, `PEXELS_CACHE_DIR`, `BGM_VOLUME`)
+- Story TTS: chunked Gemini synth (60–90w chunks, PCM cache, 80ms crossfade) with duration-fit loop (80–85 proceed; ±5 re-speed from cache; wider one paced re-synth; trim past MAX at sentence end); word timings on the FINAL mix are estimated proportionally (no local models)
+- `history.json` + root `bgm*.mp3` are committed (never gitignore, never secrets in history). `out/`, `assets/` (except `.gitkeep`), `.env` stay uncommitted. Pexels cache (`assets/pexels_cache/`) is gitignored but kept between runs
+- Branding is config: `CHANNEL_HANDLE`, `AVATAR_PATH` (`assets/avatar.png`; missing file → drawn-initials fallback), `assets/fonts/` (brand ttf → DejaVu CI / Arial local → Pillow default). Card theme consts live in niche `visuals.py` — edit only for real theme changes
+- TikTok via Buffer: `BUFFER_API_KEY` only (+ optional `BUFFER_TIKTOK_CHANNEL_ID`); Cloudinary host has working defaults (env overrides win); never fails the run (`tiktokBufferPostId` recorded). Do not add cookie/`sessionid` uploaders
+
+## History (per-niche) + migration
+
+- `history.json` stays a flat committed list; entries carry `niche` (+ `topic`/`topicSource`/`genre`/`items`) and dedup is per-niche (story: title/premise + >35% word-overlap; ranking: topic + ≥2 shared items; explainer: topic/title)
+- `niches/history_migrate.py` (`migrate_history` flat→grouped, `flatten_history` back sorted by date, `duplicate_reason` per-niche title/topic check) is pure/lossless and the migration path for any grouped-history future — do not reformat `history.json` in place
+- `run()` records the entry after successful render even if upload skipped; render failure records nothing; `load/save_history` must never fail the run
 
 ## Graceful degradation (do not break)
 
-- No Gemini key/fail → offline fallback rotation (3 hard-coded variants), least-recent-first, never repeating last video. `_validate_script` raises `ValueError` on bad output; `items` passes through via `validate_extra`
-- Beats with no stock render Pillow `beat_card` (warn; only visual fallback — no AI imagery). `pexels_clip` returns `None` on no key/fail (warn; partial downloads deleted)
-- No YouTube creds → skip upload, keep video in `out/`
-- TTS: missing keys skip with warn; any engine failure warns and falls back to edge for whole narration. Fail-fast on first bad beat, never per-beat retries. `gen_audio()` returns `(mp3, srt, beat_durations|None)`; `run()` rescales measured durations to muxed total, else word-count weighting
-- `notify_failure()` never raises (keep every send wrapped in try). `make_bed()` fallback is pool → generated drone only
-- `retry()` retries 429/5xx only; other 4xx fail fast. `RefreshError` is fatal → re-run `get_refresh_token.py`
-- `warn()`/`err()` emit `::warning::`/`::error::` annotations; `log()` for normal flow. `run()` logs non-secret config + mp3/srt sizes first. All output via `_print` (survives Windows cp1252 vs Gemini emoji)
+- No Gemini key/fail → offline fallback variants (least-recent-first, never repeat last); validators raise `ValueError` on bad output; similarity regens best-effort accept (leaks have aired — don't trust prompt bans)
+- Beats/clips with no stock → Pillow card / testsrc (warn only); `pexels` fetch returns `None` on no key/fail (partial downloads deleted)
+- No YouTube creds → skip upload, keep video in `out/`; `notify_failure()` never raises
+- `retry()` retries 429/5xx only, other 4xx fail fast; `RefreshError` is fatal → re-run `get_refresh_token.py`
+- `warn()`/`err()` emit `::warning::`/`::error::`; `log()` normal flow; all output via `_print` (survives Windows cp1252 vs emoji)
 
-## Pipeline gotchas
+## Gotchas (trust code/CI over docs)
 
-- edge-tts needs `--flag=value` form (`f"--rate={TTS_RATE}"`) — values like `-10%` misparse as new flags as separate args
-- Beats: `meta["beats"]=[{text,query,label}]`, 7 in order (hook, #5–#1, closer); validator caps at 8. `label` is rank digit `"5"`–`"1"` or `""` (digits-only, `[:2]`). Prompt demands joined texts == narration (~195–205 words) but validator only checks ≥20 words. Hook gate (`_hook_violation`): beat[0] needs a stakes signal (digit or scale/danger word) and must not name #1 — one regen per run max, then best-effort accept
-- Visuals per beat: Pexels video vs photos compete head-to-head (video score×2 vs best photo, ties go video; `portrait`, smallest file ≥`PEXELS_MIN_WIDTH`, cached `assets/pexels_*.mp4`, per-run `used` set skips repeats; 2nd-half cuts seek via `_stock_offset`) → Pillow `beat_card`. Photo win emits one DISTINCT photo per cut (Ken Burns). Beat's OWN query, literal match, `USE_MOOD=False`
-- Beat queries are 1-3 words; labeled beats (#5..#1 zipped positionally with `items`) search tiers exact → synonym (one batched Gemini call for all 7 beats, same gates, silent fallback to no-synonyms) → family → topic → topic-loose (domain-guarded generic footage, no item gates) → `beat_card` only when Pexels is unreachable/empty-handed, gated by item + domain keywords against homonyms. Per-beat log carries `tier=` + `winner=` + 60-char alt snippet for CI diagnosis. `MOOD_WORDS`/`_mood_query`/`AMBIENT_QUERIES` are dead — do not pass `mood=True`
-- `_split_beat` gives mid-beat cuts different moments (stock seeks + card text splits). Screen time is word-count weighted, split evenly with `max(2.0s)` floor per segment
-- Leaderboard (`niche_ranking.board_filter`) applies at FINAL mux only (segment clocks restart at 0): dim `N.` slots always on, white fill from reveal to end, red highlight during beat. Needs font (DejaVu Bold CI / Arial Bold local) + `drawtext`, else skip with `::warning::`; mux falls back to no-board render on error. Names ASCII-sanitized, auto-shrunk 66px→40px, filter-escaped (no emoji)
-- Mystery #1 blur: #1 beat `boxblur` for `min(2s, half beat)` then snaps clear at FINAL mux; fallback to no-blur render on filter error
-- Captions: SRT → ASS (yellow bold, top-anchored below title). Burn with plain `subtitles='...'` and NO `force_style` (commas yield zero pixels on some builds). Fallback to no-subs render with `::warning::`
-- `check_audio_duration()` aborts before render if outside MIN–MAX. Bed = looped pool at `BGM_VOLUME` else generated drone
-- Dedup: `history.json` kept to 110; last 20 quoted in prompt (advisory only). Hard gates: same-topic/title vs full 110 (`DEDUP_WINDOW`), ≥2 shared items vs last 30 (`DEDUP_ITEM_WINDOW`), story word-overlap >35% vs last 30. Hybrid topics: `propose_topic()` suggests fresh topic (validated; `AI_TOPICS=off` kills it), pool draw is backstop (LRU on exhaustion), source recorded as `topicSource`. `similarity_reason` retries (`SIMILARITY_RETRIES`=2, best-effort accept — leaks have aired, don't trust prompt bans). `sanitize_title` runs AFTER verdict and rebuilds non-`5 ...` titles
-- `run()` records history entry (date/title/niche/tags/narration/bed/videoId/tiktokBufferPostId + topic/topicSource/items) after successful render even if upload skipped; render failure records nothing. `load/save_history` must never fail the run
-- `cleanup_intermediates()` runs in `finally`, deletes `INTERMEDIATE_PATTERNS` only, keeps Pexels cache. Upload uses `categoryId=22`, resumable `next_chunk()` with retry
-- Stale prose — trust code/CI over docs: `README` says edge-tts narrates (default is Gemini) and frames committed `bgm*.mp3` as hypothetical; `pipeline.py` no longer has a `NICHES` registry but `core.py`/`niche_ranking.py` docstrings and `README` still mention one; `.env.example` omits `GEMINI_TTS_MODELS`; duration prose conflicts (`~90s` vs `~120s`) — only enforced guard is `MIN/MAX_AUDIO_SEC`
+- Captions: burn with plain `subtitles='...'` / `ass_cwd_args` (cwd-relative, no drive-colon issues) and NO `force_style` (commas yield zero pixels on some builds); fallback to no-subs render with `::warning::`
+- Story planner is pure: `total = narration.duration + 0.4`, 25–40 segs, 12+ clips, no repeat within 4; card overlay `max(CARD_SECONDS, card_line_end + pad)` with 0.2s fade pop
+- edge-tts needs `--flag=value` form — values like `-10%` misparse as new flags as separate args
+- Shorts ceiling: verify current YouTube max before raising `TARGET_MAX`/`MAX_SECONDS` (don't assume ≤60s either — only `MIN/MAX_AUDIO_SEC` is enforced)
+- Stale-prose rule: when docs disagree, code + `daily.yml` win — then fix the docs (these files), never the reverse

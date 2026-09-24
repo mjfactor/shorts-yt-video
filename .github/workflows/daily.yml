@@ -19,6 +19,10 @@ jobs:
     permissions:
       contents: write  # write = commit history.json back so next run avoids repeats
     env:
+      # Single-niche default; to run several niches, fan out with a matrix
+      # (e.g. `strategy.matrix.niche: [story, explainer, ranking]`) and set
+      # NICHE: ${{ matrix.niche }} instead.
+      NICHE: ${{ vars.NICHE || 'story' }}
       VISIBILITY: ${{ vars.VISIBILITY || 'private' }}
       TTS_RATE: ${{ vars.TTS_RATE || '-5%' }}
       TTS_PITCH: ${{ vars.TTS_PITCH || '-10Hz' }}
@@ -48,6 +52,57 @@ jobs:
       BUFFER_TIKTOK_CHANNEL_ID: ${{ secrets.BUFFER_TIKTOK_CHANNEL_ID }}
       CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
       CLOUDINARY_UPLOAD_PRESET: ${{ secrets.CLOUDINARY_UPLOAD_PRESET }}
+      TTS_MODEL: ${{ vars.TTS_MODEL || 'gemini-3.1-flash-tts-preview' }}
+      TTS_VOICES: ${{ vars.TTS_VOICES }}
+      NARRATION_SPEED: ${{ vars.NARRATION_SPEED || '1.15' }}
+      BG_DIR: ${{ vars.BG_DIR || 'assets/backgrounds/' }}
+      SEG_MIN: ${{ vars.SEG_MIN || '2.0' }}
+      SEG_MAX: ${{ vars.SEG_MAX || '4.0' }}
+      BG_SPEED_MIN: ${{ vars.BG_SPEED_MIN || '1.15' }}
+      BG_SPEED_MAX: ${{ vars.BG_SPEED_MAX || '1.5' }}
+      CAPTION_UPPER: ${{ vars.CAPTION_UPPER || '0' }}
+      CARD_SECONDS: ${{ vars.CARD_SECONDS || '3.0' }}
+      CHANNEL_HANDLE: ${{ vars.CHANNEL_HANDLE }}
+      AVATAR_PATH: ${{ vars.AVATAR_PATH || 'assets/avatar.png' }}
+      MAX_SECONDS: ${{ vars.MAX_SECONDS || '45' }}
+      STORY_GENRES: ${{ vars.STORY_GENRES }}
+      WHISPER_MODEL: ${{ vars.WHISPER_MODEL || 'base' }}
+      STORY_TTS_MODEL: ${{ vars.STORY_TTS_MODEL }}
+      STORY_TTS_VOICES: ${{ vars.STORY_TTS_VOICES }}
+      STORY_NARRATION_SPEED: ${{ vars.STORY_NARRATION_SPEED }}
+      STORY_SEG_MIN: ${{ vars.STORY_SEG_MIN }}
+      STORY_SEG_MAX: ${{ vars.STORY_SEG_MAX }}
+      STORY_BG_SPEED_MIN: ${{ vars.STORY_BG_SPEED_MIN }}
+      STORY_BG_SPEED_MAX: ${{ vars.STORY_BG_SPEED_MAX }}
+      STORY_CAPTION_UPPER: ${{ vars.STORY_CAPTION_UPPER }}
+      STORY_CARD_SECONDS: ${{ vars.STORY_CARD_SECONDS }}
+      STORY_CHANNEL_HANDLE: ${{ vars.STORY_CHANNEL_HANDLE }}
+      STORY_AVATAR_PATH: ${{ vars.STORY_AVATAR_PATH }}
+      STORY_BG_DIR: ${{ vars.STORY_BG_DIR }}
+      STORY_MAX_SECONDS: ${{ vars.STORY_MAX_SECONDS }}
+      STORY_TARGET_MIN: ${{ vars.STORY_TARGET_MIN }}
+      STORY_TARGET_MAX: ${{ vars.STORY_TARGET_MAX }}
+      STORY_STORY_GENRES: ${{ vars.STORY_STORY_GENRES }}
+      STORY_WHISPER_MODEL: ${{ vars.STORY_WHISPER_MODEL }}
+      STORY_PEXELS_API_KEY: ${{ secrets.STORY_PEXELS_API_KEY }}
+      EXPLAINER_VOICE: ${{ vars.EXPLAINER_VOICE }}
+      EXPLAINER_TTS_RATE: ${{ vars.EXPLAINER_TTS_RATE }}
+      EXPLAINER_TTS_PITCH: ${{ vars.EXPLAINER_TTS_PITCH }}
+      EXPLAINER_TTS_VOLUME: ${{ vars.EXPLAINER_TTS_VOLUME }}
+      EXPLAINER_TTS_ENGINE: ${{ vars.EXPLAINER_TTS_ENGINE }}
+      EXPLAINER_GEMINI_TTS_VOICES: ${{ vars.EXPLAINER_GEMINI_TTS_VOICES }}
+      EXPLAINER_MIN_AUDIO_SEC: ${{ vars.EXPLAINER_MIN_AUDIO_SEC }}
+      EXPLAINER_MAX_AUDIO_SEC: ${{ vars.EXPLAINER_MAX_AUDIO_SEC }}
+      EXPLAINER_PEXELS_MIN_WIDTH: ${{ vars.EXPLAINER_PEXELS_MIN_WIDTH }}
+      RANKING_VOICE: ${{ vars.RANKING_VOICE }}
+      RANKING_TTS_VOICES: ${{ vars.RANKING_TTS_VOICES }}
+      RANKING_TTS_RATE: ${{ vars.RANKING_TTS_RATE }}
+      RANKING_TTS_PITCH: ${{ vars.RANKING_TTS_PITCH }}
+      RANKING_TTS_VOLUME: ${{ vars.RANKING_TTS_VOLUME }}
+      RANKING_STILLS_PER_BEAT: ${{ vars.RANKING_STILLS_PER_BEAT }}
+      RANKING_MIN_AUDIO_SEC: ${{ vars.RANKING_MIN_AUDIO_SEC }}
+      RANKING_MAX_AUDIO_SEC: ${{ vars.RANKING_MAX_AUDIO_SEC }}
+      RANKING_PEXELS_MIN_WIDTH: ${{ vars.RANKING_PEXELS_MIN_WIDTH }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

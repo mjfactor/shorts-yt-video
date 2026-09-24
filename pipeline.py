@@ -1,19 +1,18 @@
-"""Zero-cost YouTube Shorts pipeline: Gemini -> TTS -> Pexels/Visuals -> FFmpeg -> YouTube.
+"""Zero-cost story Shorts pipeline: Gemini -> TTS -> Pexels/Visuals -> FFmpeg -> YouTube.
 Run: python pipeline.py  (all config via env vars, see .env.example)
 Output: out/<date>_short.mp4 (+ .srt, metadata.json)
 
-Layout: pipeline.py (this entry), core.py (shared machinery),
-niche_explainer.py (explainer niche: 'how the world works' Shorts).
-To switch back to rankings: swap niche_explainer -> niche_ranking below.
+Layout: pipeline.py (this story-first entry), core.py (shared machinery),
+niches/story (loaded via niches.load_niche(), NICHE env defaults to story).
 """
 import sys
 
 import core
-import niche_explainer
+from niches import load_niche
 
 
 def main():
-    core.run(niche_explainer)
+    core.run(load_niche())
 
 
 if __name__ == "__main__":

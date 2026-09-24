@@ -1,19 +1,28 @@
-"""Explainer niche: 'How the world around you actually works' Shorts (~60-75s).
+"""Explainer stage 1: topics, prompt, Gemini script, offline fallback.
 
-Self-contained: prompt, topic pool, offline fallback, history shape,
-similarity rules, stock policy, and visual style.
-Delete this file + its import in pipeline.py to drop the niche.
+Moved verbatim from niche_explainer.py; core imports repointed to
+engine/* + local helpers. generate_content() wraps the full
+draft loop (Gemini -> OpenRouter -> fallback) into a Content.
 """
+
 import json
 import os
 import random
 import re
 import time
 
-import core as C
+from engine.ffmpeg_utils import log, warn
+from engine.gemini_client import (DEFAULT_SAFETY_SETTINGS, GeminiClient,
+                                  parse_keys)
+from niches.base import Content, NicheConfig
 
 MODE = "explainer"
 NICHE_LABEL = "how things actually work"
+
+# Local mirrors of core history windows (same defaults; cfg may narrow).
+DEDUP_WINDOW = 110
+HISTORY_PROMPT_N = 20
+SIMILARITY_RETRIES = 2
 
 # ---------------------------------------------------------------------------
 # Topic pool: evergreen explainer topics across categories. One is drawn per
@@ -182,24 +191,76 @@ AI_TOPICS = os.getenv("AI_TOPICS", "on").strip().lower() not in (
     "0", "off", "false", "no")
 AI_TOPIC_TRIES = 2
 
+_model_order: list[str] = []  # working model floats to front (per process)
 
-def _recent_topic_names(history: list[dict]) -> set:
+
+def _mark_model_working(model: str) -> None:
+    """Move working model first so later calls skip dead models."""
+    if model in _model_order and _model_order[0] != model:
+        _model_order.remove(model)
+        _model_order.insert(0, model)
+
+
+def _recent_topic_names(history: list[dict], window: int = DEDUP_WINDOW) -> set:
     """Casefolded topics from the full enforced history window (same niche)."""
     return {str(h.get("topic", "")).casefold()
-            for h in (history or [])[-C.DEDUP_WINDOW:]
+            for h in (history or [])[-window:]
             if h.get("niche", "") == MODE}
 
 
-def propose_topic(history: list[dict]) -> str | None:
+def _pick_avoiding(pool: tuple, recent: set,
+                   history: list[dict] | None = None):
+    """Pool pick excluding recent values; LRU fallback on exhaustion."""
+    folded = {str(v).casefold() for v in recent}
+    fresh = [v for v in pool if str(v).casefold() not in folded]
+    if fresh:
+        return random.choice(fresh)
+    if history:
+        last_seen: dict[str, int] = {}
+        for pos, h in enumerate(history):
+            t = str(h.get("topic", "")).casefold()
+            if t:
+                last_seen[t] = pos
+        def _recency(v) -> int:
+            return last_seen.get(str(v).casefold(), -1)
+        oldest = min(_recency(v) for v in pool)
+        return random.choice([v for v in pool if _recency(v) == oldest])
+    return random.choice(pool)
+
+
+def history_block(history: list[dict], n: int = HISTORY_PROMPT_N) -> str:
+    """Prompt section listing recent same-niche entries Gemini must avoid."""
+    recent = [h for h in (history or [])[-n:] if h.get("niche", "") == MODE]
+    if not recent:
+        return ""
+    return AVOID_INTRO + "\n".join(format_history_line(h) for h in recent) + "\n" + AVOID_OUTRO
+
+
+def propose_topic(history: list[dict], cfg: NicheConfig | None = None) -> str | None:
     """Ask Gemini for one fresh explainer topic. Returns topic or None."""
-    if not AI_TOPICS or not C.GEMINI_KEYS:
+    ai_on = getattr(cfg, "ai_topics", AI_TOPICS) if cfg else AI_TOPICS
+    tries = getattr(cfg, "ai_topic_tries", AI_TOPIC_TRIES) if cfg else AI_TOPIC_TRIES
+    keys = parse_keys()
+    if not ai_on or not keys:
         return None
-    recent = _recent_topic_names(history)
+    models = list(getattr(cfg, "gemini_models", []) or [])
+    if cfg is None or not models:
+        global _model_order
+        if not _model_order:
+            _model_order = [m.strip() for m in
+                            os.getenv("GEMINI_MODELS",
+                                      "gemini-3.8-flash,gemini-3.7-flash").split(",")
+                            if m.strip()]
+        models = list(_model_order)
+    timeout = getattr(cfg, "gemini_timeout", 40) if cfg else 40
+    window = getattr(cfg, "dedup_window", DEDUP_WINDOW) if cfg else DEDUP_WINDOW
+    prompt_n = getattr(cfg, "history_prompt_n", HISTORY_PROMPT_N) if cfg else HISTORY_PROMPT_N
+    recent = _recent_topic_names(history, window)
     same_niche = [h for h in (history or []) if h.get("niche", "") == MODE]
     excluded_cats = {_topic_category(h.get("topic", "")) for h in same_niche[-2:]}
     excluded_cats.discard("")
     avoid = "".join(f"- {h.get('topic', '?')}\n"
-                    for h in (history or [])[-C.HISTORY_PROMPT_N:]
+                    for h in (history or [])[-prompt_n:]
                     if h.get("niche", "") == MODE)
     cat_rule = (f" Rotate categories: do NOT propose these recently aired lanes: "
                 f"{sorted(excluded_cats) or '(none yet)'}. "
@@ -217,29 +278,19 @@ def propose_topic(history: list[dict]) -> str | None:
         f"Do NOT reuse any of these recent topics:\n{avoid or '(none yet)'}\n"
         "Output only the JSON object."
     )
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "temperature": 0.8,
-            "maxOutputTokens": 512,
-        },
-        "safetySettings": C._GEMINI_SAFETY_SETTINGS,
-    }
-    for round_no in range(1, AI_TOPIC_TRIES + 1):
+    client = GeminiClient(keys, timeout=timeout)
+    for round_no in range(1, tries + 1):
         data = None
-        for model in C.GEMINI_MODELS:
+        for model in models:
             try:
-                url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-                       f"{model}:generateContent")
-                raw = C._fetch_gemini(url, payload)
-                text = raw["candidates"][0]["content"]["parts"][0]["text"]
-                text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-                data = json.loads(text)
-                C.mark_model_working(model)
+                data = client.generate_json(
+                    model, prompt,
+                    generation_config={"temperature": 0.8,
+                                       "maxOutputTokens": 512})
+                _mark_model_working(model)
                 break
             except Exception as e:
-                C.log(f"AI topic model {model} unusable ({e}), trying next...")
+                log(f"AI topic model {model} unusable ({e}), trying next...")
                 time.sleep(2)
         if not isinstance(data, dict):
             continue
@@ -256,10 +307,10 @@ def propose_topic(history: list[dict]) -> str | None:
         if not any(topic_l.startswith(q) for q in ("how ", "why ", "what ")):
             problems.append("not a how/why/what question")
         if problems:
-            C.log(f"AI topic rejected ({'; '.join(problems)}), "
-                  f"round {round_no}/{AI_TOPIC_TRIES}.")
+            log(f"AI topic rejected ({'; '.join(problems)}), "
+                f"round {round_no}/{tries}.")
             continue
-        C.log(f"AI topic accepted: {topic}")
+        log(f"AI topic accepted: {topic}")
         return topic
     return None
 
@@ -267,23 +318,24 @@ def propose_topic(history: list[dict]) -> str | None:
 # ---------------------------------------------------------------------------
 # Prompt builder
 # ---------------------------------------------------------------------------
-def build_prompt(history: list[dict]):
+def build_prompt(history: list[dict], cfg: NicheConfig | None = None):
     """Gemini prompt for an explainer Short (~60-75s). Returns (prompt, slots)."""
     history = history or []
-    recent_topics = _recent_topic_names(history)
-    topic = propose_topic(history)
+    window = getattr(cfg, "dedup_window", DEDUP_WINDOW) if cfg else DEDUP_WINDOW
+    recent_topics = _recent_topic_names(history, window)
+    topic = propose_topic(history, cfg)
     source = "ai" if topic else "pool"
     if topic is None:
-        topic = C._pick_avoiding(TOPICS, recent_topics, history)
+        topic = _pick_avoiding(TOPICS, recent_topics, history)
     slots = {"topic": topic, "topic_source": source}
     category = _topic_category(topic)
     slots["category"] = category
-    C.log(f"Explainer topic ({source}): {topic}")
+    log(f"Explainer topic ({source}): {topic}")
     prompt = (
         f"Write a YouTube Shorts explainer script that answers: \"{topic}?\"\n\n"
         "This is a short, clear explanation of ONE real-world concept for a general audience. "
         "No technical jargon. No filler. No unsupported claims.\n\n"
-        f"{C.history_block(history, MODE, format_history_line, AVOID_INTRO, AVOID_OUTRO)}"
+        f"{history_block(history)}"
         "Return ONLY valid JSON with exactly these keys: title, narration, description, tags, beats.\n\n"
         "Title: must be a clear question, starting with 'How', 'Why', or 'What'. "
         "Example: 'How Does Face ID Work?' or 'Why Does a Microwave Heat Food?'. "
@@ -558,7 +610,7 @@ def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
         if variant["topic"].casefold() != last_topic:
             chosen = variant
             break
-    C.log(f"Offline fallback: '{chosen['topic']}'.")
+    log(f"Offline fallback: '{chosen['topic']}'.")
     return _build_fallback_meta(chosen)
 
 
@@ -598,6 +650,56 @@ def validate_extra(data: dict) -> dict:
         if not isinstance(hint.get("label"), str):
             hint["label"] = ""
     return {}
+
+
+def _validate_script(data: dict) -> dict:
+    """Strict-check script JSON. Raises ValueError when unusable."""
+    if not isinstance(data, dict):
+        raise ValueError("Gemini output is not a JSON object")
+    title = data.get("title")
+    narration = data.get("narration")
+    description = data.get("description")
+    tags = data.get("tags")
+    beats = data.get("beats")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("missing/invalid 'title' (must be non-empty string)")
+    if not isinstance(narration, str) or len(narration.split()) < 20:
+        raise ValueError("'narration' missing or too short (<20 words)")
+    nwords = len(narration.split())
+    if nwords < 120:  # explainer floor (~60-75s at ~145 WPM)
+        raise ValueError(f"'narration' too short ({nwords} words, need 120+)")
+    if not isinstance(description, str) or not description.strip():
+        raise ValueError("missing/invalid 'description' (must be non-empty string)")
+    if (not isinstance(tags, list) or not tags
+            or not all(isinstance(t, str) and t.strip() for t in tags)):
+        raise ValueError("'tags' must be a non-empty list of strings")
+    if not isinstance(beats, list) or not beats:
+        raise ValueError("'beats' must be a non-empty list")
+    norm_beats = []
+    for b in beats[:8]:
+        if not isinstance(b, dict):
+            raise ValueError("each beat must be an object with text+query")
+        t, q = b.get("text"), b.get("query")
+        if not isinstance(t, str) or not t.strip():
+            raise ValueError("beat 'text' must be a non-empty string")
+        if not isinstance(q, str) or not q.strip():
+            raise ValueError("beat 'query' must be a non-empty string")
+        norm_b = {"text": t.strip(), "query": q.strip(), "label": ""}
+        if isinstance(b.get("visual_hint"), dict):
+            norm_b["visual_hint"] = b["visual_hint"]
+        norm_beats.append(norm_b)
+    bwords = sum(len(b["text"].split()) for b in norm_beats)
+    if bwords < 120:
+        raise ValueError(f"'beats' cover too little text ({bwords} words, need 120+)")
+    out = {
+        "title": title.strip()[:100],
+        "narration": narration.strip(),
+        "description": description.strip(),
+        "tags": [t.strip() for t in tags if t.strip()][:10],
+        "beats": norm_beats,
+    }
+    out.update(validate_extra(data))
+    return out
 
 
 def sanitize_title(title: str, slots: dict | None = None) -> str:
@@ -653,3 +755,205 @@ def board_filter(beats, items, durations, get_font, has_drawtext,
                  title: str = "") -> str:
     """Explainer niche has no leaderboard overlay."""
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Full draft loop (mirrors core.gen_script for the explainer path; the
+# hook-stakes regen is ranking-only and intentionally skipped here)
+# ---------------------------------------------------------------------------
+def _try_openrouter(prompt: str, cfg: NicheConfig | None = None) -> dict | None:
+    """OpenRouter :free failover. Returns validated meta or None; never raises."""
+    import requests
+
+    models = list(getattr(cfg, "openrouter_models", []) or
+                  [m.strip() for m in
+                   os.getenv("OPENROUTER_MODELS",
+                             "meta-llama/llama-3.3-70b-instruct:free,"
+                             "openai/gpt-oss-120b:free").split(",")
+                   if m.strip()][:2])[:2]
+    key = (os.getenv("OPENROUTER_API_KEY", "") or "").strip()
+    if not key:
+        log("OpenRouter skipped (OPENROUTER_API_KEY unset).")
+        return None
+    for m in models:
+        try:
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}",
+                         "Content-Type": "application/json"},
+                json={"model": m,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "temperature": 0.7,
+                      "max_tokens": 4096},
+                timeout=15)
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"]
+            text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            data = _validate_script(json.loads(text))
+            log(f"OpenRouter script OK via {m}.")
+            return data
+        except Exception as e:
+            warn(f"OpenRouter model {m} unusable ({e}), trying next...")
+    return None
+
+
+def _meta_to_content(meta: dict, slots: dict) -> Content:
+    """Validated meta+slots -> Content (beats/slots ride in extras)."""
+    return Content(
+        title=meta.get("title", ""),
+        narration_text=meta.get("narration", ""),
+        description=meta.get("description", ""),
+        tags=list(meta.get("tags", [])),
+        extras={"beats": list(meta.get("beats", [])),
+                "slots": dict(slots or {}),
+                "topic": (slots or {}).get("topic", ""),
+                "category": (slots or {}).get("category", ""),
+                "topic_source": (slots or {}).get("topic_source", "")},
+    )
+
+
+def generate_content(history: list[dict], cfg: NicheConfig) -> Content:
+    """Full script draft: Gemini (similarity regens) -> OpenRouter -> fallback."""
+    history = history or []
+    window = getattr(cfg, "dedup_window", DEDUP_WINDOW)
+    retries = getattr(cfg, "similarity_retries", SIMILARITY_RETRIES)
+    models = list(getattr(cfg, "gemini_models", []) or [])
+    if not models:
+        global _model_order
+        if not _model_order:
+            _model_order = [m.strip() for m in
+                            os.getenv("GEMINI_MODELS",
+                                      "gemini-3.8-flash,gemini-3.7-flash").split(",")
+                            if m.strip()]
+        models = list(_model_order)
+    timeout = getattr(cfg, "gemini_timeout", 40)
+    keys = parse_keys()
+    if keys:
+        client = GeminiClient(keys, timeout=timeout)
+        for attempt in range(1 + retries):
+            prompt, slots = build_prompt(history, cfg)
+            data = None
+            for model in models:
+                try:
+                    data = client.generate_json(
+                        model, prompt,
+                        generation_config={"temperature": 0.7,
+                                           "maxOutputTokens": 4096})
+                    _mark_model_working(model)
+                    data = _validate_script(data)
+                    break
+                except Exception as e:
+                    log(f"Gemini model {model} unusable ({e}), trying next...")
+                    time.sleep(2)
+            if data is None:
+                log("All Gemini models failed, trying OpenRouter :free failover.")
+                data = _try_openrouter(prompt, cfg)
+                if data is None:
+                    log("OpenRouter failed too, using fallback.")
+                    break
+            recent = [h for h in history[-window:]
+                      if h.get("niche", "") == MODE]
+            reason = similarity_reason(data, slots, recent)
+            data["title"] = sanitize_title(data.get("title", ""), slots)
+            if reason is None:
+                log(f"Gemini script OK: {data.get('title')}")
+                return _meta_to_content(data, slots)
+            if attempt < retries:
+                warn(f"Gemini draft too similar to history ({reason}), "
+                     f"regenerating (attempt {attempt + 1}/{retries})...")
+                continue
+            warn(f"Gemini draft still similar ({reason}), accepting "
+                 f"to avoid failing the run.")
+            return _meta_to_content(data, slots)
+    warn("Gemini unavailable: using standalone fallback script.")
+    meta, slots = fallback_script(history)
+    return _meta_to_content(meta, slots)
+
+
+def sample_content() -> Content:
+    """Offline sample (inlined website explainer; no fixture files)."""
+    fx = {
+        "topic": "What happens when you open a website",
+        "title": "🌐 What Happens When You Open a Website?",
+        "description": ("🌐 Ever wonder what happens in the split second "
+                        "after you type a URL? #shorts #internet #explained"),
+        "tags": ["shorts", "internet", "howthingswork", "explained",
+                 "technology"],
+        "narration": (
+            "Every time you type a website address, something incredible "
+            "happens in less than a second. Your browser does not actually "
+            "know where that website lives. So it asks a special server "
+            "called a DNS server, which works like a phone book for the "
+            "internet. It translates the name you typed into a number "
+            "address. Your request then travels through cables, sometimes "
+            "under the ocean, to reach the server that holds the website. "
+            "That server reads your request and sends back all the pieces. "
+            "Your browser collects all those pieces and assembles them "
+            "into the page you see. All of this happens in about 200 "
+            "milliseconds. So the next time a website loads instantly, "
+            "remember: your request just traveled halfway around the world "
+            "and back."),
+        "beats": [
+            {"text": ("Every time you type a website address, something "
+                      "incredible happens in less than a second."),
+             "query": "person typing laptop",
+             "visual_hint": {
+                 "type": "text_card",
+                 "description": "What happens when you open a website?",
+                 "label": "What Happens When You\nOpen a Website?"}},
+            {"text": ("Your browser does not actually know where that "
+                      "website lives. So it asks a special server called a "
+                      "DNS server, which works like a phone book for the "
+                      "internet. It translates the name you typed into a "
+                      "number address."),
+             "query": "server room data center",
+             "visual_hint": {
+                 "type": "process_flow",
+                 "description": ("Browser sends request to DNS server, gets "
+                                 "IP address back"),
+                 "components": ["Browser", "DNS Server", "IP Address"],
+                 "label": "DNS Lookup"}},
+            {"text": ("Your request then travels through cables, sometimes "
+                      "under the ocean, to reach the server that holds the "
+                      "website. That server reads your request and sends "
+                      "back all the pieces."),
+             "query": "undersea cable ocean",
+             "visual_hint": {
+                 "type": "diagram",
+                 "description": ("Data traveling through undersea cables to "
+                                 "a web server"),
+                 "components": ["Computer", "Cable", "Ocean", "Server"],
+                 "label": "Data Request"}},
+            {"text": ("Your browser collects all those pieces and assembles "
+                      "them into the page you see. All of this happens in "
+                      "about 200 milliseconds."),
+             "query": "website loading browser",
+             "visual_hint": {
+                 "type": "process_flow",
+                 "description": ("Browser assembling HTML, CSS, and images "
+                                 "into a webpage"),
+                 "components": ["HTML", "CSS", "Images", "Webpage"],
+                 "label": "Page Rendering"}},
+            {"text": ("So the next time a website loads instantly, remember: "
+                      "your request just traveled halfway around the world "
+                      "and back."),
+             "query": "earth globe network",
+             "visual_hint": {
+                 "type": "text_card",
+                 "description": "Your request just traveled around the world",
+                 "label": "Halfway Around\nthe World in 200ms"}},
+        ],
+    }
+    slots = {"topic": fx["topic"],
+             "topic_source": "sample",
+             "category": _topic_category(fx["topic"])}
+    return Content(
+        title=fx["title"],
+        narration_text=fx["narration"],
+        description=fx["description"],
+        tags=list(fx["tags"]),
+        extras={"beats": [dict(b) for b in fx["beats"]],
+                "slots": slots, "topic": slots["topic"],
+                "category": slots["category"],
+                "topic_source": "sample"},
+    )

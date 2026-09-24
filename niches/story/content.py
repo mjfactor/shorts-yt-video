@@ -1,0 +1,615 @@
+"""Story stage 1: Reddit-style micro-story Content via engine.gemini_client.
+
+Moved from niche_story.py and extended for the 100-120s niche: re-hook
+beats at 20-30s + 50-60s, word budget from TARGET * measured wps,
+sentence/TTS/safety/copy gates, retry with backoff.
+"""
+from __future__ import annotations
+
+import random
+import re
+import time
+
+from engine import gemini_client as _gc
+from engine.ffmpeg_utils import log, warn
+from niches.base import Content
+
+from .config import DEFAULT_GENRES, MODE, StoryConfig
+
+AVOID_INTRO = "Already-aired stories — do NOT reuse these titles or premises:\n"
+AVOID_OUTRO = "Your story must have a DIFFERENT premise from every entry above. "
+
+USE_BEAT_QUERY = True
+AMBIENT_QUERIES: tuple = ()
+USE_MOOD = False
+
+_TTS_BAD_RE = re.compile(r"[*#_`|~@^<>{}\[\]\\]")
+_EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
+# Markers of copied Reddit material (never air these).
+_COPY_RE = re.compile(r"\br/\w+|reddit\.com|u/\w+|AITA\?|TIFU|ELI5", re.IGNORECASE)
+# Safety refusals: graphic/hate/age-restricted bait.
+_UNSAFE_RE = re.compile(
+    r"\b(nude|naked|porn|molest|rape\b|lynch|kill (him|her|them)|"
+    r"suicide|self-?harm|gore\b|torture)\b", re.IGNORECASE)
+
+MAX_SENTENCE_WORDS = 20
+
+
+def _genres(cfg: StoryConfig) -> tuple[str, ...]:
+    """Genre pool from config (STORY_GENRES) else defaults."""
+    return tuple(cfg.story_genres) or DEFAULT_GENRES
+
+
+def _pick_genre(history: list[dict], cfg: StoryConfig) -> str:
+    """Deterministic rotation over same-niche count; never repeats last genre."""
+    pool = _genres(cfg)
+    same = [h for h in (history or []) if h.get("niche", "") == MODE]
+    n = len(same)
+    genre = pool[n % len(pool)]
+    last = str(same[-1].get("genre", "")).casefold() if same else ""
+    if genre.casefold() == last and len(pool) > 1:
+        genre = pool[(n + 1) % len(pool)]
+    return genre
+
+
+def format_history_line(h: dict) -> str:
+    """One-line history entry for the dedup prompt block."""
+    premise = str(h.get("narration", "")).strip().replace("\n", " ")[:60]
+    return (f"- \"{h.get('title', '?')}\" "
+            f"(genre={h.get('genre', '?')}) premise: {premise}...")
+
+
+def history_block(history: list[dict], prompt_n: int) -> str:
+    """Recent same-niche entries the model must not repeat."""
+    recent = [h for h in (history or [])[-prompt_n:]
+              if h.get("niche", "") == MODE]
+    if not recent:
+        return ""
+    return AVOID_INTRO + "\n".join(format_history_line(h) for h in recent) + "\n" + AVOID_OUTRO
+
+
+def measure_wps(history: list[dict], default: float = 2.9) -> float:
+    """Speech rate from history entries carrying words+duration, else default."""
+    rates = []
+    for h in (history or [])[-30:]:
+        try:
+            w = float(h.get("words", 0))
+            d = float(h.get("duration", 0))
+            if w > 20 and d > 10:
+                rates.append(w / d)
+        except (TypeError, ValueError):
+            continue
+    if not rates:
+        return default
+    rates.sort()
+    mid = rates[len(rates) // 2]
+    return min(3.6, max(2.2, mid))
+
+
+def target_words(cfg: StoryConfig, wps: float) -> tuple[int, int]:
+    """(lo, hi) word budget from TARGET_MIN/MAX * measured wps.
+
+    At 100-120s and ~4.3 wps measured edge reality this is roughly
+    430-520 words.
+    """
+    return (max(60, round(cfg.target_min * wps)),
+            min(600, round(cfg.target_max * wps)))
+
+
+def _str_list(v: object) -> list[str]:
+    """Normalize a JSON value to a list of non-empty strings."""
+    if not isinstance(v, list):
+        return []
+    return [s.strip() for s in v if isinstance(s, str) and s.strip()]
+
+
+def _check_sentences(story: str) -> str | None:
+    """Longest-sentence gate (<=20 words); returns reason or None."""
+    for sent in re.split(r"[.!?…]+", story):
+        if len(sent.split()) > MAX_SENTENCE_WORDS:
+            return (f"sentence over {MAX_SENTENCE_WORDS} words: "
+                    f"'{sent.strip()[:60]}...'")
+    return None
+
+
+def _norm_card_words(s: str) -> list[str]:
+    """Lowercased words, punctuation stripped, for card-line matching."""
+    return [w.strip(".,!?\"'…").lower() for w in s.split()
+            if w.strip(".,!?\"'…")]
+
+
+def _starts_with_card(story: str, card_text: str) -> bool:
+    """First sentence of story_text matches card_text (case-insensitive,
+    trailing punctuation ignored). Empty card_text always matches."""
+    if not _norm_card_words(card_text):
+        return True
+    first = re.split(r"[.!?…]+", story.strip(), maxsplit=1)[0]
+    return _norm_card_words(first) == _norm_card_words(card_text)
+
+
+def validate_extra(data: dict, cfg: StoryConfig | None = None,
+                   wps: float = 2.9) -> dict:
+    """Strict-check the story payload. Raises ValueError when unusable."""
+    if not isinstance(data, dict):
+        raise ValueError("story output is not a JSON object")
+    for key in ("title", "description", "tags", "beats"):
+        if not data.get(key):
+            raise ValueError(f"missing/invalid '{key}'")
+    story = data.get("narration") or data.get("story_text")
+    if not isinstance(story, str) or not story.strip():
+        raise ValueError("missing/invalid 'story_text'/'narration'")
+    story = story.strip()
+    words = len(story.split())
+    if cfg is not None:
+        lo, hi = target_words(cfg, wps)
+        lo, hi = lo - 15, hi + 15
+    else:
+        lo, hi = 80, 160
+    if words < lo or words > hi:
+        raise ValueError(f"'story_text' out of range ({words} words, need {lo}-{hi})")
+    for field in ("story_text", "hook", "title"):
+        text = story if field == "story_text" else str(data.get(field, "") or "")
+        bad = _TTS_BAD_RE.search(text) or _EMOJI_RE.search(text)
+        if bad:
+            raise ValueError(f"TTS-hostile character {bad.group()!r} in '{field}'")
+    if _COPY_RE.search(story):
+        raise ValueError("story looks copied from Reddit (markers found)")
+    unsafe = _UNSAFE_RE.search(story)
+    if unsafe:
+        raise ValueError(f"safety refusal trigger {unsafe.group()!r} in story")
+    long_sent = _check_sentences(story)
+    if long_sent:
+        raise ValueError(long_sent)
+    hook = str(data.get("hook", "") or "").strip()
+    if hook and not story.startswith(hook[:20]):
+        raise ValueError("'hook' must be the opening line of 'story_text'")
+    card_text = str(data.get("card_text", "") or "").strip()
+    if card_text and not _starts_with_card(story, card_text):
+        raise ValueError("'story_text' must open with the card line "
+                         "verbatim as its first sentence")
+    key_words = _str_list(data.get("key_words"))
+    bg_queries = _str_list(data.get("bg_queries"))[:8]
+    if len(bg_queries) < 5:
+        raise ValueError("'bg_queries' must hold 5-8 queries")
+    ending = str(data.get("ending_type", "") or "").strip().lower()
+    if ending not in ("payoff", "cliffhanger"):
+        raise ValueError("'ending_type' must be 'payoff' or 'cliffhanger'")
+    rehooks = []
+    for rh in (data.get("rehooks") or []):
+        if not isinstance(rh, dict):
+            raise ValueError("each 'rehooks' entry must be an object")
+        at = str(rh.get("at", "")).strip()
+        line = str(rh.get("line", "")).strip()
+        if at not in ("20-30s", "50-60s"):
+            raise ValueError("'rehooks[].at' must be '20-30s' or '50-60s'")
+        if not line or line not in story:
+            raise ValueError("'rehooks[].line' must be a line from the story")
+        rehooks.append({"at": at, "line": line})
+    if len(rehooks) < 2:
+        raise ValueError("'rehooks' must hold the 20-30s and 50-60s re-hooks")
+    beats = data.get("beats") or []
+    joined = " ".join(str(b.get("text", "")) for b in beats
+                      if isinstance(b, dict)).strip()
+    if " ".join(joined.split()) != " ".join(story.split()):
+        raise ValueError("beat texts joined must equal narration exactly")
+    extra = {
+        "items": key_words,
+        "key_words": key_words,
+        "bg_queries": bg_queries,
+        "genre": str(data.get("genre", "") or "").strip(),
+        "card_text": str(data.get("card_text", "") or "").strip(),
+        "card_highlight_word": str(data.get("card_highlight_word", "") or "").strip(),
+        "hook": hook,
+        "story_text": story,
+        "narration": story,
+        "ending_type": ending,
+        "pinned_comment": str(data.get("pinned_comment", "") or "").strip(),
+        "rehooks": rehooks,
+        "beats": [{"text": str(b.get("text", "")).strip(),
+                   "query": str(b.get("query", "")).strip(), "label": ""}
+                  for b in beats if isinstance(b, dict)],
+    }
+    if isinstance(data.get("part_2_seed"), str) and data["part_2_seed"].strip():
+        extra["part_2_seed"] = data["part_2_seed"].strip()
+    return extra
+
+
+def sanitize_title(title: str, slots: dict | None = None) -> str:
+    """Hook-driven title, <=100 chars, with ' #shorts' when it fits."""
+    t = re.sub(r"\s+", " ", (title or "")).strip()
+    t = re.sub(r"#\S+", "", t).strip()
+    t = re.sub(r"\s*[–—\-:|;,.]+\s*$", "", t).strip()
+    if len(t) > 100:
+        cut = t[:100].rsplit(" ", 1)[0] or t[:100]
+        t = cut.strip()
+    if t and len(t) + len(" #shorts") <= 100:
+        t = f"{t} #shorts"
+    return t[:100].strip() or "Story Time"
+
+
+def _sig(text: str) -> set[str]:
+    """Significant lowercase words, for overlap comparison."""
+    stop = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "at",
+            "it", "its", "is", "was", "are", "be", "i", "you", "he", "she",
+            "they", "we", "my", "his", "her", "with", "for", "as", "that",
+            "this", "but", "not", "so", "if", "then", "there", "here"}
+    return {w.strip(".,!?;:\"'").lower() for w in text.split()
+            if len(w) > 3} - stop
+
+
+def similarity_reason(data: dict, slots: dict, recent: list[dict],
+                      item_recent: list[dict] | None = None) -> str | None:
+    """Repeat reason for title/premise dupes or >35% overlap, else None."""
+    title = str(data.get("title", "")).strip().casefold()
+    for h in recent:
+        if str(h.get("title", "")).strip().casefold() == title:
+            return "title already used"
+    premise = str(data.get("story_text") or data.get("narration", "")).strip().casefold()
+    for h in recent:
+        if str(h.get("narration", "")).strip().casefold() == premise:
+            return "premise already used"
+    window = item_recent if item_recent is not None else recent[-30:]
+    new_sig = _sig(f"{data.get('title', '')} "
+                   f"{data.get('story_text') or data.get('narration', '')}")
+    for h in window[-30:]:
+        old_sig = _sig(f"{h.get('title', '')} {h.get('narration', '')}")
+        if not old_sig or not new_sig:
+            continue
+        if len(new_sig & old_sig) / len(new_sig | old_sig) > 0.35:
+            return f"story overlaps '{h.get('title', '?')}' (word overlap >35%)"
+    return None
+
+
+def history_fields(slots: dict, meta: dict) -> dict:
+    """Extra history.json entry fields for the story niche."""
+    kw = meta.get("key_words") or meta.get("items") or []
+    return {"topic": (slots or {}).get("topic", ""),
+            "topicSource": (slots or {}).get("topic_source", "genre-rotation"),
+            "genre": (slots or {}).get("genre", meta.get("genre", "")),
+            "items": list(kw)[:10]}
+
+
+def board_filter(beats, items, durations, get_font, has_drawtext,
+                 title: str = "") -> str:
+    """Story niche has no leaderboard overlay."""
+    return ""
+
+
+def build_prompt(history: list[dict], cfg: StoryConfig,
+                 wps: float | None = None) -> tuple[str, dict]:
+    """Gemini prompt for a 100-120s Reddit-style story. Returns (prompt, slots)."""
+    history = history or []
+    genre = _pick_genre(history, cfg)
+    slots = {"genre": genre, "topic": genre, "topic_source": "genre-rotation"}
+    log(f"Story genre ({slots['topic_source']}): {genre}")
+    wps = wps or cfg.history_wps
+    lo, hi = target_words(cfg, wps)
+    secs = f"{cfg.target_min:g}-{cfg.target_max:g}"
+    prompt = (
+        f"Write a YouTube Shorts reddit-style story in the '{genre}' lane.\n\n"
+        "This is ONE original, self-contained micro-story told in first or "
+        "second person, the kind of tale that goes viral on story channels. "
+        "It must be 100 percent original — never copy or retell a real Reddit "
+        "post, and never use real people, brands, or defamatory places.\n\n"
+        f"{history_block(history, cfg.history_prompt_n)}"
+        "Return ONLY valid JSON with exactly these keys: title, card_text, "
+        "card_highlight_word, hook, story_text, narration, genre, key_words, "
+        "bg_queries, tags, description, ending_type, pinned_comment, beats, "
+        "rehooks, plus optional part_2_seed.\n\n"
+        f"Story structure ({lo}-{hi} words total, about {secs} seconds spoken):\n"
+        "1. card_text: ONE on-screen card line (<=8 words) that teases the "
+        "payoff without spoiling it. card_highlight_word must be one punchy "
+        "word from card_text. The narrator SPEAKS this exact line first: "
+        "story_text must open with the card line verbatim as its first "
+        "sentence.\n"
+        "2. hook: the card line verbatim (with terminal punctuation) — it is "
+        "both the on-screen card and the first spoken line, landing in the "
+        "first second with a stakes signal (betrayal, danger, money, "
+        "revenge, a creepy moment). Never reveal the twist here.\n"
+        "3. Fast setup (2-3 sentences): who, where, what went wrong.\n"
+        "4. Escalation (4-6 sentences): things get worse, tension rises. "
+        "Plant a re-hook line that lands around 20-30 seconds in (a fresh "
+        "stake or question that re-grabs scrollers).\n"
+        "5. Twist: one surprising turn, with a second re-hook line that "
+        "lands around 50-60 seconds in.\n"
+        "6. Ending: a punchy payoff line, or a cliffhanger that begs for part 2 "
+        "(set ending_type to 'payoff' or 'cliffhanger'; only cliffhangers may "
+        "include part_2_seed, one sentence teasing the next part).\n\n"
+        "story_text and narration must be IDENTICAL: the full spoken story, "
+        f"{lo}-{hi} words (card line included in the total). "
+        f"genre must echo '{genre}'. "
+        "key_words: 4-8 lowercase content words (people, places, objects, "
+        "moods) for dedup and visuals. bg_queries: 5-8 background-footage "
+        "search queries, 1-3 concrete filmable words each "
+        "(e.g. 'office desk night').\n\n"
+        "rehooks: exactly 2 objects {\"at\": \"20-30s\" | \"50-60s\", "
+        "\"line\": <exact story line>}. Each line must appear verbatim in "
+        "the story.\n\n"
+        "TTS-friendly text (strict): short sentences of at most 20 words, "
+        "plain words, no emojis, no markdown, no symbols (* # _ ` | ~ @ ^ < > etc). "
+        "Write numbers and ages naturally ('three in the morning', 'twenty bucks'). "
+        "No dialogue tags like 'he said' — just tell it.\n\n"
+        "Safety (strict): no graphic sexual content, no violence against "
+        "minors, no hate toward any group, nothing age-restricted or "
+        "demonetization-bait. Everyday conflict, petty revenge, workplace "
+        "drama, spooky-but-safe chills only.\n\n"
+        "title: hook-driven, curiosity-gap, <=60 chars, no emoji, no hashtags "
+        "(the uploader appends tagging). description: exactly 2 sentences "
+        "with 1-2 fitting emojis and 3 hashtags. tags: exactly 5 plain-ASCII "
+        "strings, no emoji. pinned_comment: ONE engaging question or call to "
+        "comment (<=150 chars, 1 emoji max).\n\n"
+        "beats: array of 3-5 objects in spoken order. Each object must be "
+        "{\"text\": <exact story chunk>, \"query\": <1-3 word filmable stock "
+        "query>}. The beat texts joined with single spaces must equal "
+        "narration EXACTLY. Each query should match its moment.\n\n"
+        "Do not include markdown, notes, or any extra keys. Output only the "
+        "JSON object."
+    )
+    return prompt, slots
+
+
+def _make_client(cfg: StoryConfig):
+    """Engine client or None when keyless (offline path)."""
+    keys = list(cfg.gemini_keys)
+    if not keys:
+        return None
+    return _gc.GeminiClient(keys, timeout=cfg.timeout,
+                            tts_timeout=cfg.tts_timeout,
+                            tries=cfg.tries, backoff=cfg.backoff)
+
+
+def _to_content(meta: dict, slots: dict, wps: float) -> Content:
+    """Validated meta + slots → stage Content (all story fields in extras)."""
+    return Content(
+        title=meta["title"],
+        narration_text=meta["narration"],
+        description=meta.get("description", ""),
+        tags=list(meta.get("tags", [])),
+        extras={"beats": list(meta.get("beats", [])),
+                "items": list(meta.get("items", meta.get("key_words", []))),
+                "key_words": list(meta.get("key_words", [])),
+                "bg_queries": list(meta.get("bg_queries", [])),
+                "genre": slots.get("genre", ""),
+                "topic": slots.get("topic", ""),
+                "topic_source": slots.get("topic_source", "genre-rotation"),
+                "card_text": meta.get("card_text", ""),
+                "card_highlight_word": meta.get("card_highlight_word", ""),
+                "hook": meta.get("hook", ""),
+                "story_text": meta.get("story_text", meta.get("narration", "")),
+                "ending_type": meta.get("ending_type", ""),
+                "pinned_comment": meta.get("pinned_comment", ""),
+                "part_2_seed": meta.get("part_2_seed", ""),
+                "rehooks": list(meta.get("rehooks", [])),
+                "wps": wps,
+                "slots": dict(slots)})
+
+
+def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
+    """Gemini story with similarity regens; offline fallback when keyless."""
+    history = history or []
+    wps = measure_wps(history, cfg.history_wps)
+    client = _make_client(cfg)
+    if client is not None:
+        models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"]
+        for _attempt in range(1 + cfg.similarity_retries):
+            prompt, slots = build_prompt(history, cfg, wps)
+            data = None
+            for mi, model in enumerate(models):
+                try:
+                    data = validate_extra(
+                        client.generate_json(model, prompt, generation_config={
+                            "temperature": 0.8, "maxOutputTokens": 4096}),
+                        cfg, wps)
+                    if mi:
+                        models.remove(model)
+                        models.insert(0, model)
+                    break
+                except Exception as e:
+                    log(f"Story model {model} unusable ({e}), trying next...")
+                    time.sleep(cfg.backoff if mi + 1 >= len(models) else 2)
+            if data is None:
+                log("All story models failed, using fallback.")
+                break
+            window = [h for h in history[-cfg.dedup_window:]
+                      if h.get("niche", "") == MODE]
+            reason = similarity_reason(data, slots, window, window[-30:])
+            if reason is None:
+                data["title"] = sanitize_title(data.get("title", ""), slots)
+                log(f"Story script OK: {data.get('title')}")
+                return _to_content(data, slots, wps)
+            if _attempt < cfg.similarity_retries:
+                warn(f"Story draft too similar ({reason}), regenerating...")
+                continue
+            warn(f"Story draft still similar ({reason}), accepting best-effort.")
+            data["title"] = sanitize_title(data.get("title", ""), slots)
+            return _to_content(data, slots, wps)
+    warn("Gemini unavailable: using standalone fallback story.")
+    meta, slots = fallback_script(history)
+    return _to_content(meta, slots, wps)
+
+
+_FALLBACK_VARIANTS = (
+    {
+        "title": "I Finally Said No to Weekend Work",
+        "card_text": "I said no, then they moved my desk",
+        "card_highlight_word": "desk",
+        "hook": "I said no, then they moved my desk.",
+        "genre": "workplace",
+        "key_words": ["boss", "overtime", "office", "meeting", "weekend"],
+        "bg_queries": ["office desk night", "empty office hallway",
+                       "work team meeting", "conference room silent",
+                       "city office windows", "desk clock overtime"],
+        "tags": ["shorts", "storytime", "workplace", "revenge", "stories"],
+        "description": ("She finally said no to weekend work, and the office "
+                        "lost its mind. Would you have caved? "
+                        "#shorts #storytime #workplace"),
+        "ending_type": "payoff",
+        "pinned_comment": "Would YOU have said no, or worked the Saturday?",
+        "rehooks": [
+            {"at": "20-30s",
+             "line": "Then I found out my boss told everyone I was putting the whole project at risk."},
+            {"at": "50-60s",
+             "line": "So I printed every late night email and every weekend text, and I brought them to the big meeting."},
+        ],
+        "beats": [
+            {"text": ("I said no, then they moved my desk. My boss asked me "
+                      "to work Saturday for the third weekend in a row, so "
+                      "I finally said no."),
+             "query": "office desk night"},
+            {"text": ("On Monday, nobody would talk to me. My chair was moved "
+                      "to the storage room, and my name was missing from the "
+                      "team lunch order. Then I found out my boss told everyone "
+                      "I was putting the whole project at risk."),
+             "query": "empty office hallway"},
+            {"text": ("So I printed every late night email and every weekend "
+                      "text, and I brought them to the big meeting. I laid them "
+                      "on the table and said, if hard work matters here, the "
+                      "records speak for themselves. The room went silent, and "
+                      "my boss never asked me to work a weekend again. Comment "
+                      "if you would have done the same, and follow for the next story."),
+             "query": "conference room silent"},
+        ],
+    },
+    {
+        "title": "My Neighbor Learned to Fear My Blender",
+        "card_text": "He drummed at midnight, I blended at seven",
+        "card_highlight_word": "blended",
+        "hook": "He drummed at midnight, I blended at seven.",
+        "genre": "revenge",
+        "key_words": ["neighbor", "drums", "blender", "apartment", "deal"],
+        "bg_queries": ["apartment building night", "man sleeping bed",
+                       "kitchen blender morning", "neighbors handshake",
+                       "drum kit room", "morning kitchen light"],
+        "tags": ["shorts", "storytime", "revenge", "neighbors", "stories"],
+        "description": ("Midnight drums met a seven AM blender. Petty? Maybe. "
+                        "Effective? Completely. #shorts #storytime #revenge"),
+        "ending_type": "payoff",
+        "pinned_comment": "Petty revenge: justified or too far? Sound off below.",
+        "rehooks": [
+            {"at": "20-30s",
+             "line": "So I learned his schedule. He slept until noon after his night shifts, every single day."},
+            {"at": "50-60s",
+             "line": "On day three, he knocked on my door, half asleep, and begged for mercy."},
+        ],
+        "beats": [
+            {"text": ("He drummed at midnight, I blended at seven. My "
+                      "upstairs neighbor played drums every night at "
+                      "midnight, and politeness got me nowhere."),
+             "query": "apartment building night"},
+            {"text": ("So I learned his schedule. He slept until noon after "
+                      "his night shifts, every single day."),
+             "query": "man sleeping bed"},
+            {"text": ("I bought the loudest blender I could find, and every "
+                      "morning at seven, I made the thickest smoothie of my life. "
+                      "On day three, he knocked on my door, half asleep, and "
+                      "begged for mercy. We made a deal that same morning. No "
+                      "drums after ten, no blender before nine. We have been "
+                      "perfect neighbors ever since. Comment your best petty "
+                      "revenge below, and follow for the next story."),
+             "query": "kitchen blender morning"},
+        ],
+    },
+    {
+        "title": "The Gas Station Phone Rings at 3 AM",
+        "card_text": "Do not turn around",
+        "card_highlight_word": "around",
+        "hook": "Do not turn around.",
+        "genre": "scary",
+        "key_words": ["gas station", "night shift", "phone call", "cameras",
+                      "hallway"],
+        "bg_queries": ["gas station night", "old telephone ringing",
+                       "security camera monitor", "dark hallway shadows",
+                       "empty store night", "fluorescent lights flicker"],
+        "tags": ["shorts", "storytime", "scary", "truestory", "stories"],
+        "description": ("The phone rang at three AM with a warning: do not turn "
+                        "around. Part two at ten thousand likes. "
+                        "#shorts #scarystory #storytime"),
+        "ending_type": "cliffhanger",
+        "pinned_comment": "Want part 2? Ten thousand likes and it drops.",
+        "part_2_seed": "The cameras catch who was standing in the back hallway.",
+        "rehooks": [
+            {"at": "20-30s",
+             "line": "A small voice whispered, do not turn around, and then the line went dead."},
+            {"at": "50-60s",
+             "line": "Then every screen froze on the same frame, the back hallway, where something tall was standing."},
+        ],
+        "beats": [
+            {"text": ("Do not turn around. I work the night shift at a gas "
+                      "station, and last Tuesday the phone rang at exactly "
+                      "three in the morning."),
+             "query": "gas station night"},
+            {"text": ("A small voice whispered, do not turn around, and then "
+                      "the line went dead. My hands were shaking, but I checked "
+                      "the cameras, and the store was empty."),
+             "query": "security camera monitor"},
+            {"text": ("Then every screen froze on the same frame, the back "
+                      "hallway, where something tall was standing. I grabbed my "
+                      "keys and ran, and I never looked back. The next night, "
+                      "the phone rang again at exactly three. Comment if you "
+                      "want part two, and follow for the next story."),
+             "query": "dark hallway shadows"},
+        ],
+    },
+)
+
+
+def _build_fallback_meta(variant: dict) -> tuple[dict, dict]:
+    """Assemble a (meta, slots) pair from one fallback variant dict."""
+    story = " ".join(b["text"] for b in variant["beats"])
+    slots = {"genre": variant["genre"], "topic": variant["genre"],
+             "topic_source": "fallback"}
+    meta = {
+        "title": variant["title"],
+        "card_text": variant["card_text"],
+        "card_highlight_word": variant["card_highlight_word"],
+        "hook": variant["hook"],
+        "story_text": story,
+        "narration": story,
+        "genre": variant["genre"],
+        "key_words": list(variant["key_words"]),
+        "bg_queries": list(variant["bg_queries"]),
+        "tags": list(variant["tags"]),
+        "description": variant["description"],
+        "ending_type": variant["ending_type"],
+        "pinned_comment": variant["pinned_comment"],
+        "rehooks": [dict(r) for r in variant.get("rehooks", [])],
+        "beats": [{"text": b["text"], "query": b["query"], "label": ""}
+                  for b in variant["beats"]],
+        "items": list(variant["key_words"]),
+    }
+    if variant.get("part_2_seed"):
+        meta["part_2_seed"] = variant["part_2_seed"]
+    return meta, slots
+
+
+def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
+    """Offline story script. Least-recently-aired variant wins."""
+    history = history or []
+
+    def _last_pos(genre_cf: str) -> int:
+        pos = -1
+        for i, h in enumerate(history):
+            if (h.get("niche", "") == MODE
+                    and str(h.get("genre", "")).casefold() == genre_cf):
+                pos = i
+        return pos
+
+    ranked = sorted(_FALLBACK_VARIANTS,
+                    key=lambda v: _last_pos(v["genre"].casefold()))
+    same = [h for h in history if h.get("niche", "") == MODE]
+    last_genre = str(same[-1].get("genre", "")).casefold() if same else ""
+    chosen = ranked[0]
+    for variant in ranked:
+        if variant["genre"].casefold() != last_genre:
+            chosen = variant
+            break
+    log(f"Offline fallback: '{chosen['title']}'.")
+    return _build_fallback_meta(chosen)
+
+
+def sample_content() -> Content:
+    """Offline sample (first fallback variant) for demos/tests."""
+    meta, slots = _build_fallback_meta(_FALLBACK_VARIANTS[0])
+    out = _to_content(meta, slots, wps=2.9)
+    out.extras["offline"] = True
+    return out

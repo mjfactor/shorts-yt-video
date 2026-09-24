@@ -1,28 +1,38 @@
-"""Unit tests for explainer Shorts niche, visuals, and fixtures."""
+"""Unit tests for explainer Shorts niche, visuals, and fixtures.
+
+Archived reference copy: exercises deprecated_niches/explainer/ in place
+(the live tree no longer ships it). Run standalone from the repo root:
+`python deprecated_niches/test_explainer.py`.
+"""
 import json
 import os
+import sys
 import unittest
 from pathlib import Path
 from PIL import Image
 
-import core
-import niche_explainer
-import explainer_visuals
+# Repo-root bootstrap (same pattern as demo.py) so `niches.base` resolves.
+# The deprecated package itself loads as deprecated_niches.explainer via
+# namespace-package import — never as niches.explainer, so the live
+# registry is unaffected and no suite paths are polluted.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from deprecated_niches.explainer import content as explainer_content
 
 
 class TestNicheExplainer(unittest.TestCase):
-    """Test niche_explainer prompt generation, validation, and offline scripts."""
+    """Test explainer content prompt generation, validation, and offline scripts."""
 
     def test_mode_and_topic_pool(self):
-        self.assertEqual(niche_explainer.MODE, "explainer")
-        self.assertGreaterEqual(len(niche_explainer.TOPICS), 30)
+        self.assertEqual(explainer_content.MODE, "explainer")
+        self.assertGreaterEqual(len(explainer_content.TOPICS), 30)
         # Topics should not look like Top-5 listicles
-        for topic in niche_explainer.TOPICS:
+        for topic in explainer_content.TOPICS:
             self.assertFalse(topic.lower().startswith("5 "), f"Topic '{topic}' should not be a Top-5 ranking")
             self.assertFalse(topic.lower().startswith("top "), f"Topic '{topic}' should not be a Top-5 ranking")
 
     def test_build_prompt(self):
-        prompt, slots = niche_explainer.build_prompt([])
+        prompt, slots = explainer_content.build_prompt([])
         self.assertIn("YouTube Shorts explainer script", prompt)
         self.assertIn("visual_hint", prompt)
         self.assertIsInstance(slots, dict)
@@ -30,13 +40,13 @@ class TestNicheExplainer(unittest.TestCase):
         self.assertIn("topic_source", slots)
 
     def test_fallback_script(self):
-        meta, slots = niche_explainer.fallback_script([])
+        meta, slots = explainer_content.fallback_script([])
         self.assertIn("topic", slots)
         self.assertIn("title", meta)
         self.assertIn("narration", meta)
         self.assertIn("beats", meta)
-        # Validate through core._validate_script with niche_explainer
-        validated = core._validate_script(meta, niche=niche_explainer)
+        # Validate through the ported explainer validator
+        validated = explainer_content._validate_script(meta)
         self.assertIn("beats", validated)
         self.assertGreaterEqual(len(validated["beats"]), 5)
 
@@ -90,39 +100,41 @@ class TestNicheExplainer(unittest.TestCase):
                 },
             ]
         }
-        niche_explainer.validate_extra(sample)
+        explainer_content.validate_extra(sample)
         # Check that visual_hints are preserved
         for b in sample["beats"]:
             self.assertIn("visual_hint", b)
 
     def test_sanitize_title(self):
         dirty = "🔥 HOW DOES GPS WORK??? (Mind Blowing) #shorts"
-        clean = niche_explainer.sanitize_title(dirty, {"topic": "How does GPS work"})
+        clean = explainer_content.sanitize_title(dirty, {"topic": "How does GPS work"})
         self.assertNotIn("#", clean)
         self.assertTrue(clean.endswith("?"))
 
 
 class TestDemoFixtures(unittest.TestCase):
-    """Test all fixture files in demo_fixtures/."""
+    """Test the inlined offline sample (fixture files removed)."""
 
-    def test_fixtures_valid(self):
-        fixture_dir = Path("demo_fixtures")
-        self.assertTrue(fixture_dir.exists(), "demo_fixtures directory must exist")
-        fixtures = list(fixture_dir.glob("*.json"))
-        self.assertGreaterEqual(len(fixtures), 3, "Expected at least 3 demo fixtures")
-
-        for fpath in fixtures:
-            with open(fpath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # Must pass core script validation
-            validated = core._validate_script(data, niche=niche_explainer)
-            self.assertIn("title", validated)
-            self.assertIn("beats", validated)
-            self.assertGreaterEqual(len(validated["beats"]), 5)
-            # Verify beats have visual_hints
-            for b in validated["beats"]:
-                self.assertIn("visual_hint", b, f"Beat missing visual_hint in {fpath.name}")
-                self.assertIn("type", b["visual_hint"])
+    def test_sample_valid(self):
+        # Rebuilt from sample_content() with no disk reads.
+        content = explainer_content.sample_content()
+        data = {"title": content.title,
+                "narration": content.narration_text,
+                "description": content.description,
+                "tags": list(content.tags),
+                "beats": [dict(b)
+                          for b in (content.extras or {}).get("beats", [])]}
+        self.assertTrue(data["title"])
+        self.assertTrue(data["narration"].split())
+        # Must pass the ported explainer script validation
+        validated = explainer_content._validate_script(data)
+        self.assertIn("title", validated)
+        self.assertIn("beats", validated)
+        self.assertGreaterEqual(len(validated["beats"]), 5)
+        # Verify beats have visual_hints
+        for b in validated["beats"]:
+            self.assertIn("visual_hint", b, "Beat missing visual_hint")
+            self.assertIn("type", b["visual_hint"])
 
 
 

@@ -1,169 +1,22 @@
-"""Ranking niche: Top-5 countdown Shorts (~2 min).
+"""Ranking stage 1: Top-5 countdown script Content via engine.gemini_client.
 
-Self-contained: prompt, topic pool, offline fallback, history shape,
-similarity rules, stock policy, still style, and leaderboard overlay.
-Delete this file + its NICHES line in pipeline.py to drop the niche.
+Moved from niche_ranking.py (prompt/fallback/validate/similarity verbatim
+in behavior); core.* calls repointed to engine.* + local helpers.
 """
+from __future__ import annotations
+
 import json
-import os
 import random
 import re
 import time
 
-import core as C
+from engine import gemini_client as _gc
+from engine.ffmpeg_utils import log, warn
+from niches.base import Content
 
-MODE = "ranking"
-NICHE_LABEL = "top-5 rankings and countdowns"
+from .config import (BANNED_TITLE_HOOKS, HOOK_STYLES, MODE, TOPICS,
+                     WEAK_OPENERS, RankingConfig, is_bare_homonym_query)
 
-# Ranking topics: evergreen, factual, filmable with stock footage. One is
-# drawn per run and forced into the prompt; history.json excludes recent ones.
-# Rules for adding more: must rank 5 distinct, visible subjects (1-3 word
-# names, stock-searchable), with broadly known rounded facts — no precise
-# stats, no obscure items Gemini would invent, no near-dupes of existing
-# entries (same topic or >=2 shared items triggers a wasted regen).
-TOPICS = (
-    # Launch set: animals, geography, structures, vehicles.
-    "largest animals on Earth",
-    "most dangerous animals in the world",
-    "fastest animals on the planet",
-    "tallest buildings in the world",
-    "tallest mountains on Earth",
-    "longest rivers in the world",
-    "largest deserts on Earth",
-    "deepest places in the ocean",
-    "largest islands in the world",
-    "most venomous snakes in the world",
-    "strongest animals pound for pound",
-    "smartest animals in the world",
-    "biggest dog breeds in the world",
-    "largest cat breeds in the world",
-    "fastest production cars in the world",
-    "biggest passenger airplanes ever built",
-    "largest stadiums in the world",
-    "tallest statues in the world",
-    "largest pyramids in the world",
-    "deepest lakes in the world",
-    "most remote inhabited places on Earth",
-    "largest volcanoes in the world",
-    "biggest sharks that ever lived",
-    "most expensive things ever sold",
-    # Animals: birds, reptiles, sea life, records, pets.
-    "largest birds on Earth",
-    "fastest birds on the planet",
-    "most colorful birds in the world",
-    "largest reptiles on Earth",
-    "longest snakes in the world",
-    "biggest bears on Earth",
-    "biggest wild cats in the world",
-    "largest primates in the world",
-    "largest owls in the world",
-    "fastest sea animals in the ocean",
-    "largest fish in the ocean",
-    "longest-lived animals on Earth",
-    "smartest dog breeds in the world",
-    "most popular pets in the world",
-    "largest spiders in the world",
-    # Geography and nature.
-    "tallest waterfalls in the world",
-    "longest mountain ranges on Earth",
-    "largest glaciers in the world",
-    "most active volcanoes in the world",
-    "deepest canyons on Earth",
-    "largest coral reefs in the world",
-    "biggest waves for surfing in the world",
-    "tallest trees on Earth",
-    "most dangerous roads in the world",
-    "largest caves in the world",
-    "most visited national parks in the world",
-    # Structures, cities, landmarks.
-    "longest bridges in the world",
-    "largest castles in the world",
-    "largest temples in the world",
-    "largest dams in the world",
-    "longest tunnels in the world",
-    "largest airports in the world",
-    "tallest roller coasters in the world",
-    "biggest Ferris wheels in the world",
-    "largest cruise ships in the world",
-    "oldest buildings on Earth",
-    "biggest shipwrecks in history",
-    "most famous towers in the world",
-    "largest palaces in the world",
-    "most famous lighthouses in the world",
-    "longest walls in the world",
-    # Vehicles and machines.
-    "largest cargo airplanes ever built",
-    "fastest fighter jets ever built",
-    "largest helicopters ever built",
-    "fastest motorcycles in the world",
-    "fastest trains in the world",
-    "largest yachts in the world",
-    "largest submarines ever built",
-    "most popular pickup trucks in the world",
-    "largest container ships in the world",
-    "biggest rockets ever built",
-    "most famous tanks in history",
-    "most famous cable cars in the world",
-    "most famous race tracks in the world",
-    "largest sailing ships in the world",
-    # Space, sports, food.
-    "largest planets in the solar system",
-    "biggest moons in the solar system",
-    "hottest chili peppers in the world",
-    "most expensive fruits in the world",
-    "most famous space missions in history",
-    "largest telescopes in the world",
-    # More variety: recurring light celebrations (filmable, no dates).
-    "most famous festivals of lights in the world",
-    # Money traps: price-ranked, stock-filmable subjects, rounded costs.
-    "hotel room traps that overcharge you",
-    "supercars that bankrupt owners",
-    "watches that beat stocks",
-    "stadium foods that cost more than tickets",
-    # Danger jobs/machines: danger- or price-ranked workhorses.
-    "farm machines worth more than houses",
-    "fire trucks the world envies",
-    "tools that send DIYers to ER",
-    "fastest police interceptors by country",
-    # Insider secrets: danger-ranked places and jobs with hidden rules.
-    "airport secrets gate agents never say",
-    "foods chefs never order",
-    "cruise-ship jobs with secret perks",
-    "subway systems thieves love most",
-    # Infra extremes: size- or danger-ranked structures and routes.
-    "bridges truckers fear most",
-    "winter roads only pros drive",
-    "cargo ships bigger than skyscrapers",
-    "smallest apartments at luxury prices",
-    "lighthouses that still save ships",
-    # Wave 2 money traps: fee/scam-ranked, rounded costs.
-    "rental traps that steal deposits",
-    "phone scams that steal millions",
-    "parking-garage traps that steal cash",
-    "tow fees that trap drivers",
-    "toll roads that cost a fortune",
-    "rest-stop scams that steal cash",
-    "night-shift jobs that beat day pay",
-    # Wave 2 danger-work: ER- or damage-ranked jobs and machines.
-    "kitchen dangers that send cooks to ER",
-    "truck-stop nightmares that trap drivers",
-    "marathon rescues that save runners",
-    "delivery-van breakdowns that cost fleets",
-    "highway pileups that trap drivers in fog",
-    "gym machines that send beginners to ER",
-    "e-bike battery fire risks",
-    "ski lifts that trap riders mid-air",
-    # Wave 2 insider secrets: theft- and hidden-camera-ranked spots.
-    "locker-room thefts that steal gear",
-    "roadside motels with secret cameras",
-    # Wave 2 infra extremes: storm- and fear-ranked crossings.
-    "dam releases kayakers fear",
-    "ferry crossings that risk lives in storms",
-    "lighthouse storms sailors fear most",
-)
-
-# Topic synonyms normalized to canonical form before same-topic compares,
-# so "biggest sharks" vs "largest sharks" counts as the same topic.
 _TOPIC_CANON = (("biggest", "largest"), ("quickest", "fastest"),
                 ("highest", "tallest"), ("deepest", "longest"))
 
@@ -176,7 +29,6 @@ def _canon_topic(topic: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
-# Leading superlatives: proposing the same one twice in a row is rejected.
 _LEADING_SUPERLATIVES = ("largest", "biggest", "tallest", "longest",
                          "fastest", "most")
 
@@ -189,13 +41,6 @@ def _leading_superlative(topic: str) -> str:
     return ""
 
 
-# Cross-vertical rotation: every topic maps to one vertical; AI proposals
-# must avoid the last 2 aired verticals so the channel stops stacking the
-# same lane back to back. New-vertical keywords win over legacy ones
-# ("fire trucks" is danger-work, not vehicles; "cargo ships" is infra).
-# Order matters: danger-work/insider/infra win over money ("farm machines
-# worth more than houses" is danger-work, "smallest apartments at luxury
-# prices" is infra), and all four new lanes win over legacy buckets.
 _VERTICAL_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("danger-work", ("farm machine", "fire truck", "fire", "diy",
                      "interceptor", "police", "tool", "send", "envies",
@@ -245,9 +90,6 @@ def _topic_vertical(topic: str) -> str:
     return ""
 
 
-# Rank-metric lexicon: an AI proposal must rank by price, speed, danger,
-# or size. Insider/infra framings count via their threat/extreme cues
-# (secret/never/fear/save/pro/drive), so the mandated new verticals pass.
 _METRIC_WORDS = frozenset({
     "price", "cost", "expensive", "cheap", "overcharge", "bankrupt",
     "worth", "luxury", "ticket", "stock", "money", "paid", "beat",
@@ -273,13 +115,9 @@ def _topic_has_metric(topic: str) -> bool:
 
 
 def _title_clause(title: str) -> str:
-    """Closing clause of a title: text after the last dash/colon split
-    ("5 Largest Animals — Number 1 Is Huge" -> "number 1 is huge").
-    Plain titles with no dash/colon suffix have no clause (""). Compared
-    casefolded against recent titles."""
+    """Closing clause after the last dash/colon split, casefolded ("" if none)."""
     t = str(title or "").strip()
-    t = re.sub(r"^[\W_]*((top\s+)?5)\b", "", t,
-               flags=re.IGNORECASE).strip()
+    t = re.sub(r"^[\W_]*((top\s+)?5)\b", "", t, flags=re.IGNORECASE).strip()
     parts = re.split(r"[–—\-:|;,.]+", t)
     if len(parts) < 2:
         return ""
@@ -292,61 +130,71 @@ AVOID_INTRO = ("Already-used countdowns — do NOT reuse any of these topics, "
 AVOID_OUTRO = ("Your countdown must use a DIFFERENT topic and 5 DIFFERENT "
                "items from every entry above. ")
 
-# Stock policy: each cut searches the beat's OWN query (literal item match —
-# this is the niche's advantage: every subject is filmable stock).
-USE_BEAT_QUERY = True
-AMBIENT_QUERIES = ()
-USE_MOOD = False
-
 
 def format_history_line(h: dict) -> str:
+    """One prompt line for a past entry."""
     items = ", ".join(h.get("items", [])[:5])
     return (f"- \"{h.get('title', '?')}\" "
             f"(topic={h.get('topic', '?')}; items: {items})")
 
 
-# Hybrid topics: Gemini may propose a fresh countdown topic each run, but the
-# pool stays authoritative — a proposal only airs when it passes validation
-# (fresh vs history, sane shape, 5 concrete filmable subjects). Anything else
-# falls back to a pool draw, so the run never depends on the extra call.
-# Kill switch (no workflow change needed): AI_TOPICS=off.
-AI_TOPICS = os.getenv("AI_TOPICS", "on").strip().lower() not in (
-    "0", "off", "false", "no")
-AI_TOPIC_TRIES = 2  # proposal rounds before giving up to the pool
+def history_block(history: list[dict], prompt_n: int) -> str:
+    """Prompt section listing recent same-niche entries to avoid."""
+    recent = [h for h in (history or [])[-prompt_n:]
+              if h.get("niche", "horror") == MODE]
+    if not recent:
+        return ""
+    return AVOID_INTRO + "\n".join(format_history_line(h) for h in recent) + "\n" + AVOID_OUTRO
 
 
-def _recent_topic_names(history: list[dict]) -> set:
-    """Casefolded topics from the full enforced history window (same niche).
+def _pick_avoiding(pool: tuple, recent: set, history: list[dict] | None = None):
+    """Random fresh pool pick; LRU fallback when the pool is exhausted."""
+    folded = {str(v).casefold() for v in recent}
+    fresh = [v for v in pool if str(v).casefold() not in folded]
+    if fresh:
+        return random.choice(fresh)
+    if history:
+        last_seen: dict[str, int] = {}
+        for pos, h in enumerate(history):
+            t = str(h.get("topic", "")).casefold()
+            if t:
+                last_seen[t] = pos
+        recency = lambda v: last_seen.get(str(v).casefold(), -1)
+        oldest = min(recency(v) for v in pool)
+        return random.choice([v for v in pool if recency(v) == oldest])
+    return random.choice(pool)
 
-    Programmatic freshness gates scan DEDUP_WINDOW (110); only the quoted
-    prompt block stays at HISTORY_PROMPT_N (advisory bans, token sanity).
-    """
+
+def _recent_topic_names(history: list[dict], dedup_window: int) -> set:
+    """Casefolded same-niche topics over the enforced history window."""
     return {str(h.get("topic", "")).casefold()
-            for h in (history or [])[-C.DEDUP_WINDOW:]
+            for h in (history or [])[-dedup_window:]
             if h.get("niche", "horror") == MODE}
 
 
-def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
-    """Ask Gemini for one fresh countdown topic. Returns (topic, items_hint).
+def _make_client(cfg: RankingConfig) -> _gc.GeminiClient | None:
+    """Engine client from cfg keys (env fallback); None when keyless."""
+    keys = list(cfg.gemini_keys) or _gc.parse_keys()
+    if not keys:
+        return None
+    return _gc.GeminiClient(keys, timeout=cfg.timeout,
+                            tts_timeout=cfg.tts_timeout,
+                            tries=cfg.tries, backoff=cfg.backoff)
 
-    (None, None) on any failure or rejection — the caller falls back to the
-    pool. Uses the shared key rotation, so quota pain is minimal (1-2 calls).
-    """
-    if not AI_TOPICS or not C.GEMINI_KEYS:
+
+def propose_topic(history: list[dict], cfg: RankingConfig,
+                  client: _gc.GeminiClient | None) -> tuple[str | None, list[str] | None]:
+    """Ask Gemini for one fresh countdown topic; (None, None) → pool fallback."""
+    if not cfg.ai_topics or client is None:
         return None, None
-    recent = _recent_topic_names(history)
-    # Cross-vertical rotation: the last 2 aired verticals are off-limits,
-    # matched via history topic text (older entries may lack a recorded
-    # vertical). Same leading superlative twice in a row is also banned.
-    same_niche = [h for h in (history or [])
-                  if h.get("niche", "horror") == MODE]
-    excluded_verticals = {_topic_vertical(h.get("topic", ""))
-                          for h in same_niche[-2:]}
+    recent = _recent_topic_names(history, cfg.dedup_window)
+    same_niche = [h for h in (history or []) if h.get("niche", "horror") == MODE]
+    excluded_verticals = {_topic_vertical(h.get("topic", "")) for h in same_niche[-2:]}
     excluded_verticals.discard("")
     last_superlative = (_leading_superlative(same_niche[-1].get("topic", ""))
                         if same_niche else "")
     avoid = "".join(f"- {h.get('topic', '?')}\n"
-                    for h in (history or [])[-C.HISTORY_PROMPT_N:]
+                    for h in (history or [])[-cfg.history_prompt_n:]
                     if h.get("niche", "horror") == MODE)
     rotation_rule = (
         f" Rotate verticals: do NOT propose these recently aired lanes: "
@@ -371,28 +219,15 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
         f"Do NOT reuse any of these recent topics or their subjects:\n{avoid or '(none yet)'}\n"
         "Output only the JSON object."
     )
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "temperature": 0.8,
-            "maxOutputTokens": 1024,
-        },
-        "safetySettings": C._GEMINI_SAFETY_SETTINGS,
-    }
-    for round_no in range(1, AI_TOPIC_TRIES + 1):
+    for round_no in range(1, cfg.ai_topic_tries + 1):
         data = None
-        for model in C.GEMINI_MODELS:
+        for model in cfg.text_models:
             try:
-                url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-                       f"{model}:generateContent")
-                raw = C._fetch_gemini(url, payload)
-                text = raw["candidates"][0]["content"]["parts"][0]["text"]
-                text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-                data = json.loads(text)
+                data = client.generate_json(model, prompt, generation_config={
+                    "temperature": 0.8, "maxOutputTokens": 1024})
                 break
             except Exception as e:
-                C.log(f"AI topic model {model} unusable ({e}), trying next...")
+                log(f"AI topic model {model} unusable ({e}), trying next...")
                 time.sleep(2)
         if not isinstance(data, dict):
             continue
@@ -409,11 +244,9 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
         if not _topic_has_metric(topic):
             problems.append("no price/speed/danger/size rank metric")
         if excluded_verticals and _topic_vertical(topic) in excluded_verticals:
-            problems.append(
-                f"vertical '{_topic_vertical(topic)}' aired in last 2 runs")
+            problems.append(f"vertical '{_topic_vertical(topic)}' aired in last 2 runs")
         if last_superlative and _leading_superlative(topic) == last_superlative:
-            problems.append(
-                f"leading superlative '{last_superlative}' aired last run")
+            problems.append(f"leading superlative '{last_superlative}' aired last run")
         if _canon_topic(topic) in {_canon_topic(t) for t in recent}:
             problems.append("topic already used")
         if len(items) < 5:
@@ -421,98 +254,48 @@ def propose_topic(history: list[dict]) -> tuple[str | None, list[str] | None]:
         if any(len(i.split()) > 4 or len(i) > 40 for i in items):
             problems.append("unfilmable subject names")
         if not problems:
-            # Subject pre-check: >=2 hinted items (casefolded) intersecting
-            # ANY single recent entry's items rejects the round, within the
-            # existing AI_TOPIC_TRIES. Enforced vs the item window (last 30),
-            # not the full topic window — common animals false-positive.
             hint_set = {i.casefold() for i in items}
-            for h in (history or [])[-C.DEDUP_ITEM_WINDOW:]:
+            for h in (history or [])[-cfg.dedup_item_window:]:
                 if h.get("niche", "horror") != MODE:
                     continue
                 old_items = {str(i).strip().casefold()
                              for i in (h.get("items") or []) if str(i).strip()}
                 if hint_set and old_items and len(hint_set & old_items) >= 2:
-                    problems.append(
-                        f"subjects already ranked in '{h.get('title', '?')}'")
+                    problems.append(f"subjects already ranked in '{h.get('title', '?')}'")
                     break
         if problems:
-            C.log(f"AI topic rejected ({'; '.join(problems)}), "
-                  f"round {round_no}/{AI_TOPIC_TRIES}.")
+            log(f"AI topic rejected ({'; '.join(problems)}), round {round_no}/{cfg.ai_topic_tries}.")
             continue
-        C.log(f"AI topic accepted: {topic}")
+        log(f"AI topic accepted: {topic}")
         return topic, items
     return None, None
 
 
 def _items_hint_line(hint: list[str] | None) -> str:
-    """Nudge the script toward the proposed subjects without trusting them."""
+    """Nudge the script toward proposed subjects without trusting them."""
     if not hint:
         return ""
     return (f"Suggested subjects (verify each against known facts; swap out "
             f"any that does not fit): {', '.join(hint)}. ")
 
 
-# Rotating hook templates: one is picked per run (random.choice) and spliced
-# into the Narration clause, so openers stop sounding samey. Every template
-# teases #1 WITHOUT naming it, avoids all BANNED_TITLE_HOOKS phrasing,
-# runs ~15-30 words, and stays spoken-aloud fifth-grade level. Examples are
-# style examples only — each carries a do-not-copy guard because Gemini
-# otherwise repeats example sentences verbatim.
-HOOK_STYLES = (
-    ("stakes",
-     "Open with STAKES + SCALE: state one rounded size, weight, or height "
-     "claim about number 1 as a comparison to something familiar "
-     "(weighing over X, heavier or taller than Y combined), without naming "
-     "it. Style example only, do not repeat this example sentence: "
-     "'Number 1 weighs over 100 tonnes, heavier than 20 elephants combined. "
-     "And it is still growing.'"),
-    ("contrarian",
-     "Open by busting a common MYTH: say what everyone thinks holds the "
-     "record, then reveal it is not even close, without naming number 1. "
-     "Style example only, do not repeat this example sentence: 'Everyone "
-     "thinks the lion is the strongest hunter alive. It is not even close "
-     "to number 1.'"),
-    ("sensory",
-     "Open with a SENSORY close-up: one vivid sound, sight, or size image "
-     "tied to number 1, something a viewer can picture or hear, without "
-     "naming it. Style example only, do not repeat this example sentence: "
-     "'Imagine teeth the size of bananas, and a roar heard kilometers away. "
-     "That is number 1 waiting.'"),
-    ("record",
-     "Open by framing number 1 as an unbeaten RECORD: nothing alive or "
-     "built today comes close, without naming it. Style example only, do "
-     "not repeat this example sentence: 'Nothing alive today comes close "
-     "to number 1. It stands nearly 30 meters tall, taller than 5 houses.'"),
-)
-
-# Stale openers that already aired to death (see history.json). Prompt-level
-# ban only — never open with these; no raising validation, so a draft that
-# slips through never breaks the run.
-WEAK_OPENERS = (
-    "these are the 5",
-    "human beings love",
-    "deep beneath our feet",
-    "nature hides",
-    "push human engineering to",
-)
-
-
-def build_prompt(history: list[dict]):
-    """Gemini prompt for a Top-5 countdown (~2 min). Returns (prompt, slots)."""
+def build_prompt(history: list[dict], cfg: RankingConfig,
+                 client: _gc.GeminiClient | None = None) -> tuple[str, dict]:
+    """Gemini prompt for a Top-5 countdown. Returns (prompt, slots)."""
     history = history or []
-    recent_topics = _recent_topic_names(history)
-    topic, hint = propose_topic(history)
+    recent_topics = _recent_topic_names(history, cfg.dedup_window)
+    topic, hint = propose_topic(history, cfg, client)
     source = "ai" if topic else "pool"
     if topic is None:
-        topic = C._pick_avoiding(TOPICS, recent_topics, history)
+        topic = _pick_avoiding(TOPICS, recent_topics, history)
     slots = {"topic": topic, "topic_source": source}
     hook_style, hook_direction = random.choice(HOOK_STYLES)
     slots["hook_style"] = hook_style
-    C.log(f"Ranking topic ({source}): {topic}")
+    log(f"Ranking topic ({source}): {topic}")
     prompt = (
         f"Write a Top-5 countdown YouTube Shorts script about the {topic}. "
         "This must be a single complete video with no part 1/2, no episode markers, and no recap setup. "
-        f"{C.history_block(history, MODE, format_history_line, AVOID_INTRO, AVOID_OUTRO)}"
+        f"{history_block(history, cfg.history_prompt_n)}"
         f"{_items_hint_line(hint)}"
         "Return ONLY valid JSON with exactly these keys: title, narration, description, tags, items, beats. "
         "Title: plain ranked-list format, must start with '5' and state exactly what is ranked. Example valid titles: '5 Largest Animals on Earth' or '5 Most Expensive Things Ever Sold'. Keep it under 60 characters, no question hook, no curiosity-gap phrasing, no 'which' or 'where' setup, no 'Number 1...' suffix, no clickbait. Do not use any banned title hooks such as 'Number 1 Is Terrifying', 'Number One Is Terrifying', '#1 Is Terrifying', 'Will Shock You', or 'You Won't Believe'. One emoji is allowed only at the very start or end, but the on-screen banner still shows the same title without the emoji. "
@@ -531,23 +314,17 @@ def build_prompt(history: list[dict]):
 
 
 def _build_fallback_meta(variant: dict) -> tuple[dict, dict]:
-    """Assemble a (meta, slots) pair from one fallback variant dict.
-
-    Same shape as a validated script: 7 beats (hook, #5..#1, closer) split
-    word-even across the narration, each with a stock-filmable query.
-    """
+    """(meta, slots) from one fallback variant; 7 word-even beats + queries."""
     narration = variant["narration"]
     words = narration.split()
     queries = variant["beat_queries"]
-    # 7 beats: hook, #5..#1, closer — split word-even across them.
     per = max(1, -(-len(words) // 7))
     rank_labels = ["", "5", "4", "3", "2", "1", ""]
     beats = []
     for i in range(7):
         chunk = " ".join(words[i * per:(i + 1) * per])
         if chunk:
-            beats.append({"text": chunk, "query": queries[i],
-                          "label": rank_labels[i]})
+            beats.append({"text": chunk, "query": queries[i], "label": rank_labels[i]})
     slots = {"topic": variant["topic"]}
     return {
         "title": variant["title"],
@@ -559,9 +336,6 @@ def _build_fallback_meta(variant: dict) -> tuple[dict, dict]:
     }, slots
 
 
-# Offline fallback rotation: three self-consistent hard-coded videos (each
-# passes _validate_script). Topics are pool topics so history comparisons
-# work; items are distinct, famous, correctly ordered, stock-filmable.
 _FALLBACK_VARIANTS = (
     {
         "topic": "largest animals on Earth",
@@ -648,12 +422,7 @@ _FALLBACK_VARIANTS = (
 
 
 def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
-    """Offline Top-5 countdown (~2 min). Least-recently-aired variant wins.
-
-    Never airs the identical topic+items as the immediately previous video:
-    if the least-recent variant matches the last entry exactly, the next
-    variant is taken instead. Variety without Gemini, no repeats back to back.
-    """
+    """Offline countdown; least-recent variant wins, never repeats last video."""
     history = history or []
 
     def _last_pos(topic_cf: str) -> int:
@@ -661,15 +430,13 @@ def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
         for i, h in enumerate(history):
             if (h.get("niche", "horror") == MODE
                     and str(h.get("topic", "")).casefold() == topic_cf):
-                pos = i  # newest last: larger = more recent; -1 = never aired
+                pos = i
         return pos
 
-    ranked = sorted(_FALLBACK_VARIANTS,
-                    key=lambda v: _last_pos(v["topic"].casefold()))
+    ranked = sorted(_FALLBACK_VARIANTS, key=lambda v: _last_pos(v["topic"].casefold()))
     last = history[-1] if history else {}
     last_key = (str(last.get("topic", "")).casefold(),
-                tuple(sorted(str(i).strip().casefold()
-                             for i in (last.get("items") or []))))
+                tuple(sorted(str(i).strip().casefold() for i in (last.get("items") or []))))
     chosen = ranked[0]
     for variant in ranked:
         vkey = (variant["topic"].casefold(),
@@ -678,15 +445,14 @@ def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
             chosen = variant
             break
     if chosen is ranked[0]:
-        C.log(f"Offline fallback: '{chosen['topic']}' (least-recent variant).")
+        log(f"Offline fallback: '{chosen['topic']}' (least-recent variant).")
     else:
-        C.log(f"Offline fallback: least-recent variant repeats last video, "
-              f"using '{chosen['topic']}' instead.")
+        log(f"Offline fallback: least-recent variant repeats last video, using '{chosen['topic']}' instead.")
     return _build_fallback_meta(chosen)
 
 
 def validate_extra(data: dict) -> dict:
-    """Ranked-item list: validated, kept for history/board. Raises ValueError."""
+    """Ranked items: validated + bare-homonym beat-query backstop. Raises ValueError."""
     items = data.get("items", None)
     if items is None:
         return {}
@@ -694,40 +460,18 @@ def validate_extra(data: dict) -> dict:
             or not all(isinstance(t, str) and t.strip() for t in items)):
         raise ValueError("'items' must be a non-empty list of strings")
     clean_items = [t.strip() for t in items if t.strip()]
-    # Ranking backstop for bare homonym beat queries ('Eclipse' for item
-    # 'Eclipse'): core rejects these too, this cites the ranked item so the
-    # regen path knows which slot to fix. Multi-word and ordinary nouns pass.
     beats = data.get("beats", [])
     labeled = [b for b in (beats or []) if isinstance(b, dict)
                and str(b.get("label", "")).isdigit()]
     for b, name in zip(labeled, clean_items + [""] * len(labeled)):
         q = str(b.get("query", ""))
-        if C._is_bare_homonym_query(q):
+        if is_bare_homonym_query(q):
             raise ValueError(
                 f"beat query '{q.strip()}' for '{name or '?'}' is a bare "
                 "homonym head lacking the subject noun (e.g. 'Eclipse yacht')")
     return {"items": clean_items[:10]}
 
 
-# Overused title hooks: the prompt bans them, and this is the backstop —
-# a draft using one is treated as a repeat (regenerated, best-effort) AND
-# stripped by sanitize_title (deterministic — the regen alone leaks, since
-# best-effort accept keeps the draft after SIMILARITY_RETRIES).
-BANNED_TITLE_HOOKS = (
-    "number 1 is terrifying",
-    "number one is terrifying",
-    "#1 is terrifying",
-    "will shock you",
-    "you won't believe",
-    "you won\u2019t believe",
-    "you wont believe",
-)
-
-
-# Suffix clauses that pollute titles when Gemini tacks them on
-# ("5 Largest Animals — Number 1 Is Terrifying 😲"). sanitize_title strips
-# them; titles that still don't match the "5 ..." channel format (question
-# hooks etc.) are rebuilt from the run topic instead.
 _BANNED_TITLE_RES = (
     r"\s*[–—\-:|]\s*number\s+1\s+is\s+terrifying.*$",
     r"\s*[–—\-:|]\s*number\s+one\s+is\s+terrifying.*$",
@@ -740,18 +484,12 @@ _TITLE_FORMAT_RE = re.compile(r"^[\W_]*((top\s+)?5)\b", re.IGNORECASE)
 
 
 def sanitize_title(title: str, slots: dict | None = None) -> str:
-    """Enforce the channel title format. Never raises (returns a safe title).
-
-    Strips banned-hook suffix clauses, then rebuilds from the run topic when
-    the title still doesn't start with "5"/"Top 5" (leading emoji allowed).
-    """
+    """Enforce channel title format. Never raises (returns a safe title)."""
     t = (title or "").strip()
     for pat in _BANNED_TITLE_RES:
         t = re.sub(pat, "", t, flags=re.IGNORECASE).strip()
     t = re.sub(r"\s*[–—\-:|;,.]+\s*$", "", t).strip()
     low = t.casefold()
-    # Suffix-strip misses mid-title hooks ("5 Cities You Won't Believe"),
-    # so re-check the banned list on what remains.
     has_banned = any(hook in low for hook in BANNED_TITLE_HOOKS)
     if has_banned or not _TITLE_FORMAT_RE.match(t) or len(t) < 12:
         topic = ((slots or {}).get("topic") or "").strip()
@@ -760,22 +498,15 @@ def sanitize_title(title: str, slots: dict | None = None) -> str:
 
 
 def similarity_reason(data: dict, slots: dict, recent: list[dict],
-                      item_recent: list[dict] | None = None):
-    """Repeat reason for same-topic, shared ranked items, or banned title
-    hook, else None. `recent` is the full-window list for the topic gate;
-    `item_recent` (defaults to `recent`) is the last-30 list for the
-    shared-items gate, so common animals don't false-positive across 110."""
+                      item_recent: list[dict] | None = None) -> str | None:
+    """Repeat reason (same topic / shared items / banned hook), else None."""
     title = str(data.get("title", "")).casefold()
     for hook in BANNED_TITLE_HOOKS:
         if hook in title:
             return f"title uses banned overused hook '{hook}'"
-    # Same-topic compare on canonical form: synonym superlatives
-    # (largest/biggest, fastest/quickest, tallest/highest, longest/deepest)
-    # count as the same topic.
     if _canon_topic(slots.get("topic", "")) in {
             _canon_topic(h.get("topic", "")) for h in recent}:
         return f"topic '{slots.get('topic')}' already used"
-    # Same closing title clause twice in the last 10 airs is a repeat.
     clause = _title_clause(data.get("title", ""))
     if clause:
         for h in [x for x in (recent or []) if x.get("niche", "horror") == MODE][-10:]:
@@ -795,6 +526,7 @@ def similarity_reason(data: dict, slots: dict, recent: list[dict],
 
 
 def history_fields(slots: dict, meta: dict) -> dict:
+    """History entry fields for this run."""
     return {"topic": slots.get("topic", ""),
             "topicSource": slots.get("topic_source", "pool"),
             "hookStyle": slots.get("hook_style", ""),
@@ -802,148 +534,188 @@ def history_fields(slots: dict, meta: dict) -> dict:
             "items": list(meta.get("items", [])[:10])}
 
 
-# Leaderboard geometry (1080x1920 canvas).
-_BOARD_X = 60
-_BOARD_Y = 710
-_BOARD_ROW_H = 100
-_BOARD_FONT_SIZE = 66
-_BOARD_NAME_LEN = 80
-_BOARD_MAX_WIDTH = C.W - (_BOARD_X * 2)
-_BOARD_MIN_FONT_SIZE = 40
+def _story_signature(text: str) -> set:
+    """Significant lowercase words, for overlap comparison."""
+    stop = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "at",
+            "it", "its", "is", "was", "are", "be", "i", "you", "he", "she",
+            "they", "we", "my", "his", "her", "with", "for", "as", "that",
+            "this", "but", "not", "so", "if", "then", "there", "here"}
+    return {w.strip(".,!?;:\"'").lower() for w in text.split()
+            if len(w) > 3} - stop
 
 
-def _clean_board_text(name: str, limit: int = _BOARD_NAME_LEN) -> str:
-    """Short ASCII-only board label (drawtext uses one font, no emoji)."""
-    import re
-    normalized = (name or "").replace("—", " - ").replace("–", " - ").replace("'", "")
-    keep = re.sub(r"[^A-Za-z0-9 .&,!?()\-]", "", normalized)
-    keep = re.sub(r"\s+", " ", keep).strip()
-    if len(keep) <= limit:
-        return keep
-    clipped = keep[:limit].rsplit(" ", 1)[0].rstrip()
-    return clipped or keep[:limit].rstrip()
-
-
-def _escape_drawtext(text: str) -> str:
-    """Escape a value for drawtext filter syntax (order matters).
-
-    A literal single quote inside text='...' must close the quote, add an
-    escaped quote, and reopen: ' -> '\\'' (e.g. Crime d'Amour ->
-    'Crime d'\\''Amour'). Plain \\' unbalances the quoting and splits the
-    filtergraph at the next comma (No such filter: '26.62').
-    """
-    return (text.replace("\\", "\\\\").replace(":", "\\:")
-                 .replace(",", "\\,").replace("'", "'\\''"))
-
-
-def _board_font_size(text: str, font_path: str) -> int:
-    """Shrink only long leaderboard labels to fit the safe board width."""
-    try:
-        from PIL import ImageFont
-        for size in range(_BOARD_FONT_SIZE, _BOARD_MIN_FONT_SIZE - 1, -1):
-            font = ImageFont.truetype(font_path, size)
-            width = font.getlength(text) if hasattr(font, "getlength") else font.getbbox(text)[2]
-            if width <= _BOARD_MAX_WIDTH:
-                return size
-    except Exception:
-        pass
-    return _BOARD_MIN_FONT_SIZE
-
-
-def _fit_board_label(display_name: str, font_path: str) -> tuple[int, str]:
-    """(size, text) guaranteed to fit the safe width: shrink first, then
-    word-truncate only the pathological remainder (real item names are
-    1-3 words and never reach this). Keeps the "N. " prefix."""
-    size = _board_font_size(display_name, font_path)
-    text = display_name
-    try:
-        from PIL import ImageFont
-        font = ImageFont.truetype(font_path, size)
-        get = (font.getlength if hasattr(font, "getlength")
-               else lambda t: font.getbbox(t)[2])
-        while get(text) > _BOARD_MAX_WIDTH and " " in text.strip():
-            text = text.strip().rsplit(" ", 1)[0].rstrip()
-    except Exception:
-        pass
-    return size, text
-
-
-def board_filter(beats, items, durations, get_font, has_drawtext,
-                 title: str = "") -> str:
-    """Persistent leaderboard overlay (trailing comma) or "" when N/A.
-
-    Every rank slot ("1."–"5.") is on screen from the start; each fills in
-    with its item name the moment that rank is revealed, with the current
-    rank highlighted. get_font/has_drawtext are core probes, called lazily.
-    """
-    labeled = [(i, b.get("label", "")) for i, b in enumerate(beats or [])
-               if str(b.get("label", "")).isdigit()]
-    if not labeled:
-        return ""
-    font = get_font()
-    if font is None or not has_drawtext():
-        return ""
-    starts: list[float] = []
-    t = 0.0
-    for d in durations or []:
-        starts.append(t)
-        try:
-            t += max(0.0, float(d))
-        except (TypeError, ValueError):
-            pass
-    total = t if t > 0 else 9999.0
-    # Pair labeled beats (reveal order, #5 first) with item names positionally.
-    names = [_clean_board_text(n) for n in (items or [])]
-    pairs = list(zip(labeled, names + [""] * len(labeled)))
-    ranks = sorted({int(lab) for _, lab in labeled})
-    row_of = {r: idx for idx, r in enumerate(ranks)}
-    esc_font = font.replace(":", "\\:")
-    parts = []
-    # Keep a safe side margin. Longer titles wrap at word boundaries instead
-    # of being clipped or truncated.
-    clean_title = _clean_board_text(title, 100)
-    title_words = clean_title.split()
-    title_lines = []
-    line = ""
-    for word in title_words:
-        candidate = f"{line} {word}".strip()
-        if line and len(candidate) > 24:
-            title_lines.append(line)
-            line = word
-        else:
-            line = candidate
-    if line:
-        title_lines.append(line)
-    if title_lines:
-        title_y = 140 - (len(title_lines) - 1) * 36
-        for line_no, title_line in enumerate(title_lines):
-            parts.append(
-                f"drawtext=fontfile='{esc_font}':text='{_escape_drawtext(title_line)}':"
-                f"fontsize=70:fontcolor=white:borderw=3:bordercolor=black:"
-                f"x=(w-text_w)/2:y={title_y + line_no * 72}")
-    for r in ranks:
-        y = _BOARD_Y + row_of[r] * _BOARD_ROW_H
-        base = (f"drawtext=fontfile='{esc_font}':text='{r}.':"
-                f"fontsize={_BOARD_FONT_SIZE}:fontcolor=white@0.6:"
-                f"borderw=2:bordercolor=black:x={_BOARD_X}:y={y}")
-        parts.append(base)
-    for (beat_idx, lab), name in pairs:
-        if not name or beat_idx >= len(starts):
+def similar_to_history(data: dict, slots: dict, history: list[dict],
+                       cfg: RankingConfig) -> str | None:
+    """Repeat reason vs full/item windows + story overlap, else None."""
+    window = [h for h in (history or [])[-cfg.dedup_window:]
+              if h.get("niche", "horror") == MODE]
+    if not window:
+        return None
+    recent_titles = {str(h.get("title", "")).strip().casefold() for h in window}
+    if str(data.get("title", "")).strip().casefold() in recent_titles:
+        return "title already used"
+    item_window = [h for h in (history or [])[-cfg.dedup_item_window:]
+                   if h.get("niche", "horror") == MODE]
+    norm_slots = dict(slots or {}, topic=_canon_topic((slots or {}).get("topic", "")))
+    norm_window = [dict(h, topic=_canon_topic(h.get("topic", ""))) for h in window]
+    reason = similarity_reason(data, norm_slots, norm_window, item_window)
+    if reason is not None:
+        return reason
+    new_sig = _story_signature(f"{data.get('title', '')} {data.get('narration', '')}")
+    for h in item_window:
+        old_sig = _story_signature(f"{h.get('title', '')} {h.get('narration', '')}")
+        if not old_sig or not new_sig:
             continue
-        r = int(lab)
-        y = _BOARD_Y + row_of[r] * _BOARD_ROW_H
-        reveal = starts[beat_idx]
-        end = starts[beat_idx + 1] if beat_idx + 1 < len(starts) else total
-        display_name = f"{r}. {name}"
-        name_font_size, display_name = _fit_board_label(display_name, font)
-        esc_name = _escape_drawtext(display_name)
-        fill = (f"drawtext=fontfile='{esc_font}':text='{esc_name}':"
-            f"fontsize={name_font_size}:fontcolor=white:"
-                f"borderw=2:bordercolor=black:x={_BOARD_X}:y={y}:"
-                f"enable='between(t,{reveal:.2f},{total:.2f})'")
-        hot = (f"drawtext=fontfile='{esc_font}':text='{esc_name}':"
-               f"fontsize={name_font_size}:fontcolor=red:"
-               f"borderw=2:bordercolor=black:x={_BOARD_X}:y={y}:"
-               f"enable='between(t,{reveal:.2f},{end:.2f})'")
-        parts += [fill, hot]
-    return ",".join(parts) + ","
+        overlap = len(new_sig & old_sig) / len(new_sig | old_sig)
+        if overlap > 0.35:
+            return (f"story overlaps '{h.get('title', '?')}' (word overlap {overlap:.0%})")
+    return None
+
+
+_HOOK_STAKES_RE = re.compile(
+    r"\d|over|about|nearly|tonnes|meters|taller|heavier|weighs|stands|"
+    r"bigger|deadlier|faster", re.IGNORECASE)
+_HOOK_NAMES_ONE_RE = re.compile(r"number\s*1|#1|number one", re.IGNORECASE)
+
+
+def hook_violation(data: dict) -> str | None:
+    """Reason the hook beat violates the stakes rule, else None."""
+    try:
+        beats = data.get("beats") or []
+        hook = str(beats[0].get("text", "")) if beats else ""
+    except (AttributeError, IndexError, TypeError):
+        return "hook beat unreadable"
+    if _HOOK_NAMES_ONE_RE.search(hook):
+        return "hook names number 1 instead of teasing it"
+    if not _HOOK_STAKES_RE.search(hook):
+        return "hook has no stakes signal (digit or scale/danger word)"
+    return None
+
+
+def validate_script(data: dict) -> dict:
+    """Strict-check script JSON (ranking: 180+ words). Raises ValueError."""
+    if not isinstance(data, dict):
+        raise ValueError("Gemini output is not a JSON object")
+    title = data.get("title")
+    narration = data.get("narration")
+    description = data.get("description")
+    tags = data.get("tags")
+    beats = data.get("beats")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("missing/invalid 'title' (must be non-empty string)")
+    if not isinstance(narration, str) or len(narration.split()) < 20:
+        raise ValueError("'narration' missing or too short (<20 words)")
+    nwords = len(narration.split())
+    if nwords < 180:
+        raise ValueError(f"'narration' too short ({nwords} words, need 180+)")
+    if not isinstance(description, str) or not description.strip():
+        raise ValueError("missing/invalid 'description' (must be non-empty string)")
+    if (not isinstance(tags, list) or not tags
+            or not all(isinstance(t, str) and t.strip() for t in tags)):
+        raise ValueError("'tags' must be a non-empty list of strings")
+    if not isinstance(beats, list) or not beats:
+        raise ValueError("'beats' must be a non-empty list")
+    norm_beats = []
+    for b in beats[:8]:
+        if not isinstance(b, dict):
+            raise ValueError("each beat must be an object with text+query")
+        t, q = b.get("text"), b.get("query")
+        if not isinstance(t, str) or not t.strip():
+            raise ValueError("beat 'text' must be a non-empty string")
+        if not isinstance(q, str) or not q.strip():
+            raise ValueError("beat 'query' must be a non-empty string")
+        lab = b.get("label", "")
+        if not isinstance(lab, str):
+            lab = ""
+        lab = "".join(c for c in lab if c.isdigit())[:2]
+        norm_beats.append({"text": t.strip(), "query": q.strip(), "label": lab})
+    for b in norm_beats:
+        if b["label"].isdigit() and is_bare_homonym_query(b["query"]):
+            raise ValueError(
+                f"beat query '{b['query']}' is a bare homonym head lacking the "
+                "subject noun (e.g. 'Eclipse yacht', 'monitor lizard')")
+    bwords = sum(len(b["text"].split()) for b in norm_beats)
+    if bwords < 180:
+        raise ValueError(f"'beats' cover too little text ({bwords} words, need 180+)")
+    out = {
+        "title": title.strip()[:100],
+        "narration": narration.strip(),
+        "description": description.strip(),
+        "tags": [t.strip() for t in tags if t.strip()][:10],
+        "beats": norm_beats,
+    }
+    out.update(validate_extra(data))
+    return out
+
+
+def _to_content(meta: dict, slots: dict) -> Content:
+    """Validated meta + slots → stage Content (beats/items live in extras)."""
+    return Content(
+        title=meta["title"],
+        narration_text=meta["narration"],
+        description=meta.get("description", ""),
+        tags=list(meta.get("tags", [])),
+        extras={"beats": list(meta.get("beats", [])),
+                "items": list(meta.get("items", [])),
+                "topic": slots.get("topic", ""),
+                "topic_source": slots.get("topic_source", "pool"),
+                "hook_style": slots.get("hook_style", ""),
+                "slots": dict(slots)})
+
+
+def generate_content(history: list[dict], cfg: RankingConfig) -> Content:
+    """Gemini script with hook/similarity regens; offline fallback when keyless."""
+    history = history or []
+    client = _make_client(cfg)
+    hook_regen_used = False
+    if client is not None:
+        models = list(cfg.text_models)
+        for _attempt in range(1 + cfg.similarity_retries):
+            prompt, slots = build_prompt(history, cfg, client)
+            data = None
+            for model in models:
+                try:
+                    data = validate_script(client.generate_json(model, prompt, generation_config={
+                        "temperature": 0.7, "maxOutputTokens": 4096}))
+                    if model in models and models[0] != model:
+                        models.remove(model)
+                        models.insert(0, model)
+                    break
+                except Exception as e:
+                    log(f"Gemini model {model} unusable ({e}), trying next...")
+                    time.sleep(2)
+            if data is None:
+                log("All Gemini models failed, using fallback.")
+                break
+            hook_problem = hook_violation(data)
+            if hook_problem is not None and not hook_regen_used:
+                hook_regen_used = True
+                warn(f"Hook weak ({hook_problem}), regenerating once for a fresh draft...")
+                continue
+            if hook_problem is not None:
+                log(f"Hook still weak ({hook_problem}), accepting best-effort.")
+            reason = similar_to_history(data, slots, history, cfg)
+            if reason is None:
+                data["title"] = sanitize_title(data.get("title", ""), slots)
+                log(f"Gemini script OK: {data.get('title')}")
+                return _to_content(data, slots)
+            if _attempt < cfg.similarity_retries:
+                warn(f"Gemini draft too similar to history ({reason}), regenerating...")
+                continue
+            warn(f"Gemini draft still similar ({reason}), accepting to avoid failing the run.")
+            data["title"] = sanitize_title(data.get("title", ""), slots)
+            return _to_content(data, slots)
+    warn("Gemini unavailable: using standalone fallback script.")
+    meta, slots = fallback_script(history)
+    reason = similar_to_history(meta, slots, history, cfg)
+    if reason is not None:
+        warn(f"Offline fallback repeats history ({reason}), airing anyway.")
+    return _to_content(meta, slots)
+
+
+def sample_content() -> Content:
+    """Offline sample (first fallback variant) for demos/tests."""
+    meta, slots = _build_fallback_meta(_FALLBACK_VARIANTS[0])
+    out = _to_content(meta, slots)
+    out.extras["offline"] = True
+    return out
