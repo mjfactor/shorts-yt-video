@@ -1007,5 +1007,32 @@
       "Lake Tanganyika",
       "Lake Baikal"
     ]
+  },
+  {
+    "date": "2026-09-24_225908",
+    "title": "5 Fastest Trains in the World",
+    "niche": "ranking",
+    "tags": [
+      "trains",
+      "speed",
+      "engineering",
+      "transportation",
+      "technology"
+    ],
+    "narration": "Picture a blur of steel slicing through the air with a high-pitched whine that rattles the nearby windows. This metallic beast travels over 600 kilometers per hour, shattering all expectations for ground travel. At number 5, the Shinkansen. This Japanese icon reaches speeds of nearly 320 kilometers per hour on its daily routes. At number 4, the TGV. This French masterpiece glides across the countryside at over 350 kilometers per hour. At number 3, the Fuxing Hao. This Chinese marvel connects major cities at speeds of about 400 kilometers per hour. At number 2, the Shanghai Maglev. This train uses powerful magnets to hover above the track at nearly 430 kilometers per hour. At number 1, the SCMaglev. This incredible machine pushes the limits of friction as it cruises at over 600 kilometers per hour. It represents the pinnacle of modern rail innovation and speed. Each of these trains changes how we move across the planet every single day. The technology behind these massive systems continues to evolve at a breakneck pace. Which of these five machines do you think is the most impressive to ride in real life? Leave a comment with your own personal ranking.",
+    "bed": "bgm6.mp3",
+    "videoId": "Xv-KDOqNtRo",
+    "tiktokBufferPostId": "6ab5ae07ab8dd25d006f920f",
+    "topic": "fastest trains in the world",
+    "topicSource": "ai",
+    "hookStyle": "sensory",
+    "vertical": "vehicles",
+    "items": [
+      "Shinkansen",
+      "TGV",
+      "Fuxing Hao",
+      "Shanghai Maglev",
+      "SCMaglev"
+    ]
   }
 ]
