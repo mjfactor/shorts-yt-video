@@ -933,13 +933,15 @@ class TestStoryEdgeBranch(unittest.TestCase):
         self.assertEqual(cfg.edge_voices,
                          ("en-US-AndrewNeural", "en-US-AriaNeural"))
         self.assertEqual(cfg.edge_rate, "+20%")
+        self.assertEqual(cfg.edge_rate_female, "+28%")
         self.assertEqual(cfg.target_min, 100.0)
         self.assertEqual(cfg.target_max, 120.0)
         self.assertEqual(cfg.target_min_seconds, 100.0)
         self.assertEqual(cfg.target_max_seconds, 120.0)
         self.assertEqual(cfg.max_seconds, 130.0)
         env = {"STORY_TTS_ENGINE": "edge", "STORY_EDGE_VOICE": "en-US-GuyNeural",
-               "STORY_EDGE_RATE": "+10%", "TTS_ENGINE": "gemini",
+               "STORY_EDGE_RATE": "+10%", "STORY_EDGE_RATE_FEMALE": "+30%",
+               "TTS_ENGINE": "gemini",
                "STORY_TARGET_MIN_SECONDS": "81",
                "STORY_TARGET_MIN": "70"}
         with mock.patch.dict(os.environ, env, clear=False):
@@ -950,6 +952,7 @@ class TestStoryEdgeBranch(unittest.TestCase):
         self.assertEqual(cfg2.tts_engine, "edge")
         self.assertEqual(cfg2.edge_voice, "en-US-GuyNeural")
         self.assertEqual(cfg2.edge_rate, "+10%")
+        self.assertEqual(cfg2.edge_rate_female, "+30%")
         # TARGET_MIN_SECONDS alias wins over TARGET_MIN
         self.assertEqual(cfg2.target_min_seconds, 81.0)
         self.assertEqual(cfg2.target_min, 81.0)
@@ -1038,6 +1041,55 @@ class TestStoryEdgeBranch(unittest.TestCase):
         # clamp +0..+40%
         self.assertEqual(story_narr._edge_refit_rate("+20%", 200.0), "+40%")
         self.assertEqual(story_narr._edge_refit_rate("+20%", 10.0), "+0%")
+
+    def test_edge_rate_for_voice(self):
+        cfg = StoryConfig()
+        # female voices get the hotter female rate, male/custom stay global
+        self.assertEqual(
+            story_narr._edge_rate_for(cfg, "en-US-AriaNeural"), "+28%")
+        self.assertEqual(
+            story_narr._edge_rate_for(cfg, "en-US-AvaNeural"), "+28%")
+        self.assertEqual(
+            story_narr._edge_rate_for(cfg, "en-US-AndrewNeural"), "+20%")
+        self.assertEqual(
+            story_narr._edge_rate_for(cfg, "en-US-GuyNeural"), "+20%")
+        self.assertEqual(
+            story_narr._edge_rate_for(cfg, "en-US-JennyNeural"), "+20%")
+        # env override respected on both paths
+        with mock.patch.dict(
+                os.environ,
+                {"STORY_EDGE_RATE": "+10%",
+                 "STORY_EDGE_RATE_FEMALE": "+30%"}, clear=False):
+            for k in ("STORY_EDGE_VOICES", "STORY_EDGE_VOICE",
+                      "EDGE_VOICES", "EDGE_VOICE", "EDGE_RATE",
+                      "EDGE_RATE_FEMALE"):
+                if k.startswith("STORY_EDGE_VOIC"):
+                    os.environ.pop(k, None)
+            cfg2 = StoryConfig.from_env()
+        self.assertEqual(
+            story_narr._edge_rate_for(cfg2, "en-US-AriaNeural"), "+30%")
+        self.assertEqual(
+            story_narr._edge_rate_for(cfg2, "en-US-AndrewNeural"), "+10%")
+        # bare EDGE_RATE_FEMALE fallback wins when STORY_ unset
+        with mock.patch.dict(os.environ, {"EDGE_RATE_FEMALE": "+33%"},
+                             clear=False):
+            os.environ.pop("STORY_EDGE_RATE_FEMALE", None)
+            cfg3 = StoryConfig.from_env()
+        self.assertEqual(cfg3.edge_rate_female, "+33%")
+
+    def test_edge_female_rate_reaches_synth(self):
+        # single-voice pools pin the pick: female synth gets +28%,
+        # male synth keeps +20% — threaded through _narrate_edge.
+        for voices, want_rate in ((("en-US-AriaNeural",), "+28%"),
+                                  (("en-US-AndrewNeural",), "+20%")):
+            cfg = self._edge_cfg(edge_voices=voices)
+            ticks = self._content().narration_text.split()
+            res, synth, _cmds = self._run_branch(
+                "Hello world. How are you today?",
+                self._events(ticks), 82.0, cfg=cfg)
+            self.assertEqual(synth.call_args[0][1], voices[0])
+            self.assertEqual(synth.call_args[0][2], want_rate)
+            self.assertIn(want_rate, res.style)
 
     def test_no_atempo_silenceremove_in_edge_path(self):
         # Library path: plain mp3->wav convert only, timings stay sample-true.

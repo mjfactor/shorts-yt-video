@@ -279,6 +279,22 @@ def _edge_voice_for(cfg: StoryConfig, seed_text: str = "",
     return voice, why
 
 
+def _edge_rate_for(cfg: StoryConfig, voice: str) -> str:
+    """Effective edge SSML rate for a picked voice.
+
+    Female voices (Aria/Ava name match) run a slower natural cadence, so
+    they get cfg.edge_rate_female (default +28%); every other voice keeps
+    the global cfg.edge_rate (default +20%). Unknown/custom voices never
+    match, so they stay on the global path. The word budget stays global
+    (STORY_LENGTH_OVERSHOOT absorbs the residual spread), and the shared
+    +0..+40% refit clamp in _edge_refit_rate applies unchanged.
+    """
+    name = str(voice or "").lower()
+    if any(h in name for h in _EDGE_FEMALE_HINTS):
+        return getattr(cfg, "edge_rate_female", "+28%") or "+28%"
+    return cfg.edge_rate
+
+
 def _parse_edge_rate(rate: str) -> float:
     """'+20%' -> 0.20 (edge relative-rate flag)."""
     m = re.match(r"\s*([+-]?)(\d+(?:\.\d+)?)\s*%?\s*$", rate or "")
@@ -428,8 +444,10 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
     log(f"Story edge provider order: {order}")
     gender = str(content.extras.get("narrator_gender", "") or "")
     voice, voice_why = _edge_voice_for(cfg, f"{content.title}|{genre}", gender)
-    rate = cfg.edge_rate
-    log(f"Story TTS edge voice={voice} ({voice_why}) rate={rate} "
+    rate = _edge_rate_for(cfg, voice)
+    is_female_voice = any(h in str(voice).lower() for h in _EDGE_FEMALE_HINTS)
+    rate_note = "female rate" if is_female_voice else "global rate"
+    log(f"Story TTS edge voice={voice} ({voice_why}) rate={rate} ({rate_note}) "
         f"genre={genre or '?'} narrator_gender={gender or '?'}")
     raw_mp3 = workdir / "narr_edge_raw.mp3"
     edge_error: Exception | None = None

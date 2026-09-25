@@ -58,6 +58,11 @@ class StoryConfig(NicheConfig):
     # kept working as a one-voice fallback); unset means the default pool.
     edge_voices: tuple[str, ...] = ("en-US-AndrewNeural", "en-US-AriaNeural")
     edge_rate: str = "+20%"
+    # Female edge voices (Aria/Ava) run a slower natural cadence than the
+    # male voices at the same relative SSML rate, so they get a hotter
+    # default (+28%) to land near Andrew's absolute pace. STORY_ prefix
+    # wins, bare EDGE_RATE_FEMALE falls back.
+    edge_rate_female: str = "+28%"
     # BG segment length bounds (seconds) + playback speed range.
     # Satisfying-timelapse range: slow mopping/cleaning footage is
     # near-invisible at 1.15-1.5x, so the default runs 2.5-3.5x.
@@ -211,6 +216,7 @@ class StoryConfig(NicheConfig):
             edge_voice=env_str("EDGE_VOICE", "en-US-AvaNeural", "STORY_") or "en-US-AvaNeural",
             edge_voices=_edge_pool(),
             edge_rate=env_str("EDGE_RATE", "+20%", "STORY_") or "+20%",
+            edge_rate_female=env_str("EDGE_RATE_FEMALE", "+28%", "STORY_") or "+28%",
             seg_min=env_float("SEG_MIN", 2.5, "STORY_"),
             seg_max=env_float("SEG_MAX", 4.5, "STORY_"),
             bg_speed_min=env_float("BG_SPEED_MIN", 2.5, "STORY_"),
