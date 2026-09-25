@@ -556,8 +556,8 @@ class TestPlanner(unittest.TestCase):
         for seg in segs:
             self.assertLess(seg["clip_idx"], 40)
             self.assertGreater(seg["dur"], 0)
-            self.assertGreaterEqual(seg["speed"], 2.0)
-            self.assertLessEqual(seg["speed"], 3.0)
+            self.assertGreaterEqual(seg["speed"], 2.5)
+            self.assertLessEqual(seg["speed"], 3.5)
         # hard rule: no clip id twice in one video ...
         self.assertEqual(len({s["clip_idx"] for s in segs}), len(segs))
         # ... so no clip repeats within 4 segments either
@@ -607,8 +607,8 @@ class TestPlannerSpec(unittest.TestCase):
             # window = out * speed, inside the source clip
             self.assertAlmostEqual(s["window"], s["dur"] * s["speed"],
                                    places=2)
-            self.assertGreaterEqual(s["speed"], 2.0)
-            self.assertLessEqual(s["speed"], 3.0)
+            self.assertGreaterEqual(s["speed"], 2.5)
+            self.assertLessEqual(s["speed"], 3.5)
             clip_dur = by_clip[s["clip_id"]]
             self.assertLessEqual(s["start_offset"] + s["window"],
                                  clip_dur + 1e-6)
@@ -1707,8 +1707,8 @@ class TestClipUniqueness(unittest.TestCase):
 class TestCleaningPriority(unittest.TestCase):
     def test_speed_and_cleaning_config_defaults_and_env(self):
         cfg = StoryConfig()
-        self.assertEqual(cfg.bg_speed_min, 2.0)
-        self.assertEqual(cfg.bg_speed_max, 3.0)
+        self.assertEqual(cfg.bg_speed_min, 2.5)
+        self.assertEqual(cfg.bg_speed_max, 3.5)
         self.assertEqual(cfg.cleaning_clips_per_query, 3)
         self.assertAlmostEqual(cfg.cleaning_share, 0.55)
         env = {"STORY_BG_SPEED_MIN": "2.5", "STORY_BG_SPEED_MAX": "3.5",
@@ -1790,8 +1790,8 @@ class TestCleaningPriority(unittest.TestCase):
         for s in segs:
             self.assertGreaterEqual(s["dur"], 2.5)
             self.assertLessEqual(s["dur"], 4.5)
-            self.assertGreaterEqual(s["speed"], 2.0)
-            self.assertLessEqual(s["speed"], 3.0)
+            self.assertGreaterEqual(s["speed"], 2.5)
+            self.assertLessEqual(s["speed"], 3.5)
 
     def test_plan_share_zero_restores_uniform_mix(self):
         segs = story_visuals.plan(82.9, seed=7,

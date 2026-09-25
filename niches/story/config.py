@@ -60,11 +60,11 @@ class StoryConfig(NicheConfig):
     edge_rate: str = "+20%"
     # BG segment length bounds (seconds) + playback speed range.
     # Satisfying-timelapse range: slow mopping/cleaning footage is
-    # near-invisible at 1.15-1.5x, so the default runs 2.0-3.0x.
+    # near-invisible at 1.15-1.5x, so the default runs 2.5-3.5x.
     seg_min: float = 2.5
     seg_max: float = 4.5
-    bg_speed_min: float = 2.0
-    bg_speed_max: float = 3.0
+    bg_speed_min: float = 2.5
+    bg_speed_max: float = 3.5
     # Captions: 1/true = uppercase word-pop.
     caption_upper: bool = False
     # Card floor: overlay shows max(card_seconds, card_line_end + pad).
@@ -213,8 +213,8 @@ class StoryConfig(NicheConfig):
             edge_rate=env_str("EDGE_RATE", "+20%", "STORY_") or "+20%",
             seg_min=env_float("SEG_MIN", 2.5, "STORY_"),
             seg_max=env_float("SEG_MAX", 4.5, "STORY_"),
-            bg_speed_min=env_float("BG_SPEED_MIN", 2.0, "STORY_"),
-            bg_speed_max=env_float("BG_SPEED_MAX", 3.0, "STORY_"),
+            bg_speed_min=env_float("BG_SPEED_MIN", 2.5, "STORY_"),
+            bg_speed_max=env_float("BG_SPEED_MAX", 3.5, "STORY_"),
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
             ass_fontsize=env_int("ASS_FONTSIZE", 132, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),

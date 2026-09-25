@@ -73,7 +73,7 @@ def _pick_window(rng: random.Random, clip_dur: float, window: float,
 def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
          n_clips: int = 1, seed: int | None = None,
          min_segments: int = 25, max_segments: int = 40,
-         speed_min: float = 2.0, speed_max: float = 3.0,
+         speed_min: float = 2.5, speed_max: float = 3.5,
          recent_ids: tuple = (),
          clips: list[dict] | None = None,
          cleaning_share: float = 0.55,
@@ -86,7 +86,7 @@ def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
     bounds win over the segment-count range for tiny totals); last
     segment trims the rounding drift; no overlapping source window per
     video id; speeds in [speed_min, speed_max] (satisfying-timelapse
-    default 2.0-3.0x); each source window (out_dur*speed) fits inside
+    default 2.5-3.5x); each source window (out_dur*speed) fits inside
     its clip — clips too short for even speed_min are skipped in favor
     of roomier ones, and the speed is eased down just enough to fit
     when no roomier clip remains. Aims for >=12 distinct clips. When
