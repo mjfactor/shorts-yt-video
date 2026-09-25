@@ -73,6 +73,7 @@ def _make_story(sentences=None):
             "desk clock overtime",
         ],
         "ending_type": "payoff",
+        "narrator_gender": "female",
         "pinned_comment": "Would YOU have said no?",
         "card_text": "I said no then they moved my desk",
         "card_highlight_word": "desk",
@@ -146,6 +147,8 @@ class TestStoryValidation(unittest.TestCase):
             "hook mismatch": lambda d: d.update({"hook": "Totally different opening line here"}),
             "few bg queries": lambda d: d.update({"bg_queries": ["office"]}),
             "bad ending": lambda d: d.update({"ending_type": "twist"}),
+            "bad narrator_gender": lambda d: d.update({"narrator_gender": "robot"}),
+            "missing narrator_gender": lambda d: d.pop("narrator_gender"),
             "missing rehooks": lambda d: d.update({"rehooks": []}),
             "beats mismatch": lambda d: d["beats"].append(
                 {"text": "extra unmatched sentence here", "query": "office"}),
@@ -160,6 +163,19 @@ class TestStoryValidation(unittest.TestCase):
     def test_non_dict_rejected(self):
         with self.assertRaises(ValueError):
             story_content.validate_extra([])  # type: ignore[arg-type]
+
+    def test_narrator_gender_passthrough(self):
+        data = _make_story()
+        extra = story_content.validate_extra(data)
+        self.assertEqual(extra["narrator_gender"], "female")
+        data["narrator_gender"] = "Male"
+        self.assertEqual(
+            story_content.validate_extra(data)["narrator_gender"], "male")
+
+    def test_prompt_requires_narrator_gender(self):
+        prompt, _slots = story_content.build_prompt([], StoryConfig())
+        self.assertIn("narrator_gender", prompt)
+        self.assertIn("default \"female\" when ambiguous", prompt)
 
 
 class TestStorySameModelRetry(unittest.TestCase):
@@ -855,8 +871,7 @@ class TestStoryEdgeBranch(unittest.TestCase):
         self.assertEqual(cfg.tts_provider_order, "edge,gemini")
         self.assertEqual(cfg.edge_voice, "en-US-AvaNeural")
         self.assertEqual(cfg.edge_voices,
-                         ("en-US-AndrewNeural", "en-US-AriaNeural",
-                          "en-US-GuyNeural"))
+                         ("en-US-AndrewNeural", "en-US-AriaNeural"))
         self.assertEqual(cfg.edge_rate, "+20%")
         self.assertEqual(cfg.target_min, 100.0)
         self.assertEqual(cfg.target_max, 120.0)
@@ -886,13 +901,13 @@ class TestStoryEdgeBranch(unittest.TestCase):
                          ("en-US-AriaNeural", "en-US-JennyNeural"))
 
     def test_edge_voice_pool_precedence(self):
-        # unset -> default trio; singular-only -> one-voice pool
+        # unset -> default duo; singular-only -> one-voice pool
         with mock.patch.dict(os.environ, {}, clear=False):
             for k in ("STORY_EDGE_VOICES", "STORY_EDGE_VOICE",
                       "EDGE_VOICES", "EDGE_VOICE"):
                 os.environ.pop(k, None)
             cfg = StoryConfig.from_env()
-        self.assertEqual(len(cfg.edge_voices), 3)
+        self.assertEqual(len(cfg.edge_voices), 2)
         with mock.patch.dict(os.environ, {"STORY_EDGE_VOICE": "en-US-GuyNeural"},
                              clear=False):
             os.environ.pop("STORY_EDGE_VOICES", None)
@@ -900,6 +915,59 @@ class TestStoryEdgeBranch(unittest.TestCase):
         self.assertEqual(cfg2.edge_voices, ("en-US-GuyNeural",))
         voice, _why = story_narr._edge_voice_for(cfg, "seed")
         self.assertIn(voice, list(cfg.edge_voices))
+
+    def test_edge_voice_gender_filter(self):
+        cfg = StoryConfig(
+            edge_voices=("en-US-AndrewNeural", "en-US-AriaNeural",
+                         "en-US-GuyNeural", "en-US-AvaNeural"))
+        for _ in range(20):
+            voice, _why = story_narr._edge_voice_for(cfg, "seed", "male")
+            self.assertIn(voice, ("en-US-AndrewNeural", "en-US-GuyNeural"))
+        for _ in range(20):
+            voice, _why = story_narr._edge_voice_for(cfg, "seed", "female")
+            self.assertIn(voice, ("en-US-AriaNeural", "en-US-AvaNeural"))
+        # default duo splits cleanly by gender
+        duo = StoryConfig()
+        for _ in range(10):
+            self.assertEqual(
+                story_narr._edge_voice_for(duo, "s", "male")[0],
+                "en-US-AndrewNeural")
+            self.assertEqual(
+                story_narr._edge_voice_for(duo, "s", "female")[0],
+                "en-US-AriaNeural")
+
+    def test_edge_voice_gender_fallback(self):
+        cfg = StoryConfig(
+            edge_voices=("en-US-AndrewNeural", "en-US-AriaNeural"))
+        # missing/empty/unknown gender -> full-pool behavior
+        for g in ("", "robot", "nonbinary", "  "):
+            voice, _why = story_narr._edge_voice_for(cfg, "seed", g)
+            self.assertIn(voice, list(cfg.edge_voices))
+        # no matching voice in pool -> full-pool behavior
+        solo = StoryConfig(edge_voices=("en-US-JennyNeural",))
+        voice, _why = story_narr._edge_voice_for(solo, "seed", "male")
+        self.assertEqual(voice, "en-US-JennyNeural")
+        # gender threads through _narrate_edge extras
+        content = self._content()
+        content.extras["narrator_gender"] = "female"
+        seen = {}
+
+        def _fake_voice(cfg_, seed_, gender_=""):
+            seen["gender"] = gender_
+            return ("en-US-AriaNeural", "test")
+
+        ticks = content.narration_text.split()
+        events = self._events(ticks)
+        with mock.patch.object(story_narr, "_edge_voice_for",
+                               side_effect=_fake_voice), \
+            mock.patch("engine.edge_tts_client.synth_sync",
+                       return_value=events), \
+            mock.patch("niches.story.narration.run_ffmpeg"), \
+            mock.patch("niches.story.narration.ffprobe_duration",
+                       return_value=82.0):
+            with tempfile.TemporaryDirectory() as tmp:
+                story_narr._narrate_edge(content, cfg, Path(tmp))
+        self.assertEqual(seen.get("gender"), "female")
 
     def test_parse_and_refit_rate(self):
         self.assertAlmostEqual(story_narr._parse_edge_rate("+20%"), 0.20)
@@ -1457,6 +1525,18 @@ class TestCardFirst(unittest.TestCase):
             self.assertLessEqual(n, 8, variant["title"])
             self.assertIn(variant["card_highlight_word"].lower(),
                           variant["card_text"].lower())
+
+    def test_fallback_variants_carry_narrator_gender(self):
+        for variant in story_content._FALLBACK_VARIANTS:
+            self.assertIn(variant.get("narrator_gender"), ("male", "female"),
+                          variant["title"])
+            meta, _slots = story_content._build_fallback_meta(variant)
+            self.assertIn(meta.get("narrator_gender"), ("male", "female"))
+            content = story_content._to_content(
+                story_content.validate_extra(meta), {"genre": meta["genre"],
+                 "topic": meta["genre"], "topic_source": "fallback"}, 2.9)
+            self.assertIn(content.extras.get("narrator_gender"),
+                          ("male", "female"))
 
     def test_fallback_and_sample_three_rehooks(self):
         for hist in ([], [{"niche": "story", "genre": "workplace"}]):

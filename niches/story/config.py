@@ -56,8 +56,7 @@ class StoryConfig(NicheConfig):
     edge_voice: str = "en-US-AvaNeural"
     # STORY_EDGE_VOICES (plural) wins over STORY_EDGE_VOICE (singular,
     # kept working as a one-voice fallback); unset means the default pool.
-    edge_voices: tuple[str, ...] = ("en-US-AndrewNeural", "en-US-AriaNeural",
-                                    "en-US-GuyNeural")
+    edge_voices: tuple[str, ...] = ("en-US-AndrewNeural", "en-US-AriaNeural")
     edge_rate: str = "+20%"
     # BG segment length bounds (seconds) + playback speed range.
     # Satisfying-timelapse range: slow mopping/cleaning footage is
@@ -71,6 +70,10 @@ class StoryConfig(NicheConfig):
     # Card floor: overlay shows max(card_seconds, card_line_end + pad).
     card_seconds: float = 3.0
     card_pad: float = 0.4
+    # Thumbnail frame offset (seconds into the final mp4). The opening
+    # card is visible 0-card_dur, so the default 1.0s lands on the card;
+    # clamped inside card_dur at render time (warn-only on failure).
+    thumb_offset_seconds: float = 1.0
     # Card branding.
     channel_handle: str = "@UnhingedStories"
     avatar_path: str = "assets/avatar.png"
@@ -146,8 +149,7 @@ class StoryConfig(NicheConfig):
                                  "STORY_").strip()
                 if single:
                     return (single,)
-            return ("en-US-AndrewNeural", "en-US-AriaNeural",
-                    "en-US-GuyNeural")
+            return ("en-US-AndrewNeural", "en-US-AriaNeural")
 
         def _story_models() -> tuple[str, ...]:
             """Bare GEMINI_MODELS wins when set, else STORY_MODELS, else
@@ -216,6 +218,8 @@ class StoryConfig(NicheConfig):
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
             ass_fontsize=env_int("ASS_FONTSIZE", 132, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),
+            thumb_offset_seconds=env_float(
+                "THUMB_OFFSET_SECONDS", 1.0, "STORY_"),
             channel_handle=env_str("CHANNEL_HANDLE", "@UnhingedStories", "STORY_") or "@UnhingedStories",
             avatar_path=env_str("AVATAR_PATH", "assets/avatar.png", "STORY_") or "assets/avatar.png",
             card_likes=env_str("CARD_LIKES", "420+", "STORY_") or "420+",

@@ -208,6 +208,9 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
     ending = str(data.get("ending_type", "") or "").strip().lower()
     if ending not in ("payoff", "cliffhanger"):
         raise ValueError("'ending_type' must be 'payoff' or 'cliffhanger'")
+    gender = str(data.get("narrator_gender", "") or "").strip().lower()
+    if gender not in ("male", "female"):
+        raise ValueError("'narrator_gender' must be 'male' or 'female'")
     want_slots = ("20-30s", "50-60s", "80-90s")
     rehooks = []
     for rh in (data.get("rehooks") or []):
@@ -246,6 +249,7 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
         "story_text": story,
         "narration": story,
         "ending_type": ending,
+        "narrator_gender": gender,
         "pinned_comment": str(data.get("pinned_comment", "") or "").strip(),
         "rehooks": rehooks,
         "beats": [{"text": str(b.get("text", "")).strip(),
@@ -358,7 +362,7 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         f"and deliver the FULL {mid}-word count, never a short draft.\n\n"
         f"{history_block(history, cfg.history_prompt_n)}"
         "Return ONLY valid JSON with exactly these keys: title, card_text, "
-        "card_highlight_word, hook, story_text, narration, genre, key_words, "
+        "card_highlight_word, hook, story_text, narration, genre, narrator_gender, key_words, "
         "bg_queries, tags, description, ending_type, pinned_comment, beats, "
         "rehooks, plus optional part_2_seed.\n\n"
         f"Story structure ({lo}-{hi} words total, about {secs} seconds spoken):\n"
@@ -397,6 +401,8 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "story_text and narration must be IDENTICAL: the full spoken story, "
         f"{lo}-{hi} words (card line included in the total). "
         f"genre must echo '{genre}'. "
+        "narrator_gender is the narrator's own gender (\"male\" or \"female\", "
+        "default \"female\" when ambiguous — never infer it from other characters). "
         "key_words: 4-8 lowercase content words (people, places, objects, "
         "moods) for dedup and visuals. bg_queries: 5-8 background-footage "
         "search queries, 1-3 concrete filmable words each "
@@ -530,6 +536,7 @@ def _to_content(meta: dict, slots: dict, wps: float) -> Content:
                 "hook": meta.get("hook", ""),
                 "story_text": meta.get("story_text", meta.get("narration", "")),
                 "ending_type": meta.get("ending_type", ""),
+                "narrator_gender": meta.get("narrator_gender", ""),
                 "pinned_comment": meta.get("pinned_comment", ""),
                 "part_2_seed": meta.get("part_2_seed", ""),
                 "rehooks": list(meta.get("rehooks", [])),
@@ -623,6 +630,7 @@ _FALLBACK_VARIANTS = (
         "card_highlight_word": "desk",
         "hook": "I said no, then they moved my desk.",
         "genre": "workplace",
+        "narrator_gender": "female",
         "key_words": ["boss", "overtime", "office", "meeting", "weekend"],
         "bg_queries": ["office desk night", "empty office hallway",
                        "work team meeting", "conference room silent",
@@ -666,6 +674,7 @@ _FALLBACK_VARIANTS = (
         "card_highlight_word": "blended",
         "hook": "He drummed at midnight, I blended at seven.",
         "genre": "revenge",
+        "narrator_gender": "male",
         "key_words": ["neighbor", "drums", "blender", "apartment", "deal"],
         "bg_queries": ["apartment building night", "man sleeping bed",
                        "kitchen blender morning", "neighbors handshake",
@@ -708,6 +717,7 @@ _FALLBACK_VARIANTS = (
         "card_highlight_word": "around",
         "hook": "Do not turn around.",
         "genre": "scary",
+        "narrator_gender": "female",
         "key_words": ["gas station", "night shift", "phone call", "cameras",
                       "hallway"],
         "bg_queries": ["gas station night", "old telephone ringing",
@@ -766,6 +776,7 @@ def _build_fallback_meta(variant: dict) -> tuple[dict, dict]:
         "tags": list(variant["tags"]),
         "description": variant["description"],
         "ending_type": variant["ending_type"],
+        "narrator_gender": variant.get("narrator_gender", ""),
         "pinned_comment": variant["pinned_comment"],
         "rehooks": [dict(r) for r in variant.get("rehooks", [])],
         "beats": [{"text": b["text"], "query": b["query"], "label": ""}

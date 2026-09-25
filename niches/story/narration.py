@@ -49,14 +49,51 @@ GENRE_STYLES = {
 DEFAULT_STYLE = ("Energetic, engaging storyteller voice. Brisk natural pacing, "
                  "clear emphasis, authentic viral storytime delivery.")
 
+# Voice-name substrings for gender-aware pool filtering (matched
+# case-insensitively against the configured pool; unknown names never
+# match, so custom pools fall back to full-pool behavior).
+_EDGE_MALE_HINTS = ("andrew", "guy")
+_EDGE_FEMALE_HINTS = ("aria", "ava")
+_GEMINI_MALE_HINTS = ("charon", "puck", "fenrir")
+_GEMINI_FEMALE_HINTS = ("kore", "aoede")
 
-def pick_voice(cfg: StoryConfig, seed_text: str = "") -> tuple[str, str]:
-    """Voice rotation across the pool; deterministic per story seed."""
+
+def _filter_by_gender(pool: list[str], gender: str,
+                      male_hints: tuple[str, ...],
+                      female_hints: tuple[str, ...]) -> list[str]:
+    """Gender-matching subset of pool, or [] when unusable.
+
+    Missing/unknown gender or no matching voice returns [] so callers
+    fall back to the full-pool behavior.
+    """
+    g = (gender or "").strip().lower()
+    hints = (male_hints if g == "male" else
+             female_hints if g == "female" else ())
+    if not hints:
+        return []
+    matched = [v for v in pool if any(h in str(v).lower() for h in hints)]
+    return matched
+
+
+def pick_voice(cfg: StoryConfig, seed_text: str = "",
+               gender: str = "") -> tuple[str, str]:
+    """Voice rotation across the pool; deterministic per story seed.
+
+    When gender is "male"/"female", prefer the matching subset of the
+    pool (male: Charon/Puck/Fenrir; female: Kore/Aoede); missing gender
+    or no matching voice falls back to the full-pool rotation.
+    """
     pool = [v for v in (cfg.tts_voices or ()) if v] or ["Kore"]
+    subset = _filter_by_gender(pool, gender, _GEMINI_MALE_HINTS,
+                               _GEMINI_FEMALE_HINTS)
+    pool_label = "pool rotation"
+    if subset:
+        pool, pool_label = subset, f"gender-filtered {pool_label}"
     if len(pool) == 1:
-        return pool[0], "single voice configured"
+        return pool[0], ("single voice configured" if pool_label == "pool rotation"
+                         else f"{pool_label} (1 voice)")
     idx = int(hashlib.sha1(seed_text.encode("utf-8")).hexdigest(), 16) % len(pool)
-    return pool[idx], f"pool rotation ({len(pool)} voices)"
+    return pool[idx], f"{pool_label} ({len(pool)} voices)"
 
 
 def genre_style(genre: str) -> str:
@@ -201,13 +238,27 @@ def _trim_to_sentence(audio: Path, words: list[dict], max_seconds: float,
     return out_mp3
 
 
-def _edge_voice_for(cfg: StoryConfig, seed_text: str = "") -> tuple[str, str]:
-    """One random edge voice per video, kept for the whole video."""
+def _edge_voice_for(cfg: StoryConfig, seed_text: str = "",
+                    gender: str = "") -> tuple[str, str]:
+    """One edge voice per video, kept for the whole video.
+
+    When gender is "male"/"female", pick from the matching subset of
+    the configured pool (male: Andrew/Guy; female: Aria/Ava, matched
+    by voice-name substring). Missing gender or no matching voice
+    falls back to the full-pool pick.
+    """
     _ = seed_text
     pool = [v for v in (cfg.edge_voices or ()) if v]
     if not pool and (cfg.edge_voice or "").strip():
         pool = [cfg.edge_voice.strip()]
     pool = pool or ["en-US-AvaNeural"]
+    subset = _filter_by_gender(pool, gender, _EDGE_MALE_HINTS,
+                               _EDGE_FEMALE_HINTS)
+    if subset:
+        voice = random.choice(subset)
+        why = (f"edge gender-filtered pick ({len(subset)} voices)"
+               if len(subset) > 1 else "single gender-filtered edge voice")
+        return voice, why
     voice = random.choice(pool)
     why = (f"edge pool pick ({len(pool)} voices)" if len(pool) > 1
            else "single edge voice")
@@ -360,10 +411,11 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
         log("Story edge narration: prepended card line (legacy content).")
     order = (getattr(cfg, "tts_provider_order", "edge,gemini") or "edge,gemini")
     log(f"Story edge provider order: {order}")
-    voice, voice_why = _edge_voice_for(cfg, f"{content.title}|{genre}")
+    gender = str(content.extras.get("narrator_gender", "") or "")
+    voice, voice_why = _edge_voice_for(cfg, f"{content.title}|{genre}", gender)
     rate = cfg.edge_rate
     log(f"Story TTS edge voice={voice} ({voice_why}) rate={rate} "
-        f"genre={genre or '?'}")
+        f"genre={genre or '?'} narrator_gender={gender or '?'}")
     raw_mp3 = workdir / "narr_edge_raw.mp3"
     edge_error: Exception | None = None
     words: list[dict] = []
@@ -542,7 +594,8 @@ def narrate(content: Content, cfg: StoryConfig,
         engine = "edge"
     if engine == "edge":
         return _narrate_edge(content, cfg, workdir)
-    voice, voice_why = pick_voice(cfg, f"{content.title}|{genre}")
+    voice, voice_why = pick_voice(cfg, f"{content.title}|{genre}",
+                                 str(content.extras.get("narrator_gender", "") or ""))
     style = genre_style(genre)
     log(f"Story TTS voice={voice} ({voice_why}) genre={genre or '?'}")
     client = _gc.GeminiClient(list(cfg.gemini_keys), timeout=cfg.timeout,

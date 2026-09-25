@@ -461,6 +461,44 @@ def _card_filter(card_dur: float) -> str:
     )
 
 
+def _extract_thumb(mp4: Path, card_dur: float, cfg: StoryConfig,
+                   workdir: Path) -> Path | None:
+    """Grab one 1080x1920 JPG frame for the YouTube thumbnail (warn-only).
+
+    Offset defaults to ~1.0s (inside the card-visible 0-card_dur window)
+    via STORY_THUMB_OFFSET_SECONDS, clamped inside card_dur. Quality is
+    tuned (-q:v 4, fallback 10) to stay under YouTube's 2MB thumbnail
+    limit. Never raises: returns None on any failure.
+    """
+    try:
+        raw = float(getattr(cfg, "thumb_offset_seconds", 1.0) or 1.0)
+        hi = max(0.1, float(card_dur) - 0.1)
+        offset = min(max(0.0, raw), hi)
+        thumb = Path(workdir) / "thumb.jpg"
+        run_ffmpeg(["ffmpeg", "-y", "-ss", f"{offset:.2f}",
+                    "-i", str(Path(mp4).resolve()),
+                    "-vframes", "1", "-q:v", "4", str(thumb)],
+                   "thumb-extract")
+        limit = 2 * 1024 * 1024
+        if thumb.exists() and thumb.stat().st_size >= limit:
+            run_ffmpeg(["ffmpeg", "-y", "-i", str(thumb),
+                        "-q:v", "10", str(thumb)], "thumb-shrink")
+        if not thumb.exists():
+            warn("Story thumb: extraction produced no file; skipping.")
+            return None
+        size_kb = thumb.stat().st_size / 1024
+        if thumb.stat().st_size >= limit:
+            warn(f"Story thumb still {size_kb:.0f} KB >= 2MB limit; "
+                 "upload will skip it.")
+        else:
+            log(f"Story thumb: {thumb.name} at {offset:.2f}s "
+                f"({size_kb:.0f} KB).")
+        return thumb
+    except Exception as e:
+        warn(f"Story thumb extraction skipped ({e}).")
+        return None
+
+
 def build_visuals(content: Content, narration: NarrationResult,
                   cfg: StoryConfig, workdir: Path,
                   no_card: bool = False) -> VisualsResult:
@@ -629,8 +667,11 @@ def build_visuals(content: Content, narration: NarrationResult,
         f"preset {final_preset}).")
     if size_mb >= 100:
         warn(f"Story video {size_mb:.1f} MB >= 100 MB budget.")
+    extras = {"segments": len(segs), "card_dur": card_dur,
+              "card_end": card_end, "genre": genre,
+              "size_mb": round(size_mb, 1)}
+    thumb = _extract_thumb(out_mp4, card_dur, cfg, workdir)
+    if thumb is not None:
+        extras["thumb"] = str(thumb)
     return VisualsResult(mp4=out_mp4, srt=out_srt, credits=credits,
-                         used_ids=used_ids,
-                         extras={"segments": len(segs), "card_dur": card_dur,
-                                 "card_end": card_end, "genre": genre,
-                                 "size_mb": round(size_mb, 1)})
+                         used_ids=used_ids, extras=extras)

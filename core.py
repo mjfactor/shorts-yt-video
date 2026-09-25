@@ -230,8 +230,14 @@ def cleanup_intermediates(workdir: Path | None = None) -> None:
     log("Cleaned intermediates (Pexels cache kept).")
 
 
-def upload(video: Path, meta: dict):
-    """Resumable YouTube upload (categoryId 22, VISIBILITY). Skips w/o creds."""
+def upload(video: Path, meta: dict, thumb: Path | str | None = None):
+    """Resumable YouTube upload (categoryId 22, VISIBILITY). Skips w/o creds.
+
+    When `thumb` points at an existing JPG, it is set as the video
+    thumbnail via thumbnails().set (same youtube.upload-scope client;
+    warn-only — unverified channel / oversize / HttpError never fails
+    the run).
+    """
     cid, sec, ref = (os.getenv("YT_CLIENT_ID", ""), os.getenv("YT_CLIENT_SECRET", ""),
                      os.getenv("YT_REFRESH_TOKEN", ""))
     if not (cid and sec and ref):
@@ -269,6 +275,22 @@ def upload(video: Path, meta: dict):
         log("Fix: re-run get_refresh_token.py locally and update GitHub Secrets.")
         raise
     log(f"Uploaded -> videoId={resp['id']}")
+    if thumb is not None:
+        try:
+            thumb_path = Path(thumb)
+            if not thumb_path.exists():
+                warn(f"YouTube thumbnail skipped (missing file: {thumb_path}).")
+            elif thumb_path.stat().st_size >= 2 * 1024 * 1024:
+                warn(f"YouTube thumbnail skipped "
+                     f"({thumb_path.stat().st_size / 1024:.0f} KB >= 2MB limit).")
+            else:
+                yt.thumbnails().set(
+                    videoId=resp["id"],
+                    media_body=MediaFileUpload(str(thumb_path),
+                                               mimetype="image/jpeg")).execute()
+                log(f"Thumbnail set from {thumb_path.name}.")
+        except Exception as e:
+            warn(f"YouTube thumbnail skipped ({type(e).__name__}: {e}).")
     return resp["id"]
 
 
@@ -450,7 +472,7 @@ def buffer_tiktok_upload(video: Path, meta: dict):
             return None
         caption = _tiktok_caption(meta)
         mutation = (
-            "mutation CreatePost($text: String!, $channelId: ID!, $url: String!) { "
+            "mutation CreatePost($text: String!, $channelId: ChannelId!, $url: String!) { "
             "createPost( input: { "
             "text: $text channelId: $channelId "
             "schedulingType: automatic mode: addToQueue "
@@ -555,9 +577,15 @@ def run(niche) -> dict:
         out_json = stem.with_suffix(".json")
         out_json.write_text(json.dumps(meta, indent=2, ensure_ascii=False),
                             encoding="utf-8")
+        thumb_src = (visuals.extras or {}).get("thumb")
+        out_thumb = OUT / f"{stamp}_thumb.jpg"
+        if thumb_src is not None and Path(thumb_src).exists():
+            shutil.copy2(thumb_src, out_thumb)
+        else:
+            out_thumb = None
 
         _stage("UPLOAD")
-        video_id = upload(out_mp4, meta)
+        video_id = upload(out_mp4, meta, thumb=out_thumb)
         # TikTok dual-post via Buffer: independent of YouTube, never fails
         # the run (warn + None on missing creds or any error).
         tiktok_post_id = buffer_tiktok_upload(out_mp4, meta)
@@ -574,7 +602,7 @@ def run(niche) -> dict:
         save_history(entry)
         log("Done.")
         return {"mp4": out_mp4, "srt": out_srt, "metadata": out_json,
-                "video_id": video_id,
+                "thumb": out_thumb, "video_id": video_id,
                 "tiktok_buffer_post_id": tiktok_post_id}
     finally:
         cleanup_intermediates(workdir)
