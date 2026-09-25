@@ -6,6 +6,7 @@ sentence/TTS/safety/copy gates, retry with backoff.
 """
 from __future__ import annotations
 
+import math
 import random
 import re
 import time
@@ -161,9 +162,35 @@ def _starts_with_card(story: str, card_text: str) -> bool:
     return _norm_card_words(first) == _norm_card_words(card_text)
 
 
+_MICRO_WORDS = 5
+_MICRO_FRAC = 0.02
+
+
+def _micro_margin(lo: int, hi: int) -> int:
+    """Near-miss tolerance: max(5 words, 2% of the window mid)."""
+    mid = (lo + hi) / 2
+    return max(_MICRO_WORDS, math.ceil(_MICRO_FRAC * mid))
+
+
+def _is_near_miss(n: int, lo: int, hi: int, tol: int = 15) -> bool:
+    """True when n sits just outside the strict [lo-tol, hi+tol] window
+    but inside the micro margin — accept without a retry call."""
+    s_lo, s_hi = lo - tol, hi + tol
+    if s_lo <= n <= s_hi:
+        return False
+    m = _micro_margin(lo, hi)
+    return (s_lo - m) <= n <= (s_hi + m)
+
+
 def validate_extra(data: dict, cfg: StoryConfig | None = None,
-                   wps: float = 2.9) -> dict:
-    """Strict-check the story payload. Raises ValueError when unusable."""
+                   wps: float = 2.9, *, micro_accept: bool = False) -> dict:
+    """Strict-check the story payload. Raises ValueError when unusable.
+
+    `micro_accept=True` widens ONLY the word-count gate by a micro margin
+    (max(5 words, 2% of mid)) so near-miss drafts (e.g. off-by-one) are
+    accepted without burning a retry model call. Every other gate is
+    enforced unchanged.
+    """
     if not isinstance(data, dict):
         raise ValueError("story output is not a JSON object")
     for key in ("title", "description", "tags", "beats"):
@@ -176,11 +203,15 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
     words = len(story.split())
     if cfg is not None:
         lo, hi = target_words(cfg, wps)
-        lo, hi = lo - 15, hi + 15
+        s_lo, s_hi = lo - 15, hi + 15
+        if micro_accept:
+            m = _micro_margin(lo, hi)
+            s_lo, s_hi = s_lo - m, s_hi + m
     else:
         lo, hi = 80, 160
-    if words < lo or words > hi:
-        raise ValueError(f"'story_text' out of range ({words} words, need {lo}-{hi})")
+        s_lo, s_hi = lo, hi
+    if words < s_lo or words > s_hi:
+        raise ValueError(f"'story_text' out of range ({words} words, need {lo - 15 if cfg is not None else lo}-{hi + 15 if cfg is not None else hi})")
     for field in ("story_text", "hook"):
         text = story if field == "story_text" else str(data.get(field, "") or "")
         bad = _TTS_BAD_RE.search(text) or _EMOJI_RE.search(text)
@@ -500,8 +531,12 @@ def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
 
     Aims mid-range, not the floor: short drafts EXPAND beats 2-4 with
     concrete actions, evidence, and consequences; long drafts CONDENSE
-    setup adjectives first. The beats-joined==narration contract and
-    all other gates stay in the base prompt, which this header prepends to.
+    setup adjectives first. The sentence ask scales with the delta
+    (~12 words/sentence over beats 2-4: 1 sentence each when |delta|<20,
+    otherwise delta/12 total, capped at 3 per beat) so small misses stop
+    overshooting past the far edge. The beats-joined==narration contract
+    and all other gates stay in the base prompt, which this header
+    prepends to.
     """
     lo, hi = target_words(cfg, wps)
     mid = (lo + hi) // 2
@@ -511,22 +546,32 @@ def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
         return base_prompt, slots
     if n < lo:
         delta = mid - n
+        per_beat = max(1, min(3, round(delta / 36)))
+        total = per_beat * 3
+        s_word = "sentence" if per_beat == 1 else "sentences"
         header = (
             f"CORRECTION — your draft is {n} words but the validator needs "
             f"{lo}-{hi} (aim {mid}, +{delta} words). EXPAND the SAME story "
-            f"(same hook, same twist, same ending): add 2-3 full sentences "
+            f"(same hook, same twist, same ending): add {per_beat} full "
+            f"{s_word} "
             f"of concrete action, evidence, and rising consequences to EACH of "
-            f"beats 2, 3 and 4 (do NOT pad with repetitive internal monologue), "
+            f"beats 2, 3 and 4 (~{total} sentences / ~{delta} words total, "
+            f"do NOT pad with repetitive internal monologue), "
             f"keep every sentence 30 words or fewer, keep beat texts joined "
             f"equal to narration EXACTLY, and return the FULL {lo}-{hi}-word JSON "
             f"with the same keys. Never return another short draft.\n\n")
     else:
         delta = n - mid
+        per_beat = max(1, min(3, round(delta / 36)))
+        total = per_beat * 3
+        s_word = "sentence" if per_beat == 1 else "sentences"
         header = (
             f"CORRECTION — your draft is {n} words but the validator needs "
             f"{lo}-{hi} (aim {mid}, cut ~{delta} words). CONDENSE the SAME "
             f"story (same hook, same twist, same ending): trim setup "
-            f"adjectives and merge setup sentences first, keep beats 3-4 "
+            f"adjectives and merge setup sentences first "
+            f"(about {per_beat} {s_word} per beat, ~{total} sentences / "
+            f"~{delta} words total), keep beats 3-4 "
             f"and the final beat (>=60 words) fully expanded, keep every "
             f"sentence 30 words or fewer, keep beat texts joined equal to "
             f"narration EXACTLY, and return the FULL {lo}-{hi}-word JSON "
@@ -592,16 +637,38 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                     time.sleep(cfg.backoff if mi + 1 >= len(models) else 2)
                     continue
                 try:
-                    data = validate_extra(raw, cfg, wps)
+                    data = validate_extra(raw, cfg, wps, micro_accept=True)
                 except ValueError as e:
                     # Fixable shape reject (sentence length, hook/beats
                     # mismatch, ...): one same-model retry before
                     # discarding this model. Out-of-range drafts get a
                     # measured lengthen/tighten prompt aiming mid-range;
-                    # other rejects get a fresh prompt.
+                    # other rejects get a fresh prompt. Near-misses
+                    # (within micro margin) are accepted without a retry
+                    # call so an off-by-one never burns a model.
                     if _is_length_error(e):
-                        log(f"Story model {model} draft length rejected "
-                            f"({e}), lengthen/tighten retry same model...")
+                        n0 = _draft_word_count(raw)
+                        if n0 is not None:
+                            _lo, _hi = target_words(cfg, wps)
+                            if _is_near_miss(n0, _lo, _hi):
+                                log(f"Story model {model} draft near-miss "
+                                    f"({n0} words vs {_lo - 15}-{_hi + 15}), "
+                                    "micro-accepting without retry...")
+                                try:
+                                    data = validate_extra(
+                                        raw, cfg, wps, micro_accept=True)
+                                except ValueError as e_nm:
+                                    log(f"Story model {model} draft rejected "
+                                        f"({e_nm}), retrying same model once...")
+                                    data = None
+                                if data is not None:
+                                    if mi:
+                                        models.remove(model)
+                                        models.insert(0, model)
+                                    break
+                        if data is None:
+                            log(f"Story model {model} draft length rejected "
+                                f"({e}), lengthen/tighten retry same model...")
                     else:
                         log(f"Story model {model} draft rejected ({e}), "
                             "retrying same model once...")
@@ -618,7 +685,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                                 model, retry_prompt, generation_config={
                                     "temperature": 0.8,
                                     "maxOutputTokens": 8192}),
-                            cfg, wps)
+                            cfg, wps, micro_accept=True)
                     except Exception as e2:
                         log(f"Story model {model} unusable ({e2}), "
                             "trying next...")

@@ -19,8 +19,8 @@ DEFAULT_GENRES = ("AITA", "revenge", "workplace", "relationship",
                    "scary", "never-again")
 
 DEFAULT_TEXT_MODELS = ("gemini-3.8-flash", "gemini-3.7-flash",
-                       "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
-                       "gemini-2.5-flash-lite", "gemini-2.5-flash")
+                       "gemini-3.5-flash", "gemini-3.5-flash-lite",
+                       "gemini-3.1-flash-lite")
 DEFAULT_TTS_MODELS = ("gemini-2.5-flash-preview-tts",
                       "gemini-3.1-flash-tts-preview")
 

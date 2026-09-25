@@ -78,6 +78,34 @@ class GeminiClient:
         return cls(keys, **kw)
 
     @staticmethod
+    def _is_dead_model(status: int | None, exc: Exception) -> bool:
+        """True when the model ID itself is unusable (not a key problem).
+
+        404 always means unknown/retired model. 400 counts when the body
+        points at the model (invalid/unknown/unsupported/not-found); other
+        400s are payload errors — still not key errors, so they also abort
+        the key loop instead of burning every key on the same dead ID.
+        """
+        if status == 404:
+            return True
+        if status == 400:
+            try:
+                resp = getattr(exc, "response", None)
+                body = str(getattr(resp, "text", "") or "") if resp is not None else ""
+                blob = f"{body} {exc}".lower()
+            except Exception:
+                blob = str(exc).lower()
+            if "model" in blob and any(k in blob for k in (
+                    "not found", "invalid", "unknown", "unsupported",
+                    "not supported", "does not exist", "not exist",
+                    "removed", "retired", "not available", "not valid")):
+                return True
+            # Any other 400 is a request/payload problem, never a key
+            # problem — abort rotation all the same.
+            return True
+        return False
+
+    @staticmethod
     def _status(exc: Exception) -> int | None:
         resp = getattr(exc, "response", None)
         if resp is not None:
@@ -120,6 +148,14 @@ class GeminiClient:
                 except Exception as e:
                     last_err = e
                     status = self._status(e)
+                    if self._is_dead_model(status, e):
+                        # Dead model ID (404, or 400 naming the model):
+                        # abort the whole key loop at once so one bad ID
+                        # never burns every key. The caller moves on to
+                        # the next model; no sleep, no failover.
+                        log(f"Gemini model in URL not available (HTTP {status}), "
+                            "skipping remaining keys...")
+                        raise
                     if status == 429:
                         key_server_only = False
                         if attempt == tries:
@@ -128,19 +164,25 @@ class GeminiClient:
                         log(f"Gemini key {idx + 1}/{n} rate-limited, waiting {wait:.1f}s...")
                         time.sleep(wait)
                         continue
-                    if status is not None and 400 <= status < 500 and status != 408:
+                    if status in (401, 403, 408):
+                        # Key/auth problems only: fail over to the next key.
                         key_server_only = False
                         if k < n - 1:
                             log(f"Gemini key {idx + 1}/{n} rejected (HTTP {status}), failing over...")
                         break
-                    if status is not None and 500 <= status < 600:
+                    if status is not None and 400 <= status < 500:
+                        # Any other 4xx is a request/model problem, never
+                        # a key problem — abort rotation, let the caller
+                        # try the next model.
                         key_server_only = False
-                    if isinstance(e, requests.exceptions.Timeout):
-                        if k < n - 1:
-                            log(f"Gemini key {idx + 1}/{n} timed out, failing over...")
-                        break
-                    if attempt == tries:
-                        break
+                        log(f"Gemini request rejected (HTTP {status}), "
+                            "not rotating keys...")
+                        raise
+                    # 5xx / timeouts / connection drops / generic transient:
+                    # retry the SAME key only, then raise without touching
+                    # the remaining keys (endpoint trouble is not key trouble).
+                    if attempt >= tries:
+                        raise
                     wait = backoff * attempt
                     log(f"Gemini(key {idx + 1}/{n}) failed ({e}), retrying in {wait}s...")
                     time.sleep(wait)
