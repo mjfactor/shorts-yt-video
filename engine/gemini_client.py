@@ -179,18 +179,19 @@ class GeminiClient:
                             "not rotating keys...")
                         raise
                     # 5xx / timeouts / connection drops / generic transient:
-                    # retry the SAME key only, then raise without touching
-                    # the remaining keys (endpoint trouble is not key trouble).
+                    # retry the SAME key up to `tries`, then rotate to the
+                    # next key. 503 specifically means "this endpoint is
+                    # temporarily overloaded" — rotating keys is exactly the
+                    # right response since different keys may hit different
+                    # backend shards.
                     if attempt >= tries:
-                        raise
+                        key_server_only = True   # mark for rotation
+                        break                    # move to next key
                     wait = backoff * attempt
                     log(f"Gemini(key {idx + 1}/{n}) failed ({e}), retrying in {wait}s...")
                     time.sleep(wait)
             if key_server_only:
                 server_only_failures += 1
-                if server_only_failures >= 2 and k < n - 1:
-                    log("Gemini endpoint looks down, skipping remaining keys...")
-                    break
         assert last_err is not None
         raise last_err
 
