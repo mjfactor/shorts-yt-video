@@ -129,6 +129,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add history.json
           git diff --cached --quiet || git commit -m "chore: record short history [skip ci]"
+          git pull --rebase origin config || true
           git push || echo "history push skipped (nothing to push or no write access)"
       - name: Keep metadata (always, 90 days, tiny text)
         if: always()

@@ -51,12 +51,23 @@ CLEANING_QUERIES = (
 # partitions the pool so cleaning holds >=cleaning_share of segments.
 EVERGREEN_QUERIES = (*CLEANING_QUERIES, *AMBIENT_QUERIES)
 GENRE_EVERGREEN = {
-    "workplace": ("office desk night", "empty office hallway", "city office windows"),
-    "revenge": ("apartment building night", "door knock night", "city street night"),
-    "scary": ("dark hallway shadows", "night forest fog", "empty store night"),
-    "relationship": ("couple silhouette sunset", "rain window night", "city park dusk"),
-    "AITA": ("family dinner table", "living room argument", "front door house"),
-    "never-again": ("hospital hallway night", "car road night", "storm clouds dark"),
+    "workplace":     ("office desk night", "empty office hallway", "city office windows"),
+    "revenge":       ("apartment building night", "door knock night", "city street night"),
+    "scary":         ("dark hallway shadows", "night forest fog", "empty store night"),
+    "relationship":  ("couple silhouette sunset", "rain window night", "city park dusk"),
+    "AITA":          ("family dinner table", "living room argument", "front door house"),
+    "never-again":   ("hospital hallway night", "car road night", "storm clouds dark"),
+    "family":        ("living room couch family", "kitchen morning light", "backyard house"),
+    "money":         ("cash money bills", "bank atm machine", "luxury car driving"),
+    "friendship":    ("friends laughing coffee", "park bench people", "phone texting hands"),
+    "cheating":      ("empty bedroom night", "phone screen glow dark", "door closing night"),
+    "entitled":      ("shopping mall people", "customer service desk", "parking lot cars"),
+    "neighbor":      ("fence backyard suburban", "front porch house", "suburban street"),
+    "wedding":       ("wedding venue flowers", "church aisle empty", "reception hall night"),
+    "roommate":      ("apartment kitchen messy", "shared living room", "front door lock"),
+    "inheritance":   ("old house empty", "legal documents desk", "family home exterior"),
+    "social-media":  ("phone screen scrolling", "laptop typing night", "notification screen"),
+    "petty-revenge": ("car parking lot", "office printer", "delivery package door"),
 }
 
 # ---------------------------------------------------------------------------
@@ -67,18 +78,34 @@ GENRE_EVERGREEN = {
 # exactly as before — only the ambient/evergreen pool changes.
 # ---------------------------------------------------------------------------
 _BG_THEMES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("cleaning",  ("window cleaning", "pressure washing", "car wash",
-                   "floor mopping", "soap sponge", "vacuum carpet")),
-    ("gaming",    ("gaming setup keyboard", "esports arena rgb", "game controller hands",
-                   "pc gaming rgb", "gaming headset desk", "console playing tv")),
-    ("nature",    ("forest path sunlight", "ocean waves sunset", "mountain hiking trail",
-                   "waterfall flowing rocks", "rain forest green", "desert landscape")),
-    ("workspace", ("coffee shop laptop", "home office desk", "notebook writing hand",
-                   "coworking space people", "city office windows", "typing keyboard close")),
-    ("urban",     ("city night skyline", "rain street night", "neon signs city",
-                   "highway traffic night", "subway station platform", "rooftop city view")),
-    ("cozy",      ("fireplace flames close", "candles burning dark", "book reading hands",
-                   "tea cup pouring", "blanket cozy morning", "rain window drops")),
+    # All themes: satisfying "someone doing something" footage that keeps
+    # viewers watching regardless of story genre. These are chosen for
+    # high viewer retention on short-form — not matched to story topic.
+    ("cleaning",     ("window cleaning", "pressure washing", "car wash",
+                      "floor mopping", "soap scrubbing", "vacuum carpet")),
+    ("cooking",      ("knife chopping vegetables", "pan sizzling frying", "dough kneading hands",
+                      "pasta boiling pot", "chef plating food", "baking oven close")),
+    ("satisfying",   ("kinetic sand cutting", "soap cutting asmr", "slime mixing hands",
+                      "paint pouring canvas", "oddly satisfying compilation", "ball bearing drop")),
+    ("construction", ("brick laying wall", "welding sparks metal", "wood cutting saw",
+                      "concrete pouring foundation", "drilling machine close", "tile laying floor")),
+    ("crafting",     ("pottery wheel hands", "candle making pouring", "knitting hands close",
+                      "woodworking carving", "leather stitching hands", "glassblowing fire")),
+    ("fitness",      ("weightlifting gym close", "boxing punching bag", "jump rope fast",
+                      "swimming pool stroke", "rock climbing wall", "sprinting track athlete")),
+    ("food",         ("burger stacking close", "pizza stretching cheese", "sushi rolling chef",
+                      "ice cream scooping", "cake decorating icing", "noodles tossing wok")),
+    ("repair",       ("car engine mechanic", "soldering circuit board", "watch repair tools",
+                      "shoe cobbler stitching", "phone screen replacing", "plumbing pipe wrench")),
+    ("farming",      ("harvesting wheat field", "picking fruit orchard", "milking cow farm",
+                      "plowing tractor field", "bee hive honey", "fishing net haul")),
+    ("beauty",       ("hair cutting scissors", "makeup brush applying", "nail painting close",
+                      "tattoo machine skin", "barber shaving foam", "eyebrow threading")),
+    ("pets",         ("dog training tricks", "cat playing toy", "horse riding field",
+                      "fish tank feeding", "puppy bath time", "parrot talking close")),
+    ("street",       ("street food vendor cooking", "busker playing guitar crowd",
+                      "skateboard tricks park", "graffiti spray painting wall",
+                      "parkour rooftop jump", "market vendor selling")),
 )
 
 

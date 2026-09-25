@@ -882,7 +882,8 @@ def run(niche) -> dict:
                  "tags": list(content.tags)[:10],
                  "narration": content.narration_text,
                  "videoId": video_id,
-                 "tiktokBufferPostId": tiktok_post_id}
+                 "tiktokBufferPostId": tiktok_post_id,
+                 "used_ids": list((visuals.used_ids or []))}
         slots = (content.extras or {}).get("slots") or {}
         for key in ("topic", "topic_source", "topicSource", "category"):
             if slots.get(key):

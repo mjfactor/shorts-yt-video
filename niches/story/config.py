@@ -15,8 +15,11 @@ from niches.base import (NicheConfig, env_bool, env_float, env_int,
 
 MODE = "story"
 
-DEFAULT_GENRES = ("AITA", "revenge", "workplace", "relationship",
-                   "scary", "never-again")
+DEFAULT_GENRES = (
+    "AITA", "revenge", "workplace", "relationship", "scary", "never-again",
+    "family", "money", "friendship", "cheating", "entitled", "neighbor",
+    "wedding", "roommate", "inheritance", "social-media", "petty-revenge",
+)
 
 DEFAULT_TEXT_MODELS = ("gemini-3.8-flash", "gemini-3.7-flash",
                        "gemini-3.5-flash", "gemini-3.5-flash-lite",
