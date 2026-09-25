@@ -423,6 +423,12 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
         warn(f"Story edge far off window ({dur:.1f}s); {fit_action}.")
         fit_note += f" ({fit_action})"
     if dur > cfg.max_seconds:
+        if cfg.max_seconds < cfg.target_min:
+            raise ValueError(
+                f"STORY_MAX_SECONDS={cfg.max_seconds:g} trims below "
+                f"TARGET_MIN={cfg.target_min:g}; narration {dur:.1f}s for a "
+                f"{cfg.target_min:g}-{cfg.target_max:g}s target — raise "
+                "STORY_MAX_SECONDS (>= target max).")
         # Sentence trim past MAX (hard cut fallback inside).
         log(f"Story edge fit: trimming {dur:.1f}s to sentence before "
             f"{cfg.max_seconds:g}s...")

@@ -1004,6 +1004,23 @@ class TestStoryEdgeBranch(unittest.TestCase):
         for w in res.extras["words"]:
             self.assertLess(float(w["start"]), 95.0)
 
+    def test_trim_below_target_min_raises_config_error(self):
+        # MAX_SECONDS=45 against an 80-85s target is a config
+        # contradiction, not a narration problem: fail loud naming
+        # STORY_MAX_SECONDS instead of trimming into a wps failure.
+        text = "Hello world. " + " ".join(f"word{i}" for i in range(98))
+        events = self._events(text.split(), step=0.9, span=0.8)
+        cfg = self._edge_cfg(max_seconds=45.0)
+        content = self._content(text=text)
+        with mock.patch("engine.edge_tts_client.synth_sync",
+                        return_value=[dict(e) for e in events]), \
+            mock.patch("niches.story.narration.run_ffmpeg"), \
+            mock.patch("niches.story.narration.ffprobe_duration",
+                        return_value=101.0):
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(ValueError, "STORY_MAX_SECONDS"):
+                    story_narr._narrate_edge(content, cfg, Path(tmp))
+
     def test_edge_chunk_fallback_offsets_timings(self):
         # Whole-script call fails -> per-sentence synths, same voice+rate.
         # Text opens with the card line (no prepend normalization).
