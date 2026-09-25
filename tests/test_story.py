@@ -56,7 +56,7 @@ def _make_story(sentences=None):
         {"text": " ".join(sentences[2 * third:]), "query": "conference room silent"},
     ]
     return {
-        "title": "I Finally Said No to Weekend Work",
+        "title": "I Finally Said No to Weekend Work 😤",
         "description": "She finally said no to weekend work. Would you have caved? #shorts",
         "tags": ["shorts", "storytime", "workplace", "revenge", "stories"],
         "narration": story,
@@ -149,6 +149,8 @@ class TestStoryValidation(unittest.TestCase):
             "bad ending": lambda d: d.update({"ending_type": "twist"}),
             "bad narrator_gender": lambda d: d.update({"narrator_gender": "robot"}),
             "missing narrator_gender": lambda d: d.pop("narrator_gender"),
+            "title without emoji": lambda d: d.update(
+                {"title": "I Finally Said No to Weekend Work"}),
             "missing rehooks": lambda d: d.update({"rehooks": []}),
             "beats mismatch": lambda d: d["beats"].append(
                 {"text": "extra unmatched sentence here", "query": "office"}),
@@ -176,6 +178,26 @@ class TestStoryValidation(unittest.TestCase):
         prompt, _slots = story_content.build_prompt([], StoryConfig())
         self.assertIn("narrator_gender", prompt)
         self.assertIn("default \"female\" when ambiguous", prompt)
+
+    def test_title_requires_emoji(self):
+        data = _make_story()
+        extra = story_content.validate_extra(data)
+        self.assertIn("😤", extra["title"])
+        bare = _make_story()
+        bare["title"] = "I Finally Said No to Weekend Work"
+        with self.assertRaisesRegex(ValueError, "1-2 emojis"):
+            story_content.validate_extra(bare)
+
+    def test_prompt_requires_title_emoji(self):
+        prompt, _slots = story_content.build_prompt([], StoryConfig())
+        self.assertIn("with 1-2 fitting", prompt)
+        self.assertNotIn("<=60 chars, no emoji", prompt)
+
+    def test_sanitize_title_preserves_emoji(self):
+        out = story_content.sanitize_title(
+            "I Finally Said No to Weekend Work 😤")
+        self.assertIn("😤", out)
+        self.assertIn("#shorts", out)
 
 
 class TestStorySameModelRetry(unittest.TestCase):

@@ -178,11 +178,14 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
         lo, hi = 80, 160
     if words < lo or words > hi:
         raise ValueError(f"'story_text' out of range ({words} words, need {lo}-{hi})")
-    for field in ("story_text", "hook", "title"):
+    for field in ("story_text", "hook"):
         text = story if field == "story_text" else str(data.get(field, "") or "")
         bad = _TTS_BAD_RE.search(text) or _EMOJI_RE.search(text)
         if bad:
             raise ValueError(f"TTS-hostile character {bad.group()!r} in '{field}'")
+    title = str(data.get("title", "") or "")
+    if not _EMOJI_RE.search(title):
+        raise ValueError("'title' must contain 1-2 emojis")
     if _COPY_RE.search(story):
         raise ValueError("story looks copied from Reddit (markers found)")
     unsafe = _UNSAFE_RE.search(story)
@@ -262,7 +265,11 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
 
 
 def sanitize_title(title: str, slots: dict | None = None) -> str:
-    """Hook-driven title, <=100 chars, with ' #shorts' when it fits."""
+    """Hook-driven title, <=100 chars, with ' #shorts' when it fits.
+
+    Emojis are preserved (only whitespace/hashtags/trailing punctuation
+    are normalized) so the required 1-2 title emojis survive upload.
+    """
     t = re.sub(r"\s+", " ", (title or "")).strip()
     t = re.sub(r"#\S+", "", t).strip()
     t = re.sub(r"\s*[–—\-:|;,.]+\s*$", "", t).strip()
@@ -424,8 +431,8 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "minors, no hate toward any group, nothing age-restricted or "
         "demonetization-bait. Everyday conflict, petty revenge, workplace "
         "drama, spooky-but-safe chills only.\n\n"
-        "title: hook-driven, curiosity-gap, <=60 chars, no emoji, no hashtags "
-        "(the uploader appends tagging). description: exactly 2 sentences "
+        "title: hook-driven, curiosity-gap, <=60 chars, with 1-2 fitting "
+        "emojis, no hashtags (the uploader appends tagging). description: exactly 2 sentences "
         "with 1-2 fitting emojis and 3 hashtags. tags: exactly 5 plain-ASCII "
         "strings, no emoji. pinned_comment: ONE engaging question or call to "
         "comment (<=150 chars, 1 emoji max).\n\n"
@@ -625,7 +632,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
 
 _FALLBACK_VARIANTS = (
     {
-        "title": "I Finally Said No to Weekend Work",
+        "title": "I Finally Said No to Weekend Work 😤",
         "card_text": "I said no, then they moved my desk",
         "card_highlight_word": "desk",
         "hook": "I said no, then they moved my desk.",
@@ -669,7 +676,7 @@ _FALLBACK_VARIANTS = (
         ],
     },
     {
-        "title": "My Neighbor Learned to Fear My Blender",
+        "title": "My Neighbor Learned to Fear My Blender 🔊",
         "card_text": "He drummed at midnight, I blended at seven",
         "card_highlight_word": "blended",
         "hook": "He drummed at midnight, I blended at seven.",
@@ -712,7 +719,7 @@ _FALLBACK_VARIANTS = (
         ],
     },
     {
-        "title": "The Gas Station Phone Rings at 3 AM",
+        "title": "The Gas Station Phone Rings at 3 AM 📞😱",
         "card_text": "Do not turn around",
         "card_highlight_word": "around",
         "hook": "Do not turn around.",
