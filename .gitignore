@@ -4,6 +4,7 @@ assets/*
 __pycache__/
 *.pyc
 .env
+.venv/
 # Phase 2 caches: downloaded stock + background videos are never committed;
 # placeholder .gitkeep files are re-included so empty dirs stay tracked.
 # Brand assets ARE committed: fonts (*.ttf/*.otf) + avatar.png.
