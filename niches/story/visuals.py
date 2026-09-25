@@ -534,7 +534,8 @@ def build_visuals(content: Content, narration: NarrationResult,
     ass_path = write_wordpop_ass(
         words, workdir / "captions.ass",
         key_words=set(content.extras.get("key_words", [])),
-        upper=cfg.caption_upper, start_after=card_end)
+        upper=cfg.caption_upper, start_after=card_end,
+        fontsize=cfg.ass_fontsize)
     # Upload SRT keeps all words (YouTube captions aren't on the card).
     out_srt = write_upload_srt(words, workdir / "captions.srt")
     log(f"Stage 4/6 captions: {len(words)} timed words → ASS burn "

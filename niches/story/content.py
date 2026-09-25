@@ -530,7 +530,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                 try:
                     raw = client.generate_json(
                         model, prompt, generation_config={
-                            "temperature": 0.8, "maxOutputTokens": 4096})
+                            "temperature": 0.8, "maxOutputTokens": 8192})
                 except Exception as e:
                     log(f"Story model {model} unusable ({e}), trying next...")
                     time.sleep(cfg.backoff if mi + 1 >= len(models) else 2)
@@ -561,7 +561,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                             client.generate_json(
                                 model, retry_prompt, generation_config={
                                     "temperature": 0.8,
-                                    "maxOutputTokens": 4096}),
+                                    "maxOutputTokens": 8192}),
                             cfg, wps)
                     except Exception as e2:
                         log(f"Story model {model} unusable ({e2}), "

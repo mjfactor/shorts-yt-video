@@ -342,7 +342,7 @@ def _buffer_tiktok_channel(api_key: str, explicit_id: str) -> str | None:
     for org in orgs:
         oid = org.get("id", "")
         data = _buffer_graphql(
-            "query GetChannels($orgId: ID!) { channels(input: "
+            "query GetChannels($orgId: OrganizationId!) { channels(input: "
             "{ organizationId: $orgId }) { id name displayName service } }",
             api_key, variables={"orgId": oid}, stage="channels")
         for ch in data.get("channels") or []:

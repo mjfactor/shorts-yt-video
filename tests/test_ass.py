@@ -50,8 +50,8 @@ class TestWordpopHeader(unittest.TestCase):
         self.assertIn("WrapStyle: 2", head)
         self.assertIn("ScaledBorderAndShadow: yes", head)
         self.assertIn(
-            "Style: Pop,Montserrat ExtraBold,120,&H00FFFFFF,&H00FFFFFF,"
-            "&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,8,3,5,60,60,0,1",
+            "Style: Pop,Montserrat ExtraBold,132,&H00FFFFFF,&H00FFFFFF,"
+            "&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,9,3,5,60,60,0,1",
             head)
 
 

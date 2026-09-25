@@ -11,13 +11,16 @@ from .srt import group_words
 
 DEFAULT_STYLE = {
     "fontname": "Montserrat ExtraBold",
-    "fontsize": 120,
+    # 132pt (+10% over orig 120, -8% from 144 which read slightly big):
+    # word-pop stays clearly bigger than original on 1080x1920 and still
+    # fits 14-char groups inside 60px side margins.
+    "fontsize": 132,
     "primary_colour": "&H00FFFFFF",
     "outline_colour": "&HFF000000",
     "back_colour": "&H99000000",
     "bold": -1,
-    "outline": 8,
-    "shadow": 2,
+    "outline": 9,  # scaled with fontsize to keep stroke weight proportionate
+    "shadow": 3,
     "alignment": 5,
     "margin_v": 200,
     "play_res_x": 1080,
@@ -115,7 +118,11 @@ def write_ass(words: list[dict], out_ass: str | Path, *,
 # ---------------------------------------------------------------------------
 
 WORDPOP_FONTNAME = "Montserrat ExtraBold"
-WORDPOP_FONTSIZE = 120
+# Caption size 132 (orig 120 -> 144 slightly big -> 132, +10% net):
+# user frame showed small word-pop ("speak") at 120, slightly big at 144.
+# Outline 9 / shadow 3 keep the stroke proportionate; 60px side margins +
+# <=14-char groups stay in safe area.
+WORDPOP_FONTSIZE = 132
 WORDPOP_POP = (r"{\an5\fscx70\fscy70\t(0,90,\fscx112\fscy112)"
                r"\t(90,160,\fscx100\fscy100)}")
 WORDPOP_YELLOW = r"{\c&H0000FFFF&}"
@@ -135,7 +142,7 @@ _WORDPOP_HEADER = (
     "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
     "Alignment, MarginL, MarginR, MarginV, Encoding\n"
     f"Style: Pop,{WORDPOP_FONTNAME},{WORDPOP_FONTSIZE},&H00FFFFFF,"
-    "&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,8,3,5,60,60,0,1\n"
+    "&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,9,3,5,60,60,0,1\n"
     "\n"
     "[Events]\n"
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
@@ -320,19 +327,25 @@ def _stage_bundled_font(out_ass: str | Path, fontname: str) -> None:
 def write_wordpop_ass(words: list[dict], out_ass: str | Path, *,
                       key_words: list[str] | set[str] | None = None,
                       upper: bool = False, start_after: float = 0.0,
-                      fontname: str = WORDPOP_FONTNAME) -> Path:
+                      fontname: str = WORDPOP_FONTNAME,
+                      fontsize: int | None = None) -> Path:
     """Exact-spec center word-pop ASS (story burn-in).
 
     Byte-exact header (spec style block); every Dialogue carries the pop
     override prefix. Captions start AFTER start_after (pass card_end).
+    fontsize overrides WORDPOP_FONTSIZE (story cfg.ass_fontsize wiring);
+    None keeps the spec default. Burn stays cwd-relative via ass_cwd_args
+    (no force_style) — see niches/story/visuals.py Stage 6.
     """
     _ = warn_if_caption_font(fontname)
     out = Path(out_ass)
     out.parent.mkdir(parents=True, exist_ok=True)
     _stage_bundled_font(out, fontname)
     keys = {_wordpop_core(str(k)) for k in (key_words or []) if str(k).strip()}
+    size = int(fontsize) if fontsize else WORDPOP_FONTSIZE
     header = _WORDPOP_HEADER.replace(
-        f"Style: Pop,{WORDPOP_FONTNAME},", f"Style: Pop,{fontname},", 1)
+        f"Style: Pop,{WORDPOP_FONTNAME},{WORDPOP_FONTSIZE},",
+        f"Style: Pop,{fontname},{size},", 1)
     events = _wordpop_events(words, key_words=keys, upper=upper,
                              start_after=max(0.0, float(start_after)))
     lines = [f"Dialogue: 0,{wordpop_ts(s)},{wordpop_ts(e)},Pop,,0,0,0,,"

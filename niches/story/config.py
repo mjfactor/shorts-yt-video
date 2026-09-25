@@ -107,8 +107,9 @@ class StoryConfig(NicheConfig):
     min_clips: int = 12
     min_segments: int = 25
     max_segments: int = 40
-    # Caption style.
-    ass_fontsize: int = 120
+    # Caption style (burned word-pop on 1080x1920; 132 = +10% net after
+    # 144 read slightly big; STORY_ASS_FONTSIZE overrides).
+    ass_fontsize: int = 132
     # Network knobs.
     timeout: int = 40
     tts_timeout: int = 90
@@ -209,6 +210,7 @@ class StoryConfig(NicheConfig):
             bg_speed_min=env_float("BG_SPEED_MIN", 2.0, "STORY_"),
             bg_speed_max=env_float("BG_SPEED_MAX", 3.0, "STORY_"),
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
+            ass_fontsize=env_int("ASS_FONTSIZE", 132, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),
             channel_handle=env_str("CHANNEL_HANDLE", "@UnhingedStories", "STORY_") or "@UnhingedStories",
             avatar_path=env_str("AVATAR_PATH", "assets/avatar.png", "STORY_") or "assets/avatar.png",
