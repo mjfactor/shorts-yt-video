@@ -29,6 +29,8 @@ from engine.ffmpeg_utils import (ffprobe_duration, log, retry, run_ffmpeg,
 from engine.gemini_client import pcm_to_wav
 from niches.base import Content, NarrationResult
 
+from .config import DEFAULT_TTS_MODELS
+
 from .config import StoryConfig
 
 CHUNK_MIN_WORDS = 60
@@ -113,9 +115,14 @@ def _synth_chunk(client: _gc.GeminiClient, cfg: StoryConfig, text: str,
     hit = _load_cached_pcm(cache_dir, key)
     if hit is not None:
         return hit
+    models = list(getattr(cfg, "tts_models", None)
+                    or ([cfg.tts_model] if getattr(cfg, "tts_model", "")
+                        else [])) or list(DEFAULT_TTS_MODELS)
+    models = [m for m in (str(m).strip() for m in models) if m] \
+        or list(DEFAULT_TTS_MODELS)
     pcm, rate = retry("gemini-tts-chunk",
                       lambda: client.synthesize_speech(
-                          text, voice=voice, models=[cfg.tts_model], style=style),
+                          text, voice=voice, models=models, style=style),
                       tries=cfg.tries, backoff=cfg.backoff)
     _store_pcm(cache_dir, key, pcm, rate)
     return pcm, rate
@@ -342,8 +349,8 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
 
     Whole-script single call; sentence chunks only on observed failure.
     No atempo/silenceremove/loudnorm here so timings stay sample-true.
-    TTS_PROVIDER_ORDER is edge-only; gemini fallback is NOT implemented
-    in this step (Step 6).
+    When TTS_PROVIDER_ORDER includes gemini (default edge,gemini),
+    edge exhaustion falls back to whole-script gemini TTS.
     """
     text = content.narration_text.strip()
     genre = content.extras.get("genre", "")
@@ -351,8 +358,8 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
         text, content.extras.get("card_text", ""))
     if card_prepended:
         log("Story edge narration: prepended card line (legacy content).")
-    order = (getattr(cfg, "tts_provider_order", "edge") or "edge")
-    log(f"Story edge provider order: {order} (edge-only; fallback OFF)")
+    order = (getattr(cfg, "tts_provider_order", "edge,gemini") or "edge,gemini")
+    log(f"Story edge provider order: {order}")
     voice, voice_why = _edge_voice_for(cfg, f"{content.title}|{genre}")
     rate = cfg.edge_rate
     log(f"Story TTS edge voice={voice} ({voice_why}) rate={rate} "
@@ -523,10 +530,10 @@ def narrate(content: Content, cfg: StoryConfig,
         log("Story narration: prepended card line (legacy content did not "
             "open with it).")
         content = dataclasses.replace(content, narration_text=text)
-    engine = (getattr(cfg, "tts_engine", "gemini") or "gemini").strip().lower()
+    engine = (getattr(cfg, "tts_engine", "edge") or "edge").strip().lower()
     if engine not in ("gemini", "edge"):
-        warn(f"Unknown STORY_TTS_ENGINE={engine!r}; using gemini.")
-        engine = "gemini"
+        warn(f"Unknown STORY_TTS_ENGINE={engine!r}; using edge.")
+        engine = "edge"
     if engine == "edge":
         return _narrate_edge(content, cfg, workdir)
     voice, voice_why = pick_voice(cfg, f"{content.title}|{genre}")

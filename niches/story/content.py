@@ -14,7 +14,8 @@ from engine import gemini_client as _gc
 from engine.ffmpeg_utils import log, warn
 from niches.base import Content
 
-from .config import DEFAULT_GENRES, MODE, StoryConfig
+from .config import (DEFAULT_GENRES, DEFAULT_TEXT_MODELS, MODE,
+                     StoryConfig)
 
 AVOID_INTRO = "Already-aired stories — do NOT reuse these titles or premises:\n"
 AVOID_OUTRO = "Your story must have a DIFFERENT premise from every entry above. "
@@ -407,7 +408,8 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
     wps = measure_wps(history, cfg.history_wps)
     client = _make_client(cfg)
     if client is not None:
-        models = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"]
+        models = list(getattr(cfg, "story_models", None)
+                      or DEFAULT_TEXT_MODELS)
         for _attempt in range(1 + cfg.similarity_retries):
             prompt, slots = build_prompt(history, cfg, wps)
             data = None

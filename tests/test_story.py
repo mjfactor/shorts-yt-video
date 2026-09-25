@@ -813,8 +813,8 @@ class TestStoryEdgeBranch(unittest.TestCase):
 
     def test_config_edge_defaults_and_env(self):
         cfg = StoryConfig()
-        self.assertEqual(cfg.tts_engine, "gemini")
-        self.assertEqual(cfg.tts_provider_order, "edge")
+        self.assertEqual(cfg.tts_engine, "edge")
+        self.assertEqual(cfg.tts_provider_order, "edge,gemini")
         self.assertEqual(cfg.edge_voice, "en-US-AvaNeural")
         self.assertEqual(cfg.edge_voices,
                          ("en-US-AndrewNeural", "en-US-AriaNeural",
@@ -1063,8 +1063,8 @@ class TestStoryEdgeBranch(unittest.TestCase):
         self.assertLessEqual(wps, 5.0)
 
     def test_fallback_off_by_default(self):
-        # Edge-only order: total edge failure propagates, gemini untouched.
-        cfg = self._edge_cfg()  # tts_provider_order defaults to "edge"
+        # Explicit edge-only order: total edge failure propagates, gemini untouched.
+        cfg = self._edge_cfg(tts_provider_order="edge")
         content = self._content(text="Only one sentence here.")
         content.extras["card_text"] = ""  # no card: no prepend normalization
         with tempfile.TemporaryDirectory() as tmp:
@@ -1111,21 +1111,36 @@ class TestStoryEdgeBranch(unittest.TestCase):
             branch.assert_called_once()
 
     def test_narrate_gemini_path_unchanged(self):
-        # default + unknown + empty engines all take the gemini path
+        # explicit gemini takes the gemini path
         content = self._content()
-        for eng in ("gemini", "bogus", ""):
+        cfg = self._edge_cfg(tts_engine="gemini")
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "niches.story.narration._narrate_edge",
+                side_effect=AssertionError("edge touched")), \
+                mock.patch(
+                    "niches.story.narration._gc.GeminiClient",
+                    side_effect=RuntimeError("no keys")) as cli:
+                with self.assertRaises(RuntimeError):
+                    story_narr.narrate(content, cfg, Path(tmp))
+                cli.assert_called_once()
+
+    def test_narrate_unknown_engine_falls_back_to_edge(self):
+        # unknown + empty engines fall back to the edge default
+        content = self._content()
+        for eng in ("bogus", ""):
             with self.subTest(engine=eng):
                 cfg = self._edge_cfg(tts_engine=eng)
                 with tempfile.TemporaryDirectory() as tmp:
                     with mock.patch(
                         "niches.story.narration._narrate_edge",
-                        side_effect=AssertionError("edge touched")), \
+                        return_value="EDGE-RES") as branch, \
                         mock.patch(
                             "niches.story.narration._gc.GeminiClient",
-                            side_effect=RuntimeError("no keys")) as cli:
-                        with self.assertRaises(RuntimeError):
-                            story_narr.narrate(content, cfg, Path(tmp))
-                        cli.assert_called_once()
+                            side_effect=AssertionError("gemini touched")):
+                        out = story_narr.narrate(content, cfg, Path(tmp))
+                    self.assertEqual(out, "EDGE-RES")
+                    branch.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ jobs:
       TTS_RATE: ${{ vars.TTS_RATE || '-5%' }}
       TTS_PITCH: ${{ vars.TTS_PITCH || '-10Hz' }}
       TTS_VOLUME: ${{ vars.TTS_VOLUME || '+0%' }}
-      TTS_ENGINE: ${{ vars.TTS_ENGINE || 'gemini' }}
+      TTS_ENGINE: ${{ vars.TTS_ENGINE || 'edge' }}
       GEMINI_TTS_VOICES: ${{ vars.GEMINI_TTS_VOICES || 'Charon' }}
       GEMINI_TTS_STYLE: ${{ vars.GEMINI_TTS_STYLE }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -67,7 +67,9 @@ jobs:
       MAX_SECONDS: ${{ vars.MAX_SECONDS || '45' }}
       STORY_GENRES: ${{ vars.STORY_GENRES }}
       WHISPER_MODEL: ${{ vars.WHISPER_MODEL || 'base' }}
-      STORY_TTS_MODEL: ${{ vars.STORY_TTS_MODEL }}
+      STORY_TTS_MODEL: ${{ vars.STORY_TTS_MODEL || vars.TTS_MODEL || 'gemini-2.5-flash-preview-tts' }}
+      STORY_TTS_MODELS: ${{ vars.STORY_TTS_MODELS }}
+      STORY_MODELS: ${{ vars.STORY_MODELS }}
       STORY_TTS_VOICES: ${{ vars.STORY_TTS_VOICES }}
       STORY_NARRATION_SPEED: ${{ vars.STORY_NARRATION_SPEED }}
       STORY_SEG_MIN: ${{ vars.STORY_SEG_MIN }}

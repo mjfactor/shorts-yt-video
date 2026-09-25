@@ -17,8 +17,18 @@ __all__ = [
 
 
 def env_str(name: str, default: str = "", prefix: str = "NICHE_") -> str:
-    """NICHE_<name> wins, then bare <name>, else default."""
-    return os.getenv(f"{prefix}{name}", os.getenv(name, default))
+    """Prefixed non-empty wins, then bare non-empty, else default.
+
+    Empty-string exports (e.g. an unset GitHub vars entry exported as "")
+    are treated as unset so bare fallbacks and defaults still apply.
+    """
+    prefixed = os.getenv(f"{prefix}{name}", "")
+    if prefixed != "":
+        return prefixed
+    bare = os.getenv(name, "")
+    if bare != "":
+        return bare
+    return default
 
 
 def env_int(name: str, default: int = 0, prefix: str = "NICHE_") -> int:

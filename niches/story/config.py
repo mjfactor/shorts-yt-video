@@ -16,7 +16,13 @@ from niches.base import (NicheConfig, env_bool, env_float, env_int,
 MODE = "story"
 
 DEFAULT_GENRES = ("AITA", "revenge", "workplace", "relationship",
-                  "scary", "never-again")
+                   "scary", "never-again")
+
+DEFAULT_TEXT_MODELS = ("gemini-3.8-flash", "gemini-3.7-flash",
+                       "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+                       "gemini-2.5-flash-lite", "gemini-2.5-flash")
+DEFAULT_TTS_MODELS = ("gemini-2.5-flash-preview-tts",
+                      "gemini-3.1-flash-tts-preview")
 
 
 @dataclass
@@ -36,13 +42,17 @@ class StoryConfig(NicheConfig):
     # Narration render speed multiplier.
     narration_speed: float = 1.15
     # Gemini TTS speech model + voice pool (rotated per video).
+    # tts_model is kept for backward compat and always equals tts_models[0].
     tts_model: str = "gemini-3.1-flash-tts-preview"
+    tts_models: tuple[str, ...] = DEFAULT_TTS_MODELS
+    # Gemini text models tried in order for story generation (first win).
+    story_models: tuple[str, ...] = DEFAULT_TEXT_MODELS
     tts_voices: tuple[str, ...] = ("Kore", "Charon", "Puck")
-    # TTS engine: gemini (default, chunked synth + duration fit) or edge
-    # (fast keyless single-voice preview with word-boundary timings).
-    tts_engine: str = "gemini"
-    # Provider order (edge-only; gemini fallback is NOT implemented yet).
-    tts_provider_order: str = "edge"
+    # TTS engine: edge (default, fast keyless single-voice preview
+    # with word-boundary timings) or gemini (chunked synth + duration fit).
+    tts_engine: str = "edge"
+    # Provider order: edge first, gemini fallback when edge exhausts.
+    tts_provider_order: str = "edge,gemini"
     edge_voice: str = "en-US-AvaNeural"
     # STORY_EDGE_VOICES (plural) wins over STORY_EDGE_VOICE (singular,
     # kept working as a one-voice fallback); unset means the default pool.
@@ -121,11 +131,47 @@ class StoryConfig(NicheConfig):
             return ("en-US-AndrewNeural", "en-US-AriaNeural",
                     "en-US-GuyNeural")
 
+        def _story_models() -> tuple[str, ...]:
+            """Bare GEMINI_MODELS wins when set, else STORY_MODELS, else
+            bare MODELS, else DEFAULT_TEXT_MODELS."""
+            bare_override = (os.getenv("GEMINI_MODELS") or "").strip()
+            if bare_override:
+                pool = tuple(g.strip() for g in bare_override.split(",")
+                             if g.strip())
+                if pool:
+                    return pool
+            raw = env_str("MODELS", "", "STORY_")
+            if raw.strip():
+                pool = tuple(g.strip() for g in raw.split(",")
+                             if g.strip())
+                if pool:
+                    return pool
+            return DEFAULT_TEXT_MODELS
+
+        def _tts_models() -> tuple[str, ...]:
+            """STORY_TTS_MODELS wins, then STORY_TTS_MODEL single, then
+            TTS_MODELS bare, then TTS_MODEL bare, else DEFAULT_TTS_MODELS."""
+            for key, single in (("STORY_TTS_MODELS", False),
+                                ("STORY_TTS_MODEL", True),
+                                ("TTS_MODELS", False),
+                                ("TTS_MODEL", True)):
+                raw = (os.getenv(key) or "").strip()
+                if not raw:
+                    continue
+                if single:
+                    return (raw,)
+                pool = tuple(g.strip() for g in raw.split(",")
+                             if g.strip())
+                if pool:
+                    return pool
+            return DEFAULT_TTS_MODELS
+
         # TARGET_MIN/MAX_SECONDS aliases win over TARGET_MIN/MAX.
         tmin = env_float("TARGET_MIN_SECONDS",
                          env_float("TARGET_MIN", 100.0, "STORY_"), "STORY_")
         tmax = env_float("TARGET_MAX_SECONDS",
                          env_float("TARGET_MAX", 120.0, "STORY_"), "STORY_")
+        tts_pool = _tts_models()
 
         return cls(
             niche_name=niche_name or MODE,
@@ -135,29 +181,31 @@ class StoryConfig(NicheConfig):
             target_max_seconds=tmax,
             max_seconds=env_float("MAX_SECONDS", 130.0, "STORY_"),
             narration_speed=env_float("NARRATION_SPEED", 1.15, "STORY_"),
-            tts_model=env_str("TTS_MODEL", "gemini-3.1-flash-tts-preview", "STORY_"),
+            tts_model=tts_pool[0],
+            tts_models=tts_pool,
+            story_models=_story_models(),
             tts_voices=_tuple("TTS_VOICES", ("Kore", "Charon", "Puck")),
-            tts_engine=env_str("TTS_ENGINE", "gemini", "STORY_").strip().lower() or "gemini",
-            tts_provider_order=env_str("TTS_PROVIDER_ORDER", "edge",
-                                       "STORY_").strip().lower() or "edge",
-            edge_voice=env_str("EDGE_VOICE", "en-US-AvaNeural", "STORY_"),
+            tts_engine=env_str("TTS_ENGINE", "edge", "STORY_").strip().lower() or "edge",
+            tts_provider_order=env_str("TTS_PROVIDER_ORDER", "edge,gemini",
+                                       "STORY_").strip().lower() or "edge,gemini",
+            edge_voice=env_str("EDGE_VOICE", "en-US-AvaNeural", "STORY_") or "en-US-AvaNeural",
             edge_voices=_edge_pool(),
-            edge_rate=env_str("EDGE_RATE", "+20%", "STORY_"),
+            edge_rate=env_str("EDGE_RATE", "+20%", "STORY_") or "+20%",
             seg_min=env_float("SEG_MIN", 2.5, "STORY_"),
             seg_max=env_float("SEG_MAX", 4.5, "STORY_"),
             bg_speed_min=env_float("BG_SPEED_MIN", 1.15, "STORY_"),
             bg_speed_max=env_float("BG_SPEED_MAX", 1.5, "STORY_"),
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),
-            channel_handle=env_str("CHANNEL_HANDLE", "@UnhingedStories", "STORY_"),
-            avatar_path=env_str("AVATAR_PATH", "assets/avatar.png", "STORY_"),
-            bg_dir=env_str("BG_DIR", "assets/backgrounds", "STORY_"),
+            channel_handle=env_str("CHANNEL_HANDLE", "@UnhingedStories", "STORY_") or "@UnhingedStories",
+            avatar_path=env_str("AVATAR_PATH", "assets/avatar.png", "STORY_") or "assets/avatar.png",
+            bg_dir=env_str("BG_DIR", "assets/backgrounds", "STORY_") or "assets/backgrounds",
             pexels_key=env_str("PEXELS_API_KEY", "", "STORY_"),
             clips_per_query=env_int("CLIPS_PER_QUERY", 2, "STORY_"),
             bed_path=env_str("BED_PATH", "", "STORY_"),
-            bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_"),
+            bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_") or "bgm*.mp3",
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),
-            whisper_model=env_str("WHISPER_MODEL", "base", "STORY_"),
+            whisper_model=env_str("WHISPER_MODEL", "base", "STORY_") or "base",
             history_wps=env_float("HISTORY_WPS", 2.9, "STORY_"),
             timeout=env_int("TIMEOUT", 40, "STORY_"),
             tts_timeout=env_int("TTS_TIMEOUT", 90, "STORY_"),
