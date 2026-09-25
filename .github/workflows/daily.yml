@@ -2,7 +2,7 @@ name: daily-short
 
 on:
   schedule:
-    - cron: "0 8,20 * * *"  # 2x daily: 08:00 + 20:00 UTC (~2-min Short, still a YouTube Short)
+    - cron: "0 22,10 * * *"  # 2x daily: 06:00 + 18:00 PHT (UTC+8) = 22:00 + 10:00 UTC
   workflow_dispatch: {}  # manual Run button
 
 # Runs stay serial: history.json is committed back each run, so overlapping
