@@ -106,6 +106,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="edge voice (default: first EDGE_VOICES pool entry)")
     ap.add_argument("--rate", default="+20%",
                     help="edge rate flag (default: +20%%)")
+    ap.add_argument("--pitch", default="+0Hz",
+                    help="edge pitch flag (default: +0Hz; e.g. +150Hz)")
     ap.add_argument("--bg-dir", default="assets/backgrounds",
                     help="local BG clips only, never Pexels (default: %(default)s)")
     ap.add_argument("--card", default=None,
@@ -126,9 +128,10 @@ def main(argv: list[str] | None = None) -> None:
         tmp = tempfile.TemporaryDirectory()
         workdir = Path(tmp.name)
         raw_mp3 = workdir / "preview_raw.mp3"
-        log(f"Preview synth: voice={voice} rate={args.rate} "
+        log(f"Preview synth: voice={voice} rate={args.rate} pitch={args.pitch} "
             f"({len(text.split())} words)")
-        events = edge_client.synth_sync(text, voice, args.rate, raw_mp3)
+        events = edge_client.synth_sync(text, voice, args.rate, raw_mp3,
+                                           pitch=args.pitch)
         words = _map_edge_words(events, text)
         wav = _preview_wav(raw_mp3, workdir / "preview.wav")
         dur = ffprobe_duration(wav)
@@ -144,7 +147,7 @@ def main(argv: list[str] | None = None) -> None:
                     "genre": "preview", "topic": "preview"})
         narration = NarrationResult(
             audio=wav, duration=dur, words=len(text.split()),
-            voice=voice, style=f"edge-tts {args.rate}",
+            voice=voice, style=f"edge-tts {args.rate} {args.pitch}",
             extras={"words": words,
                     "card_end": max(cfg.card_seconds,
                                     card_end_time(words, card_text, hook)

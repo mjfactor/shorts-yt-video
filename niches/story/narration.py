@@ -378,8 +378,15 @@ def _edge_chunked(text: str, voice: str, rate: str, cfg: StoryConfig,
     offset = 0.0
     for i, sent in enumerate(sents):
         seg = workdir / f"narr_edge_c{i:02d}.mp3"
-        chunk_events = edge_client.synth_sync(sent, voice, rate, seg,
-                                              attempts=2, waits=(2.0, 4.0))
+        chunk_events = edge_client.synth_sync(
+            sent,
+            voice,
+            rate,
+            seg,
+            attempts=2,
+            waits=(2.0, 4.0),
+            pitch=getattr(cfg, "edge_pitch", "+0Hz"),
+        )
         dur = ffprobe_duration(seg)
         if dur <= 0:
             raise ValueError(f"edge chunk {i} has no duration")
@@ -455,7 +462,8 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
     timing_note = ""
     n_chunks = 1
     try:
-        events = edge_client.synth_sync(text, voice, rate, raw_mp3)
+        events = edge_client.synth_sync(text, voice, rate, raw_mp3,
+                                               pitch=getattr(cfg, "edge_pitch", "+0Hz"))
         words = _map_edge_words(events, text)
         timing_note = f"edge boundaries ({len(words)} words)"
         n_chunks = 1
@@ -487,7 +495,8 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
             rate = _edge_refit_rate(rate, dur)
             log(f"Story edge fit: re-synth {attempt}/2 @ {rate}...")
             raw_mp3 = workdir / f"narr_edge_refit{attempt}.mp3"
-            events = edge_client.synth_sync(text, voice, rate, raw_mp3)
+            events = edge_client.synth_sync(text, voice, rate, raw_mp3,
+                                               pitch=getattr(cfg, "edge_pitch", "+0Hz"))
             words = _map_edge_words(events, text)
             n_chunks = 1
             wav = _edge_wav(

@@ -63,6 +63,7 @@ class StoryConfig(NicheConfig):
     # default (+28%) to land near Andrew's absolute pace. STORY_ prefix
     # wins, bare EDGE_RATE_FEMALE falls back.
     edge_rate_female: str = "+28%"
+    edge_pitch: str = "+0Hz"
     # BG segment length bounds (seconds) + playback speed range.
     # Satisfying-timelapse range: slow mopping/cleaning footage is
     # near-invisible at 1.15-1.5x, so the default runs 2.5-3.5x.
@@ -217,6 +218,7 @@ class StoryConfig(NicheConfig):
             edge_voices=_edge_pool(),
             edge_rate=env_str("EDGE_RATE", "+20%", "STORY_") or "+20%",
             edge_rate_female=env_str("EDGE_RATE_FEMALE", "+28%", "STORY_") or "+28%",
+            edge_pitch=env_str("EDGE_PITCH", "+0Hz", "STORY_") or "+0Hz",
             seg_min=env_float("SEG_MIN", 2.5, "STORY_"),
             seg_max=env_float("SEG_MAX", 4.5, "STORY_"),
             bg_speed_min=env_float("BG_SPEED_MIN", 2.5, "STORY_"),

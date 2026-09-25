@@ -44,7 +44,7 @@ def _edge_retryable() -> tuple:
 
 
 async def synth(text: str, voice: str, rate: str,
-                out_mp3: str | Path) -> list[dict]:
+                out_mp3: str | Path, pitch: str = '+0Hz') -> list[dict]:
     """One library synth: mp3 bytes to out_mp3 + [{word, start, end}].
 
     Raises ValueError on empty audio (retried by synth_sync); raises
@@ -54,6 +54,7 @@ async def synth(text: str, voice: str, rate: str,
 
     log(f"edge-tts v{edge_tts_version()}: voice={voice} rate={rate}")
     comm = edge_tts.Communicate(text, voice, rate=rate,
+                                pitch=pitch,
                                 boundary="WordBoundary")
     audio = bytearray()
     words: list[dict] = []
@@ -80,15 +81,15 @@ async def synth(text: str, voice: str, rate: str,
 
 
 async def _synth_with_retry(text: str, voice: str, rate: str,
-                            out_mp3: str | Path, attempts: int,
-                            waits: tuple[float, ...]) -> list[dict]:
+                             out_mp3: str | Path, attempts: int,
+                             waits: tuple[float, ...], pitch: str) -> list[dict]:
     """synth() with 4 attempts (2/4/8s) on connection/timeout/WS/HTTP/
     empty-audio only; TypeError/KeyError (and anything unexpected) fail
     fast without retrying."""
     last: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
         try:
-            return await synth(text, voice, rate, out_mp3)
+            return await synth(text, voice, rate, out_mp3, pitch=pitch)
         except (TypeError, KeyError):
             raise
         except _NET_ERRS + _edge_retryable() as e:
@@ -107,7 +108,8 @@ async def _synth_with_retry(text: str, voice: str, rate: str,
 
 def synth_sync(text: str, voice: str, rate: str, out_mp3: str | Path, *,
                attempts: int = 4,
-               waits: tuple[float, ...] = RETRY_WAITS) -> list[dict]:
+               waits: tuple[float, ...] = RETRY_WAITS,
+               pitch: str = '+0Hz') -> list[dict]:
     """Blocking wrapper around synth() with retry.
 
     Uses asyncio.run normally; when a loop already runs in this thread
@@ -117,11 +119,11 @@ def synth_sync(text: str, voice: str, rate: str, out_mp3: str | Path, *,
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(_synth_with_retry(text, voice, rate, out_mp3,
-                                             attempts, waits))
+                                             attempts, waits, pitch))
     import concurrent.futures
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(
             lambda: asyncio.run(
-                _synth_with_retry(text, voice, rate, out_mp3,
-                                  attempts, waits))).result()
+_synth_with_retry(text, voice, rate, out_mp3,
+                                   attempts, waits, pitch))).result()
