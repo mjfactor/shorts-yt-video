@@ -12,6 +12,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from PIL import Image
+
 from engine import overlay_card as _card
 from engine import pexels as _px
 from engine.ass import write_wordpop_ass
@@ -499,6 +501,58 @@ def _extract_thumb(mp4: Path, card_dur: float, cfg: StoryConfig,
         return None
 
 
+def _composite_thumb(card_png_path: Path, bg_clip_path: Path,
+                     output_thumb_path: Path) -> Path | None:
+    """Generate a thumbnail by compositing the card PNG onto the first frame
+    of the first BG clip at the same y=H*0.30 position used in the video.
+
+    Extracts frame 0 from bg_clip_path via FFmpeg, then uses Pillow to
+    composite the RGBA card PNG centered horizontally at y = H * 0.30.
+    Exports as JPEG quality=92 at 1080x1920. Returns output path or None.
+    """
+    try:
+        frame_path = output_thumb_path.with_suffix(".frame.png")
+        run_ffmpeg(["ffmpeg", "-y", "-i", str(Path(bg_clip_path).resolve()),
+                    "-vframes", "1", "-vf", f"scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=decrease,"
+                    f"pad={CANVAS_W}:{CANVAS_H}:(ow-iw)/2:(oh-ih)/2",
+                    str(frame_path)], "thumb-frame-extract")
+        if not frame_path.exists():
+            warn("Story thumb composite: frame extraction produced no file.")
+            return None
+
+        bg = Image.open(frame_path).convert("RGBA")
+        if bg.size != (CANVAS_W, CANVAS_H):
+            bg = bg.resize((CANVAS_W, CANVAS_H), Image.LANCZOS)
+
+        card = Image.open(card_png_path).convert("RGBA")
+        card_x = (CANVAS_W - card.width) // 2
+        card_y = int(CANVAS_H * 0.30)
+        bg.paste(card, (card_x, card_y), card)
+
+        result = bg.convert("RGB")
+        result.save(str(output_thumb_path), "JPEG", quality=92,
+                    optimize=True, progressive=True)
+
+        # Clean up temp frame
+        try:
+            frame_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        limit = 2 * 1024 * 1024
+        size_kb = output_thumb_path.stat().st_size / 1024
+        if output_thumb_path.stat().st_size >= limit:
+            warn(f"Story thumb composite {size_kb:.0f} KB >= 2MB limit; "
+                 "upload will skip it.")
+        else:
+            log(f"Story thumb composite: {output_thumb_path.name} "
+                f"({size_kb:.0f} KB, card at y={int(CANVAS_H * 0.30)}).")
+        return output_thumb_path
+    except Exception as e:
+        warn(f"Story thumb composite skipped ({e}).")
+        return None
+
+
 def build_visuals(content: Content, narration: NarrationResult,
                   cfg: StoryConfig, workdir: Path,
                   no_card: bool = False) -> VisualsResult:
@@ -670,7 +724,11 @@ def build_visuals(content: Content, narration: NarrationResult,
     extras = {"segments": len(segs), "card_dur": card_dur,
               "card_end": card_end, "genre": genre,
               "size_mb": round(size_mb, 1)}
-    thumb = _extract_thumb(out_mp4, card_dur, cfg, workdir)
+    thumb = _composite_thumb(workdir / "card.png", clips[0] if clips else out_mp4,
+                              workdir / "thumb.jpg")
+    if thumb is None:
+        warn("Story thumb composite failed; falling back to frame extraction.")
+        thumb = _extract_thumb(out_mp4, card_dur, cfg, workdir)
     if thumb is not None:
         extras["thumb"] = str(thumb)
     return VisualsResult(mp4=out_mp4, srt=out_srt, credits=credits,

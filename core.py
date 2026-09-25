@@ -404,12 +404,24 @@ def _set_and_verify_thumbnail(yt, video_id: str, thumb_path: Path) -> bool:
         if verified is True:
             log(f"Thumbnail set from {thumb_path.name} "
                 f"(verified hasCustomThumbnail=true).")
+            # Clean up thumbnail file after successful upload
+            try:
+                thumb_path.unlink(missing_ok=True)
+                log(f"Thumbnail file {thumb_path.name} deleted after successful upload.")
+            except Exception as e:
+                warn(f"Failed to delete thumbnail {thumb_path.name}: {e}")
             return True
         if verified is None:
             # Lookup failed (e.g. HTTP 403 token lacks read scope or API error).
             # The set call already succeeded above; do not retry or warn success-but-ignored.
             log(f"Thumbnail set from {thumb_path.name} "
                 f"(set accepted; verification skipped).")
+            # Clean up thumbnail file after successful upload
+            try:
+                thumb_path.unlink(missing_ok=True)
+                log(f"Thumbnail file {thumb_path.name} deleted after successful upload.")
+            except Exception as e:
+                warn(f"Failed to delete thumbnail {thumb_path.name}: {e}")
             return True
         if attempt < max_tries:
             log(f"Thumbnail verify attempt {attempt}/{max_tries}: "
