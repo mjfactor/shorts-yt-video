@@ -138,6 +138,186 @@ class TestBufferTiktokUpload(unittest.TestCase):
                 cu.assert_called_once()
                 self.assertEqual(cu.call_args[0][1:], ("epuxrxa5", "buffer_shorts"))
 
+    def test_large_master_uploads_proxy_and_cleans_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "short.mp4"
+            video.write_bytes(b"\x00" * 16)
+            proxy = video.with_name("short_tiktok_proxy.mp4")
+
+            def fake_transcode(src):
+                assert src == video
+                proxy.write_bytes(b"\x01" * 8)  # under the 100MB cap
+                return proxy
+
+            uploaded_sizes = []
+
+            def fake_upload(path, cloud, preset):
+                uploaded_sizes.append((Path(path), Path(path).stat().st_size))
+                return "https://res.cloudinary.com/x/v.mp4"
+
+            env = {"BUFFER_API_KEY": "key123",
+                   "BUFFER_TIKTOK_CHANNEL_ID": "ch1",
+                   "CLOUDINARY_CLOUD_NAME": "cname",
+                   "CLOUDINARY_UPLOAD_PRESET": "preset"}
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(core, "_tiktok_proxy_threshold_bytes",
+                                        return_value=10), \
+                     mock.patch.object(core, "_transcode_tiktok_proxy",
+                                        side_effect=fake_transcode) as tc, \
+                     mock.patch.object(
+                         core, "_cloudinary_upload",
+                         side_effect=fake_upload) as cu, \
+                     mock.patch.object(core, "_buffer_public_url_ok",
+                                        return_value=True), \
+                     mock.patch.object(
+                         core, "_buffer_graphql",
+                         return_value={"createPost": {"post": {
+                             "id": "post123", "dueAt": "tomorrow"}}}):
+                    self.assertEqual(
+                        core.buffer_tiktok_upload(
+                            video, {"title": "T", "description": "D"}),
+                        "post123")
+            tc.assert_called_once_with(video)
+            cu.assert_called_once()
+            uploaded = cu.call_args[0][0]
+            self.assertEqual(Path(uploaded), proxy)
+            # Size asserted at upload time (proxy is deleted in finally).
+            self.assertEqual(uploaded_sizes, [(proxy, 8)])
+            self.assertLess(uploaded_sizes[0][1],
+                            core.CLOUDINARY_FREE_CAP_BYTES)
+            # Temp proxy removed; YouTube master untouched.
+            self.assertFalse(proxy.exists())
+            self.assertTrue(video.exists())
+            self.assertEqual(video.stat().st_size, 16)
+
+    def test_small_master_uploads_original_without_transcode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "short.mp4"
+            video.write_bytes(b"\x00" * 16)
+            env = {"BUFFER_API_KEY": "key123",
+                   "BUFFER_TIKTOK_CHANNEL_ID": "ch1",
+                   "CLOUDINARY_CLOUD_NAME": "cname",
+                   "CLOUDINARY_UPLOAD_PRESET": "preset"}
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(core, "_transcode_tiktok_proxy") as tc, \
+                     mock.patch.object(
+                         core, "_cloudinary_upload",
+                         return_value="https://res.cloudinary.com/x/v.mp4") as cu, \
+                     mock.patch.object(core, "_buffer_public_url_ok",
+                                        return_value=True), \
+                     mock.patch.object(
+                         core, "_buffer_graphql",
+                         return_value={"createPost": {"post": {
+                             "id": "post123", "dueAt": "tomorrow"}}}):
+                    self.assertEqual(
+                        core.buffer_tiktok_upload(
+                            video, {"title": "T", "description": "D"}),
+                        "post123")
+            tc.assert_not_called()
+            cu.assert_called_once()
+            self.assertEqual(Path(cu.call_args[0][0]), video)
+
+    def test_proxy_failure_falls_back_to_original(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "short.mp4"
+            video.write_bytes(b"\x00" * 16)
+            env = {"BUFFER_API_KEY": "key123",
+                   "BUFFER_TIKTOK_CHANNEL_ID": "ch1",
+                   "CLOUDINARY_CLOUD_NAME": "cname",
+                   "CLOUDINARY_UPLOAD_PRESET": "preset"}
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(core, "_tiktok_proxy_threshold_bytes",
+                                        return_value=10), \
+                     mock.patch.object(core, "_transcode_tiktok_proxy",
+                                        return_value=None) as tc, \
+                     mock.patch.object(
+                         core, "_cloudinary_upload",
+                         return_value="https://res.cloudinary.com/x/v.mp4") as cu, \
+                     mock.patch.object(core, "_buffer_public_url_ok",
+                                        return_value=True), \
+                     mock.patch.object(
+                         core, "_buffer_graphql",
+                         return_value={"createPost": {"post": {
+                             "id": "post123", "dueAt": "tomorrow"}}}):
+                    self.assertEqual(
+                        core.buffer_tiktok_upload(
+                            video, {"title": "T", "description": "D"}),
+                        "post123")
+            tc.assert_called_once_with(video)
+            cu.assert_called_once()
+            self.assertEqual(Path(cu.call_args[0][0]), video)
+
+
+class TestTiktokProxyTranscode(unittest.TestCase):
+    def test_builds_720p_proxy_command_next_to_master(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "clip_short.mp4"
+            src.write_bytes(b"\x00" * 16)
+            want = src.with_name("clip_short_tiktok_proxy.mp4")
+            cmds = []
+
+            def fake_run(cmd, **kwargs):
+                cmds.append(cmd)
+                want.write_bytes(b"\x01" * 8)
+                return mock.Mock(returncode=0)
+
+            with mock.patch.object(core.subprocess, "run",
+                                    side_effect=fake_run):
+                self.assertEqual(core._transcode_tiktok_proxy(src), want)
+            self.assertEqual(len(cmds), 1)
+            cmd = cmds[0]
+            self.assertEqual(cmd[0], "ffmpeg")
+            self.assertIn(str(src), cmd)
+            self.assertIn(str(want), cmd)
+            self.assertIn("scale=720:1280", cmd)
+            for flag in ("libx264", "27", "veryfast", "aac", "128k",
+                         "+faststart"):
+                self.assertIn(flag, cmd)
+
+    def test_transcode_failure_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "clip_short.mp4"
+            src.write_bytes(b"\x00" * 16)
+            with mock.patch.object(core.subprocess, "run",
+                                    side_effect=RuntimeError("no ffmpeg")):
+                self.assertIsNone(core._transcode_tiktok_proxy(src))
+            self.assertFalse(
+                src.with_name("clip_short_tiktok_proxy.mp4").exists())
+
+    def test_threshold_env_override_read_at_call_time(self):
+        with mock.patch.dict(os.environ,
+                             {"BUFFER_TIKTOK_PROXY_THRESHOLD_MB": "1"},
+                             clear=False):
+            self.assertEqual(core._tiktok_proxy_threshold_bytes(),
+                             1 * 1024 * 1024)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("BUFFER_TIKTOK_PROXY_THRESHOLD_MB", None)
+            self.assertEqual(core._tiktok_proxy_threshold_bytes(),
+                             core.TIKTOK_PROXY_THRESHOLD_BYTES)
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "short.mp4"
+            video.write_bytes(b"\x00" * 16)
+            env = {"BUFFER_API_KEY": "key123",
+                   "BUFFER_TIKTOK_CHANNEL_ID": "ch1",
+                   "CLOUDINARY_CLOUD_NAME": "   ",
+                   "CLOUDINARY_UPLOAD_PRESET": ""}
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(
+                        core, "_cloudinary_upload",
+                        return_value="https://res.cloudinary.com/x/v.mp4") as cu, \
+                     mock.patch.object(core, "_buffer_public_url_ok",
+                                       return_value=True), \
+                     mock.patch.object(
+                         core, "_buffer_graphql",
+                         return_value={"createPost": {"post": {
+                             "id": "post123", "dueAt": "tomorrow"}}}):
+                    self.assertEqual(
+                        core.buffer_tiktok_upload(
+                            video, {"title": "T", "description": "D"}),
+                        "post123")
+                cu.assert_called_once()
+                self.assertEqual(cu.call_args[0][1:], ("epuxrxa5", "buffer_shorts"))
+
 
 class TestRunRecordsBufferPostId(unittest.TestCase):
     def _niche(self, src):

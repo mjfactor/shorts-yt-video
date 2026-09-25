@@ -49,6 +49,20 @@ GENRE_STYLES = {
 DEFAULT_STYLE = ("Energetic, engaging storyteller voice. Brisk natural pacing, "
                  "clear emphasis, authentic viral storytime delivery.")
 
+# Stage-direction leak guard (mirrors content._REHOOK_LITERAL_RE): the
+# narrator voices every word, so labels like "Rehook line:" must fail
+# loud here if they ever slip past validation.
+_STAGE_DIRECTION_RE = re.compile(r"re[\s-]*hook", re.IGNORECASE)
+
+
+def _reject_stage_directions(text: str) -> None:
+    """Raise when the narration carries a speakable stage direction."""
+    hit = _STAGE_DIRECTION_RE.search(text or "")
+    if hit:
+        raise ValueError(
+            f"stage direction {hit.group()!r} in narration "
+            "(rehooks are metadata-only, never spoken)")
+
 # Voice-name substrings for gender-aware pool filtering (matched
 # case-insensitively against the configured pool; unknown names never
 # match, so custom pools fall back to full-pool behavior).
@@ -409,6 +423,7 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
         text, content.extras.get("card_text", ""))
     if card_prepended:
         log("Story edge narration: prepended card line (legacy content).")
+    _reject_stage_directions(text)
     order = (getattr(cfg, "tts_provider_order", "edge,gemini") or "edge,gemini")
     log(f"Story edge provider order: {order}")
     gender = str(content.extras.get("narrator_gender", "") or "")
@@ -588,6 +603,7 @@ def narrate(content: Content, cfg: StoryConfig,
         log("Story narration: prepended card line (legacy content did not "
             "open with it).")
         content = dataclasses.replace(content, narration_text=text)
+    _reject_stage_directions(text)
     engine = (getattr(cfg, "tts_engine", "edge") or "edge").strip().lower()
     if engine not in ("gemini", "edge"):
         warn(f"Unknown STORY_TTS_ENGINE={engine!r}; using edge.")

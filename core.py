@@ -19,6 +19,7 @@ import datetime
 import json
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -305,6 +306,64 @@ BUFFER_API_URL = "https://api.buffer.com"
 # TikTok captions with a video attached: max 2200 UTF-16 code units
 # (developers.buffer.com/guides/character-limits.html).
 TIKTOK_CAPTION_LIMIT = 2200
+# Cloudinary free unsigned uploads cap at 100MB hard (chunked uploads and
+# incoming eager transforms do NOT raise it). The 1080x1920 YouTube master
+# (~103MB) would HTTP 413 there, so large files get a 720p proxy for the
+# TikTok-via-Buffer path only. Threshold sits ~10% under the cap as margin;
+# override at call time with BUFFER_TIKTOK_PROXY_THRESHOLD_MB when needed.
+CLOUDINARY_FREE_CAP_BYTES = 100 * 1024 * 1024
+TIKTOK_PROXY_THRESHOLD_BYTES = 90 * 1024 * 1024
+
+
+def _tiktok_proxy_threshold_bytes() -> int:
+    """Proxy threshold, honouring an optional MB env override (read at call time)."""
+    raw = (os.getenv("BUFFER_TIKTOK_PROXY_THRESHOLD_MB", "") or "").strip()
+    if raw:
+        try:
+            return int(float(raw) * 1024 * 1024)
+        except ValueError:
+            warn(f"BUFFER_TIKTOK_PROXY_THRESHOLD_MB={raw!r} invalid; "
+                 f"using default {TIKTOK_PROXY_THRESHOLD_BYTES} bytes.")
+    return TIKTOK_PROXY_THRESHOLD_BYTES
+
+
+def _transcode_tiktok_proxy(src: Path) -> Path | None:
+    """Transcode a smaller 720x1280 proxy next to `src` for Cloudinary upload.
+
+    Returns the proxy path, or None on any ffmpeg failure (caller falls back
+    to the original-file attempt). The YouTube master is never modified.
+    """
+    proxy = src.with_name(f"{src.stem}_tiktok_proxy.mp4")
+    cmd = ["ffmpeg", "-y", "-i", str(src),
+           "-vf", "scale=720:1280",
+           "-c:v", "libx264", "-crf", "27", "-preset", "veryfast",
+           "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+           "-movflags", "+faststart", str(proxy)]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=600)
+    except Exception as e:
+        warn(f"TikTok proxy transcode failed ({type(e).__name__}: {e}); "
+             f"falling back to original file.")
+        try:
+            if proxy.exists():
+                proxy.unlink()
+        except OSError:
+            pass
+        return None
+    try:
+        size = proxy.stat().st_size
+    except OSError as e:
+        warn(f"TikTok proxy unreadable ({e}); falling back to original file.")
+        return None
+    if size >= CLOUDINARY_FREE_CAP_BYTES:
+        warn(f"TikTok proxy still {size / 1024 / 1024:.1f}MB "
+             f"(>= {CLOUDINARY_FREE_CAP_BYTES / 1024 / 1024:.0f}MB cap); "
+             f"uploading proxy anyway (smaller than master).")
+    else:
+        log(f"TikTok proxy: {proxy.name} "
+            f"({size / 1024 / 1024:.1f}MB < "
+            f"{CLOUDINARY_FREE_CAP_BYTES / 1024 / 1024:.0f}MB cap).")
+    return proxy
 
 
 def _buffer_graphql(query: str, api_key: str, variables: dict | None = None,
@@ -465,35 +524,62 @@ def buffer_tiktok_upload(video: Path, meta: dict):
     try:
         channel_id = _buffer_tiktok_channel(
             api_key, os.getenv("BUFFER_TIKTOK_CHANNEL_ID", ""))
-        public_url = _cloudinary_upload(video, cloud_name, preset)
-        if not _buffer_public_url_ok(public_url):
-            warn(f"TikTok via Buffer skipped (public_url not publicly "
-                 f"reachable: {public_url}).")
-            return None
-        caption = _tiktok_caption(meta)
-        mutation = (
-            "mutation CreatePost($text: String!, $channelId: ChannelId!, $url: String!) { "
-            "createPost( input: { "
-            "text: $text channelId: $channelId "
-            "schedulingType: automatic mode: addToQueue "
-            "assets: [{ video: { url: $url "
-            "metadata: { thumbnailOffset: 2000 } } }] } ) { "
-            "... on PostActionSuccess { post { id dueAt } } "
-            "... on LimitReachedError { message } "
-            "... on InvalidInputError { message } "
-            "... on MutationError { message } } }"
-        )
-        data = _buffer_graphql(
-            mutation, api_key,
-            variables={"text": caption, "channelId": channel_id,
-                       "url": public_url},
-            stage="createPost")
-        result = data.get("createPost") or {}
-        post = result.get("post")
-        if post and post.get("id"):
-            log(f"TikTok queued via Buffer -> post={post['id']} dueAt={post.get('dueAt', '?')}")
-            return post["id"]
-        raise ValueError(f"Buffer rejected post: {result.get('message', '?')}")
+        upload_target = Path(video)
+        proxy: Path | None = None
+        try:
+            try:
+                src_size = upload_target.stat().st_size
+            except OSError:
+                src_size = -1
+            if src_size >= _tiktok_proxy_threshold_bytes():
+                log(f"Buffer cloudinary: master {src_size / 1024 / 1024:.1f}MB "
+                    f"near 100MB unsigned cap; transcoding 720p TikTok proxy "
+                    f"(YouTube master untouched).")
+                try:
+                    proxy = _transcode_tiktok_proxy(upload_target)
+                except Exception as e:
+                    warn(f"TikTok proxy path failed ({type(e).__name__}: {e}); "
+                         f"falling back to original file.")
+                    proxy = None
+                if proxy is not None:
+                    upload_target = proxy
+            public_url = _cloudinary_upload(upload_target, cloud_name, preset)
+            if not _buffer_public_url_ok(public_url):
+                warn(f"TikTok via Buffer skipped (public_url not publicly "
+                     f"reachable: {public_url}).")
+                return None
+            caption = _tiktok_caption(meta)
+            mutation = (
+                "mutation CreatePost($text: String!, $channelId: ChannelId!, $url: String!) { "
+                "createPost( input: { "
+                "text: $text channelId: $channelId "
+                "schedulingType: automatic mode: addToQueue "
+                "assets: [{ video: { url: $url "
+                "metadata: { thumbnailOffset: 2000 } } }] } ) { "
+                "... on PostActionSuccess { post { id dueAt } } "
+                "... on LimitReachedError { message } "
+                "... on InvalidInputError { message } "
+                "... on MutationError { message } } }"
+            )
+            data = _buffer_graphql(
+                mutation, api_key,
+                variables={"text": caption, "channelId": channel_id,
+                           "url": public_url},
+                stage="createPost")
+            result = data.get("createPost") or {}
+            post = result.get("post")
+            if post and post.get("id"):
+                log(f"TikTok queued via Buffer -> post={post['id']} dueAt={post.get('dueAt', '?')}")
+                return post["id"]
+            raise ValueError(f"Buffer rejected post: {result.get('message', '?')}")
+        finally:
+            if proxy is not None and proxy != Path(video):
+                try:
+                    if proxy.exists():
+                        proxy.unlink()
+                        log(f"TikTok proxy removed: {proxy.name}.")
+                except OSError as e:
+                    log(f"TikTok proxy cleanup warning: {proxy} ({e})")
     except Exception as e:
         warn(f"TikTok via Buffer skipped ({type(e).__name__}: {e}).")
         return None

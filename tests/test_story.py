@@ -1,5 +1,6 @@
 """Phase 3 story tests: mocked, no network. Python 3.11 unittest style."""
 import copy
+import dataclasses
 import json
 import os
 import re
@@ -198,6 +199,43 @@ class TestStoryValidation(unittest.TestCase):
             "I Finally Said No to Weekend Work 😤")
         self.assertIn("😤", out)
         self.assertIn("#shorts", out)
+
+    def test_rehook_literal_rejected(self):
+        def _with_prefix(data):
+            data = copy.deepcopy(data)
+            line = data["rehooks"][0]["line"]
+            prefixed = "Rehook line: " + line
+            for key in ("story_text", "narration"):
+                data[key] = data[key].replace(line, prefixed)
+            for b in data["beats"]:
+                if line in b["text"]:
+                    b["text"] = b["text"].replace(line, prefixed)
+            data["rehooks"][0]["line"] = prefixed
+            return data
+
+        with self.assertRaisesRegex(ValueError, "rehook"):
+            story_content.validate_extra(_with_prefix(_make_story()))
+        # hyphen/space/case variants in the story alone also reject
+        for leak in ("Then a RE-HOOK hit hard.",
+                     "Then a re hook hit hard.",
+                     "Then a ReHook hit hard."):
+            data = _make_story()
+            tail = data["beats"][-1]["text"] + " " + leak
+            data["beats"][-1]["text"] = tail
+            for key in ("story_text", "narration"):
+                data[key] = data[key] + " " + leak
+            with self.subTest(leak=leak):
+                with self.assertRaisesRegex(ValueError, "rehook"):
+                    story_content.validate_extra(data)
+
+    def test_narration_rejects_stage_directions(self):
+        content = story_content.sample_content()
+        bad = dataclasses.replace(
+            content,
+            narration_text=content.narration_text + " Rehook line: hush.")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "rehook"):
+                story_narr.narrate(bad, StoryConfig(), Path(tmp))
 
 
 class TestStorySameModelRetry(unittest.TestCase):
@@ -1484,7 +1522,8 @@ class TestCardFirst(unittest.TestCase):
     def test_prompt_requires_third_rehook_and_hook_examples(self):
         prompt, _slots = story_content.build_prompt([], StoryConfig())
         self.assertIn("80-90s", prompt)
-        self.assertIn("THIRD re-hook", prompt)
+        self.assertIn("THIRD turning-point", prompt)
+        self.assertIn("metadata ONLY, never spoken", prompt)
         self.assertIn("never copy these lines", prompt)
         self.assertIn("exactly 3 objects", prompt)
 

@@ -26,6 +26,9 @@ USE_MOOD = False
 
 _TTS_BAD_RE = re.compile(r"[*#_`|~@^<>{}\[\]\\]")
 _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
+# Stage-direction leak guard: rehooks are metadata pointers, never spoken —
+# the model must never voice labels like "Rehook line:" inside the story.
+_REHOOK_LITERAL_RE = re.compile(r"re[\s-]*hook", re.IGNORECASE)
 # Markers of copied Reddit material (never air these).
 _COPY_RE = re.compile(r"\br/\w+|reddit\.com|u/\w+|AITA\?|TIFU|ELI5", re.IGNORECASE)
 # Safety refusals: graphic/hate/age-restricted bait.
@@ -238,6 +241,17 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
                       if isinstance(b, dict)).strip()
     if " ".join(joined.split()) != " ".join(story.split()):
         raise ValueError("beat texts joined must equal narration exactly")
+    for label, snippet in (
+            ("story_text", story),
+            *[(f"beats[{i}].text", str(b.get("text", "")))
+              for i, b in enumerate(beats) if isinstance(b, dict)],
+            *[(f"rehooks[{i}].line", r["line"])
+              for i, r in enumerate(rehooks)]):
+        hit = _REHOOK_LITERAL_RE.search(snippet)
+        if hit:
+            raise ValueError(
+                f"stage direction {hit.group()!r} in '{label}' "
+                "(rehooks are metadata-only, never spoken)")
     extra = {
         "title": str(data.get("title", "") or "").strip(),
         "description": str(data.get("description", "") or "").strip(),
@@ -384,16 +398,17 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "revenge, a creepy moment). Never reveal the twist here.\n"
         "3. Fast setup (2-3 sentences): who, where, what went wrong.\n"
         "4. Escalation (4-6 sentences): the narrator tries a reasonable response, "
-        "but the antagonist doubles down or laughs it off. Plant an in-story "
-        "re-hook line that lands around 20-30 seconds in (a fresh turn or "
+        "but the antagonist doubles down or laughs it off. Plant a turning-point "
+        "sentence that lands around 20-30 seconds in (a fresh turn or "
         "escalation uniquely tailored to your story that re-grabs scrollers).\n"
         "5. Twist & Counter-Move (4-6 sentences): The narrator takes concrete "
         "action — finding proof, checking security cameras, reading the fine "
-        "print, or setting a clever trap. Includes a second in-story re-hook line "
+        "print, or setting a clever trap. Includes a second turning-point sentence "
         "that lands around 50-60 seconds in (a surprising turn or evidence reveal).\n"
         "6. Post-twist escalation into the payoff (4-6 sentences): The antagonist "
-        "walks right into the trap or gets caught red-handed. Includes a THIRD re-hook "
-        "line landing around 80-90 seconds in (the moment consequences land). "
+        "walks right into the trap or gets caught red-handed. Includes a THIRD "
+        "turning-point sentence landing around 80-90 seconds in (the moment "
+        "consequences land). "
         "NEVER freeze the story with repetitive internal monologue or venting — "
         "keep real narrative events and consequences moving!\n"
         "7. Ending: a punchy payoff line with clear, satisfying justice "
@@ -414,9 +429,14 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "moods) for dedup and visuals. bg_queries: 5-8 background-footage "
         "search queries, 1-3 concrete filmable words each "
         "(e.g. 'office desk night').\n\n"
-        "rehooks: exactly 3 objects {\"at\": \"20-30s\" | \"50-60s\" | "
-        "\"80-90s\", \"line\": <exact story line>}. Each line must appear "
-        "verbatim in the story. Re-hooks must be natural in-story narrative turns "
+        "rehooks: metadata ONLY, never spoken — exactly 3 objects "
+        "{\"at\": \"20-30s\" | \"50-60s\" | "
+        "\"80-90s\", \"line\": <exact story line>}. Each line must be a plain "
+        "in-world sentence already appearing verbatim in the story. NEVER write "
+        "the words 'rehook', 're-hook', or 'stage direction', and never use labels "
+        "like 'Rehook line:', anywhere in story_text/narration/beats/hook — the "
+        "narrator speaks every word, so any label would be voiced aloud. "
+        "Re-hooks must be natural in-story narrative turns "
         "invented uniquely for your story (never copy example text). "
         "NEVER break the fourth wall with viewer survey questions like 'Do you think I am wrong?' or "
         "'Am I the jerk?'. Keep the listener fully inside the story.\n\n"
@@ -446,7 +466,7 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "Beat 3 (twist & counter-move) ~90 words (70-100): concrete actions "
         "and rising tension. "
         "Beat 4 (consequences & trap) ~90 words (70-100): the confrontation, "
-        "carrying the 80-90s re-hook. "
+        "carrying the 80-90s turning point. "
         "Beat 5 (payoff or cliffhanger) ~75 words (60-80, NEVER under 60): "
         "a full earned ending, never a one-sentence rush. "
         "FORBIDDEN rushed closings: 'and I never looked back', 'and we never "
