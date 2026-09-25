@@ -59,6 +59,34 @@ GENRE_EVERGREEN = {
     "never-again": ("hospital hallway night", "car road night", "storm clouds dark"),
 }
 
+# ---------------------------------------------------------------------------
+# Rotating background themes — each video gets a different visual "vibe".
+# Themes rotate by video number (len(history) % len(_BG_THEMES)) so
+# consecutive videos always have a different background feel.
+# Within each theme, queries are still genre-filtered and Pexels-searched
+# exactly as before — only the ambient/evergreen pool changes.
+# ---------------------------------------------------------------------------
+_BG_THEMES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("cleaning",  ("window cleaning", "pressure washing", "car wash",
+                   "floor mopping", "soap sponge", "vacuum carpet")),
+    ("gaming",    ("gaming setup keyboard", "esports arena rgb", "game controller hands",
+                   "pc gaming rgb", "gaming headset desk", "console playing tv")),
+    ("nature",    ("forest path sunlight", "ocean waves sunset", "mountain hiking trail",
+                   "waterfall flowing rocks", "rain forest green", "desert landscape")),
+    ("workspace", ("coffee shop laptop", "home office desk", "notebook writing hand",
+                   "coworking space people", "city office windows", "typing keyboard close")),
+    ("urban",     ("city night skyline", "rain street night", "neon signs city",
+                   "highway traffic night", "subway station platform", "rooftop city view")),
+    ("cozy",      ("fireplace flames close", "candles burning dark", "book reading hands",
+                   "tea cup pouring", "blanket cozy morning", "rain window drops")),
+)
+
+
+def _pick_bg_theme(video_number: int) -> tuple[str, tuple[str, ...]]:
+    """Deterministic theme selection by video number (cycles through all themes)."""
+    name, queries = _BG_THEMES[video_number % len(_BG_THEMES)]
+    return name, queries
+
 
 def _pick_window(rng: random.Random, clip_dur: float, window: float,
                  used: list[tuple[float, float]], tries: int = 8) -> float:
@@ -237,49 +265,130 @@ def _fetch_one(query: str, api_key: str, cache_dir: Path,
     return res[0] if res else (None, "", "")
 
 
-def _fetch_many(query: str, api_key: str, cache_dir: Path,
-                used: set[str], limit: int = 2) -> list[tuple]:
-    """Fetch up to `limit` distinct clips for a query.
+# DownloadTask: (url, dest_path, video_id, credit_string, query)
+# Returned by _search_query so Phase 2 can download them all in parallel.
+_DownloadTask = tuple[str, Path, str, str, str]
 
-    Returns [(path, video_id, credit), ...] (possibly fewer than limit).
-    Skips ids already used; skips re-download when the id cache hits.
+
+def _search_query(query: str, api_key: str, cache_dir: Path,
+                  used_snapshot: frozenset[str],
+                  limit: int = 2) -> tuple[str, list[_DownloadTask], list[tuple]]:
+    """Phase 1 (search only): call Pexels search API for one query.
+
+    Returns (query, download_tasks, cache_hits) where:
+    - download_tasks: clips not yet on disk — caller downloads them in Phase 2
+    - cache_hits: [(dest, vid, credit), ...] for ids already cached locally
+
+    Splitting search from download means 12 workers can fire all API
+    requests concurrently (~300 ms each) without waiting for any download
+    to complete (~5-30 s each).  Used-id dedup is done against a frozen
+    snapshot of the set at search time; the Phase 2 download worker
+    re-checks against the live set before writing to avoid races.
     """
-    out: list[tuple] = []
+    tasks: list[_DownloadTask] = []
+    hits: list[tuple] = []
     try:
         for v in _px.search_videos(query, api_key, per_page=30,
                                    orientation="portrait", size="medium"):
-            if len(out) >= max(1, limit):
+            if len(tasks) + len(hits) >= max(1, limit):
                 break
             vid = str(v.get("id", ""))
-            if not vid or vid in used:
+            if not vid or vid in used_snapshot:
                 continue
             picked = _px.pick_video_file(v.get("video_files", []),
                                          target_w=1080, target_h=1920)
             if not picked:
                 continue
             dest = _px.cache_path(cache_dir, vid)
-            if not dest.exists():
-                _px.download(picked["link"], dest)
-            used.add(vid)
-            credit = _px.parse_photographer(v) or "Pexels"
-            out.append((dest, vid, f"Pexels: {credit}"))
+            credit = f"Pexels: {_px.parse_photographer(v) or 'Pexels'}"
+            if dest.exists():
+                # Already cached — no download needed, record immediately.
+                hits.append((dest, vid, credit))
+            else:
+                tasks.append((picked["link"], dest, vid, credit, query))
+    except Exception as e:
+        warn(f"Pexels search failed '{query}' ({e}).")
+    return query, tasks, hits
+
+
+def _execute_download(task: _DownloadTask,
+                      used: set[str]) -> tuple[Path | None, str, str, str]:
+    """Phase 2 (download only): download one clip from a pre-searched task.
+
+    Re-checks `used` (shared set, protected by GIL for .add/.in checks on
+    CPython) so two workers racing on the same id only write once.
+    Returns (dest|None, vid, credit, query).
+    """
+    url, dest, vid, credit, query = task
+    if vid in used:
+        return None, vid, credit, query
+    try:
+        if not dest.exists():
+            _px.download(url, dest)
+        used.add(vid)
+        return dest, vid, credit, query
+    except Exception as e:
+        warn(f"Pexels download failed vid={vid} '{query}' ({e}).")
+        return None, vid, credit, query
+
+
+def _fetch_many(query: str, api_key: str, cache_dir: Path,
+                used: set[str], limit: int = 2) -> list[tuple]:
+    """Fetch up to `limit` distinct clips for a query (search + download).
+
+    Preserved for callers outside gather_clips (e.g. _fetch_one).
+    Returns [(path, video_id, credit), ...] (possibly fewer than limit).
+    Skips ids already used; skips re-download when the id cache hits.
+    """
+    out: list[tuple] = []
+    try:
+        _, tasks, hits = _search_query(query, api_key, cache_dir,
+                                       frozenset(used), limit)
+        # Cache hits come back immediately.
+        for dest, vid, credit in hits:
+            if vid not in used:
+                used.add(vid)
+                out.append((dest, vid, credit))
+        # Downloads are inline here (single-query path — no pool overhead).
+        for task in tasks:
+            if len(out) >= max(1, limit):
+                break
+            dest, vid, credit, _ = _execute_download(task, used)
+            if dest is not None:
+                out.append((dest, vid, credit))
     except Exception as e:
         warn(f"Pexels query failed '{query}' ({e}).")
     return out
 
 
 def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
-                 recent_ids: tuple = ()
+                 recent_ids: tuple = (),
+                 video_number: int = 0,
                  ) -> tuple[list[Path], list[str], list[str], list[str]]:
-    """BG clips: Pexels (prefetched) → BG_DIR fallback. Clear error if none.
+    """BG clips: Pexels (two-phase parallel) → BG_DIR fallback.
 
     Query priority (deduped): story/beat queries → genre evergreen →
-    CLEANING_QUERIES → AMBIENT_QUERIES, so the satisfying pool is
-    fetched before ambient stock. Cleaning queries fetch
-    cleaning_clips_per_query clips each (default 3 vs clips_per_query
-    2). Returns (clips, credits, used_ids, kinds) with kinds parallel
-    to clips ("cleaning" / "story" / "ambient" / "local") for the
-    planner's share partition.
+    themed ambient pool (rotates by video_number) → CLEANING_QUERIES.
+    Cleaning queries fetch cleaning_clips_per_query clips each (default
+    3 vs clips_per_query 2).
+    Returns (clips, credits, used_ids, kinds) with kinds parallel to clips
+    ("cleaning" / "story" / "ambient" / "local") for the planner.
+
+    recent_ids: Pexels video IDs used in recent videos — skipped so
+    consecutive videos never reuse the same clip.
+
+    video_number: index of this video in history (len(history)) —
+    used to rotate the ambient background theme each run so consecutive
+    videos have a visually distinct feel.
+
+    Opt 1 — two-phase parallelism:
+      Phase 1 (12 workers): all queries fire their search API calls
+        concurrently.  Each call takes ~300 ms; serialising them over 20+
+        queries would take 6+ seconds.  12 workers collapse that to ~600 ms.
+      Phase 2 (8 workers): all needed downloads run in parallel.  Downloads
+        are I/O-bound (5-30 s each); 8 workers cuts wall-clock from
+        sequential-download time to the duration of the slowest single clip.
+    Cache hits (already-downloaded ids) bypass Phase 2 entirely.
     """
     cache_dir = Path(cfg.pexels_cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -293,10 +402,14 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
                 seen_q.add(q)
                 ordered.append((q, kind))
 
+    # Pick rotating theme for ambient pool; log so it's visible in CI.
+    theme_name, theme_queries = _pick_bg_theme(video_number)
+    log(f"Story BG theme #{video_number % len(_BG_THEMES)}: '{theme_name}'.")
+
     _add(bg_queries, "story")
     _add(GENRE_EVERGREEN.get((genre or "").lower(), ()), "story")
+    _add(theme_queries, "ambient")   # themed pool replaces static AMBIENT_QUERIES
     _add(CLEANING_QUERIES, "cleaning")
-    _add(AMBIENT_QUERIES, "ambient")
     queries: list[str] = [q for q, _ in ordered]
     kind_of = dict(ordered)
     clips: list[Path] = []
@@ -310,20 +423,74 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
     limits = {q: (clean_per if kind_of[q] == "cleaning" else per_query)
               for q in queries}
     if cfg.pexels_key:
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futs = {pool.submit(_fetch_many, q, cfg.pexels_key, cache_dir,
-                                used, limits[q]): q
-                    for q in queries}
-            by_query: dict[str, list] = {}
-            for fut in as_completed(futs):
-                by_query[futs[fut]] = fut.result()
-            for q in queries:  # keep query priority order, not finish order
-                for path, vid, credit in by_query.get(q) or []:
-                    if path is not None:
-                        clips.append(path)
+        # ---- Phase 1: search (12 workers, ~300 ms per call) ----------------
+        t0 = time.monotonic()
+        # Snapshot `used` once so all search workers see the same baseline.
+        # Downloads haven't started yet so there are no races at this point.
+        used_snap = frozenset(used)
+        by_query_tasks: dict[str, list[_DownloadTask]] = {}
+        by_query_hits: dict[str, list[tuple]] = {}
+        with ThreadPoolExecutor(max_workers=12) as search_pool:
+            sfuts = {
+                search_pool.submit(_search_query, q, cfg.pexels_key,
+                                   cache_dir, used_snap, limits[q]): q
+                for q in queries
+            }
+            for fut in as_completed(sfuts):
+                q_done, tasks, hits = fut.result()
+                by_query_tasks[q_done] = tasks
+                by_query_hits[q_done] = hits
+        t_search = time.monotonic() - t0
+        n_cached = sum(len(h) for h in by_query_hits.values())
+        n_needed = sum(len(t) for t in by_query_tasks.values())
+        log(f"Story BG Phase 1 search: {len(queries)} queries in "
+            f"{t_search:.1f}s — {n_cached} cached, {n_needed} to download.")
+
+        # Collect cache hits first (no download needed, no used-set race).
+        for q in queries:
+            for dest, vid, credit in by_query_hits.get(q) or []:
+                if vid not in used:
+                    used.add(vid)
+                    clips.append(dest)
+                    credits.append(credit)
+                    used_ids.append(vid)
+                    kinds.append(kind_of[q])
+
+        # ---- Phase 2: download (8 workers, I/O-bound) ----------------------
+        # Flatten all pending download tasks, preserving query order so that
+        # when we re-assemble results the original priority is intact.
+        all_tasks: list[tuple[_DownloadTask, str]] = [
+            (task, q)
+            for q in queries
+            for task in (by_query_tasks.get(q) or [])
+        ]
+        if all_tasks:
+            t1 = time.monotonic()
+            with ThreadPoolExecutor(max_workers=8) as dl_pool:
+                dl_futs = {
+                    dl_pool.submit(_execute_download, task, used): (task, q)
+                    for task, q in all_tasks
+                }
+                # Collect results keyed by query for priority re-ordering.
+                by_query_dl: dict[str, list[tuple]] = {q: [] for q in queries}
+                for fut in as_completed(dl_futs):
+                    _, orig_q = dl_futs[fut]
+                    dest, vid, credit, _ = fut.result()
+                    if dest is not None:
+                        by_query_dl[orig_q].append((dest, vid, credit))
+            t_dl = time.monotonic() - t1
+            n_dl = sum(len(v) for v in by_query_dl.values())
+            log(f"Story BG Phase 2 download: {n_dl}/{len(all_tasks)} clips "
+                f"in {t_dl:.1f}s ({len(all_tasks)} parallel tasks, 8 workers).")
+            # Merge in query-priority order (same as before).
+            for q in queries:
+                for dest, vid, credit in by_query_dl.get(q) or []:
+                    if vid not in used_ids:  # guard double-add from cache hits
+                        clips.append(dest)
                         credits.append(credit)
                         used_ids.append(vid)
                         kinds.append(kind_of[q])
+
         log(f"Story BG: {len(clips)} Pexels clips for {len(queries)} queries "
             f"(up to {per_query}/query, {clean_per}/cleaning query; "
             f"{sum(1 for k in kinds if k == 'cleaning')} cleaning).")
@@ -579,7 +746,10 @@ def build_visuals(content: Content, narration: NarrationResult,
             *(content.extras.get("bg_queries", []) or []),
             *beat_queries,
             *(narration.extras.get("bg_queries", []) or [])])),
-        genre, cfg)
+        genre, cfg,
+        recent_ids=tuple(content.extras.get("recent_pexels_ids") or ()),
+        video_number=int(content.extras.get("video_number") or 0),
+    )
     log(f"Stage 1/6 clips: {len(clips)} BG sources, {len(used_ids)} Pexels ids "
         f"({sum(1 for k in kinds if k == 'cleaning')} cleaning).")
 

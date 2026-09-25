@@ -57,7 +57,7 @@ class StoryConfig(NicheConfig):
     # STORY_EDGE_VOICES (plural) wins over STORY_EDGE_VOICE (singular,
     # kept working as a one-voice fallback); unset means the default pool.
     edge_voices: tuple[str, ...] = ("en-US-AndrewNeural", "en-US-AriaNeural")
-    edge_rate: str = "+20%"
+    edge_rate: str = "+28%"
     # Female edge voices (Aria/Ava) run a slower natural cadence than the
     # male voices at the same relative SSML rate, so they get a hotter
     # default (+28%) to land near Andrew's absolute pace. STORY_ prefix
@@ -115,7 +115,7 @@ class StoryConfig(NicheConfig):
     # Length overshoot multiplier on the edge-aware word budget: the edge
     # TTS path runs faster than history wps implies, so aim above the bare
     # seconds*wps floor (default 1.08 targets mid-range, not the floor).
-    length_overshoot: float = 1.08
+    length_overshoot: float = 1.12
     # Planner floors.
     min_clips: int = 12
     min_segments: int = 25

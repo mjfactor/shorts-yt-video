@@ -572,8 +572,27 @@ def _make_client(cfg: StoryConfig):
                             tries=cfg.tries, backoff=cfg.backoff)
 
 
-def _to_content(meta: dict, slots: dict, wps: float) -> Content:
-    """Validated meta + slots → stage Content (all story fields in extras)."""
+def _to_content(meta: dict, slots: dict, wps: float,
+                history: list[dict] | None = None) -> Content:
+    """Validated meta + slots → stage Content (all story fields in extras).
+
+    history is used to populate two extras for build_visuals:
+      - video_number: len(same-niche history) → rotating BG theme selection
+      - recent_pexels_ids: Pexels clip IDs from last 5 videos → cross-video
+        dedup so consecutive videos never share background footage.
+    """
+    history = history or []
+    same_niche = [h for h in history if h.get("niche", "") == MODE]
+    video_number = len(same_niche)
+    # Collect Pexels IDs from the last 5 same-niche videos (flat, deduped).
+    recent_ids: list[str] = []
+    seen: set[str] = set()
+    for h in same_niche[-5:]:
+        for vid in (h.get("used_ids") or []):
+            s = str(vid).strip()
+            if s and s not in seen:
+                seen.add(s)
+                recent_ids.append(s)
     return Content(
         title=meta["title"],
         narration_text=meta["narration"],
@@ -596,7 +615,9 @@ def _to_content(meta: dict, slots: dict, wps: float) -> Content:
                 "part_2_seed": meta.get("part_2_seed", ""),
                 "rehooks": list(meta.get("rehooks", [])),
                 "wps": wps,
-                "slots": dict(slots)})
+                "slots": dict(slots),
+                "video_number": video_number,
+                "recent_pexels_ids": recent_ids})
 
 
 def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
@@ -688,16 +709,16 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
             if reason is None:
                 data["title"] = sanitize_title(data.get("title", ""), slots)
                 log(f"Story script OK: {data.get('title')}")
-                return _to_content(data, slots, wps)
+                return _to_content(data, slots, wps, history)
             if _attempt < cfg.similarity_retries:
                 warn(f"Story draft too similar ({reason}), regenerating...")
                 continue
             warn(f"Story draft still similar ({reason}), accepting best-effort.")
             data["title"] = sanitize_title(data.get("title", ""), slots)
-            return _to_content(data, slots, wps)
+            return _to_content(data, slots, wps, history)
     warn("Gemini unavailable: using standalone fallback story.")
     meta, slots = fallback_script(history)
-    return _to_content(meta, slots, wps)
+    return _to_content(meta, slots, wps, history)
 
 
 _FALLBACK_VARIANTS = (
