@@ -202,22 +202,25 @@ class TestStoryWordBudget(unittest.TestCase):
         cfg = StoryConfig()
         wps = 2.9
         lo, hi = story_content.target_words(cfg, wps)
-        self.assertEqual(lo, round(cfg.target_min * wps))
-        self.assertEqual(hi, round(cfg.target_max * wps))
-        # ~290-350 window for the default 100-120s targets at 2.9 wps
-        self.assertGreaterEqual(lo, 290)
-        self.assertLessEqual(hi, 350)
+        eff = story_content.effective_wps(cfg, wps)
+        self.assertEqual(lo, round(cfg.target_min * eff))
+        self.assertEqual(hi, round(cfg.target_max * eff))
+        # Edge-aware: 2.9 * 1.2 = 3.48 * 1.08 ~= 3.76 -> ~376-451 window
+        # for the default 100-120s targets (mid ~440w for 110s reality)
+        self.assertGreaterEqual(lo, 360)
+        self.assertLessEqual(hi, 470)
         self.assertLess(lo, hi)
 
     def test_word_budget_at_measured_edge_rate(self):
-        # 110s midpoint x ~4.3 measured edge wps ~= 430-520 words.
+        # 4.3 wps history x +20% clamps to 4.2, x 1.08 overshoot ~= 4.54.
         cfg = StoryConfig()
         wps = 4.3
         lo, hi = story_content.target_words(cfg, wps)
-        self.assertEqual(lo, round(100 * wps))
-        self.assertEqual(hi, round(120 * wps))
-        self.assertGreaterEqual(lo, 430)
-        self.assertLessEqual(hi, 520)
+        eff = story_content.effective_wps(cfg, wps)
+        self.assertEqual(lo, round(100 * eff))
+        self.assertEqual(hi, round(120 * eff))
+        self.assertGreaterEqual(lo, 440)
+        self.assertLessEqual(hi, 560)
         self.assertLess(lo, hi)
 
     def test_measure_wps_median_and_clamp(self):
@@ -228,9 +231,9 @@ class TestStoryWordBudget(unittest.TestCase):
         ]
         self.assertAlmostEqual(story_content.measure_wps(hist, 2.9), 3.0)
         self.assertEqual(story_content.measure_wps([], 2.9), 2.9)
-        # clamp to [2.2, 3.6]
+        # clamp to [2.2, 4.2] (edge reality 3.5-3.8 must survive)
         fast = [{"words": 900, "duration": 100.0}]
-        self.assertLessEqual(story_content.measure_wps(fast, 2.9), 3.6)
+        self.assertLessEqual(story_content.measure_wps(fast, 2.9), 4.2)
         slow = [{"words": 50, "duration": 100.0}]
         self.assertGreaterEqual(story_content.measure_wps(slow, 2.9), 2.2)
 

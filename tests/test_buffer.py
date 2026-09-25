@@ -26,13 +26,15 @@ class TestBufferTiktokUpload(unittest.TestCase):
                 post.assert_not_called()
 
     def test_graphql_errors_returns_none(self):
-        env = {"BUFFER_API_KEY": "key123"}
+        env = {"BUFFER_API_KEY": "key123",
+               "CLOUDINARY_CLOUD_NAME": "cname",
+               "CLOUDINARY_UPLOAD_PRESET": "preset"}
         with mock.patch.dict(os.environ, env, clear=False):
             os.environ.pop("BUFFER_TIKTOK_CHANNEL_ID", None)
             payload = {"errors": [{"message": "nope",
-                                   "extensions": {"code": "FORBIDDEN"}}]}
+                                    "extensions": {"code": "FORBIDDEN"}}]}
             with mock.patch.object(core.requests, "post",
-                                   return_value=_resp(payload)):
+                                    return_value=_resp(payload)):
                 # errors[] must not raise out of the fail-soft wrapper.
                 self.assertIsNone(
                     core.buffer_tiktok_upload(Path("x.mp4"), {"title": "t"}))
@@ -42,10 +44,12 @@ class TestBufferTiktokUpload(unittest.TestCase):
             video = Path(tmp) / "short.mp4"
             video.write_bytes(b"\x00" * 16)
             env = {"BUFFER_API_KEY": "key123",
-                   "BUFFER_TIKTOK_CHANNEL_ID": "ch1"}
+                    "BUFFER_TIKTOK_CHANNEL_ID": "ch1",
+                    "CLOUDINARY_CLOUD_NAME": "cname",
+                    "CLOUDINARY_UPLOAD_PRESET": "preset"}
             with mock.patch.dict(os.environ, env, clear=False):
                 with mock.patch.object(core.requests, "post",
-                                       return_value=_resp({})) as post:
+                                        return_value=_resp({})) as post:
                     self.assertIsNone(
                         core.buffer_tiktok_upload(video, {"title": "t"}))
                     # Explicit channel skips org queries: only Cloudinary.
@@ -58,19 +62,81 @@ class TestBufferTiktokUpload(unittest.TestCase):
             cloud = _resp({"secure_url": "https://res.cloudinary.com/x/v.mp4"})
             buf = _resp({"data": {"createPost": {"post": {
                 "id": "post123", "dueAt": "tomorrow"}}}})
+            head = _resp({})
+            head.status_code = 200
             env = {"BUFFER_API_KEY": "key123",
-                   "BUFFER_TIKTOK_CHANNEL_ID": "ch1"}
+                    "BUFFER_TIKTOK_CHANNEL_ID": "ch1",
+                    "CLOUDINARY_CLOUD_NAME": "cname",
+                    "CLOUDINARY_UPLOAD_PRESET": "preset"}
             with mock.patch.dict(os.environ, env, clear=False):
                 with mock.patch.object(core.requests, "post",
-                                       side_effect=[cloud, buf]) as post:
+                                        side_effect=[cloud, buf]) as post, \
+                     mock.patch.object(core.requests, "head",
+                                        return_value=head):
                     self.assertEqual(
                         core.buffer_tiktok_upload(
                             video, {"title": "T", "description": "D"}),
                         "post123")
             self.assertEqual(post.call_count, 2)
-            mutation = post.call_args_list[1].kwargs["json"]["query"]
-            self.assertIn("createPost", mutation)
-            self.assertIn("https://res.cloudinary.com/x/v.mp4", mutation)
+            sent = post.call_args_list[1].kwargs["json"]
+            self.assertIn("createPost", sent["query"])
+            # Caption/ids travel via GraphQL variables (no interpolation).
+            self.assertEqual(
+                sent["variables"]["url"],
+                "https://res.cloudinary.com/x/v.mp4")
+            self.assertEqual(sent["variables"]["channelId"], "ch1")
+            self.assertIn("T", sent["variables"]["text"])
+
+
+    def test_defaults_used_when_no_cloudinary_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "short.mp4"
+            video.write_bytes(b"\x00" * 16)
+            env = {"BUFFER_API_KEY": "key123",
+                   "BUFFER_TIKTOK_CHANNEL_ID": "ch1"}
+            with mock.patch.dict(os.environ, env, clear=False):
+                os.environ.pop("CLOUDINARY_CLOUD_NAME", None)
+                os.environ.pop("CLOUDINARY_UPLOAD_PRESET", None)
+                with mock.patch.object(
+                        core, "_cloudinary_upload",
+                        return_value="https://res.cloudinary.com/x/v.mp4") as cu, \
+                     mock.patch.object(core, "_buffer_public_url_ok",
+                                       return_value=True), \
+                     mock.patch.object(
+                         core, "_buffer_graphql",
+                         return_value={"createPost": {"post": {
+                             "id": "post123", "dueAt": "tomorrow"}}}):
+                    self.assertEqual(
+                        core.buffer_tiktok_upload(
+                            video, {"title": "T", "description": "D"}),
+                        "post123")
+                cu.assert_called_once()
+                self.assertEqual(cu.call_args[0][1:], ("epuxrxa5", "buffer_shorts"))
+
+    def test_blank_cloudinary_env_falls_back_to_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            video = Path(tmp) / "short.mp4"
+            video.write_bytes(b"\x00" * 16)
+            env = {"BUFFER_API_KEY": "key123",
+                   "BUFFER_TIKTOK_CHANNEL_ID": "ch1",
+                   "CLOUDINARY_CLOUD_NAME": "   ",
+                   "CLOUDINARY_UPLOAD_PRESET": ""}
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch.object(
+                        core, "_cloudinary_upload",
+                        return_value="https://res.cloudinary.com/x/v.mp4") as cu, \
+                     mock.patch.object(core, "_buffer_public_url_ok",
+                                       return_value=True), \
+                     mock.patch.object(
+                         core, "_buffer_graphql",
+                         return_value={"createPost": {"post": {
+                             "id": "post123", "dueAt": "tomorrow"}}}):
+                    self.assertEqual(
+                        core.buffer_tiktok_upload(
+                            video, {"title": "T", "description": "D"}),
+                        "post123")
+                cu.assert_called_once()
+                self.assertEqual(cu.call_args[0][1:], ("epuxrxa5", "buffer_shorts"))
 
 
 class TestRunRecordsBufferPostId(unittest.TestCase):

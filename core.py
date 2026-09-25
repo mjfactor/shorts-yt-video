@@ -285,23 +285,46 @@ BUFFER_API_URL = "https://api.buffer.com"
 TIKTOK_CAPTION_LIMIT = 2200
 
 
-def _buffer_graphql(query: str, api_key: str) -> dict:
+def _buffer_graphql(query: str, api_key: str, variables: dict | None = None,
+                    stage: str = "graphql") -> dict:
     """POST one GraphQL query to Buffer. Retries transport errors; raises on
-    system errors (errors[] array: UNAUTHORIZED/FORBIDDEN/NOT_FOUND/etc.)."""
+    system errors (errors[] array: UNAUTHORIZED/FORBIDDEN/NOT_FOUND/etc.).
+
+    `stage` tags logs (orgs/channels/createPost) so failures are
+    attributable. HTTP failures log status + first 2KB of body. A 500 here
+    means pre-GraphQL transport (never HTTP 200 + errors[]/MutationError),
+    so it is retried via retry(); other 4xx fail fast (429 honored)."""
     def do():
+        payload: dict = {"query": query}
+        if variables is not None:
+            payload["variables"] = variables
         r = requests.post(
             BUFFER_API_URL,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {api_key}"},
-            json={"query": query},
+            json=payload,
             timeout=60,
         )
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except Exception:
+            try:
+                status = getattr(r, "status_code", "?")
+            except Exception:
+                status = "?"
+            try:
+                body = (getattr(r, "text", "") or "")[:2048]
+            except Exception:
+                body = "<unreadable body>"
+            log(f"Buffer {stage}: HTTP {status} failure; body[:2KB]={body!r}")
+            raise
         return r.json()
-    data = retry("Buffer API", do, tries=3, backoff=10)
+    data = retry(f"Buffer {stage}", do, tries=3, backoff=10)
     if isinstance(data, dict) and data.get("errors"):
         first = data["errors"][0]
         code = (first.get("extensions") or {}).get("code", "")
+        log(f"Buffer {stage}: GraphQL errors[] code={code or '?'} "
+            f"message={first.get('message', '?')!r}")
         raise ValueError(f"Buffer API error ({code}): {first.get('message', '?')}")
     return data.get("data") or {}
 
@@ -312,19 +335,20 @@ def _buffer_tiktok_channel(api_key: str, explicit_id: str) -> str | None:
         return explicit_id
     data = _buffer_graphql(
         "query GetOrganizations { account { organizations { id name } } }",
-        api_key)
+        api_key, stage="orgs")
     orgs = ((data.get("account") or {}).get("organizations")) or []
     if not orgs:
         raise ValueError("Buffer account has no organizations.")
     for org in orgs:
         oid = org.get("id", "")
         data = _buffer_graphql(
-            f'query GetChannels {{ channels(input: {{ organizationId: "{oid}" }}) '
-            "{ id displayName service } } }",
-            api_key)
+            "query GetChannels($orgId: ID!) { channels(input: "
+            "{ organizationId: $orgId }) { id name displayName service } }",
+            api_key, variables={"orgId": oid}, stage="channels")
         for ch in data.get("channels") or []:
             if str(ch.get("service", "")).lower() == "tiktok":
-                log(f"Buffer: using TikTok channel '{ch.get('displayName', '?')}' ({ch['id']})")
+                label = ch.get("displayName") or ch.get("name") or "?"
+                log(f"Buffer channels: using TikTok channel '{label}' ({ch['id']})")
                 return ch["id"]
     raise ValueError("No TikTok channel found in Buffer (connect one at account.buffer.com/channels).")
 
@@ -341,9 +365,21 @@ def _cloudinary_upload(video: Path, cloud_name: str, preset: str) -> str:
                 data={"upload_preset": preset},
                 timeout=300,
             )
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except Exception:
+            try:
+                status = getattr(r, "status_code", "?")
+            except Exception:
+                status = "?"
+            try:
+                body = (getattr(r, "text", "") or "")[:2048]
+            except Exception:
+                body = "<unreadable body>"
+            log(f"Buffer cloudinary: HTTP {status} failure; body[:2KB]={body!r}")
+            raise
         return r.json()
-    resp = retry("Cloudinary upload", do, tries=3, backoff=10)
+    resp = retry("Buffer cloudinary", do, tries=3, backoff=10)
     url = resp.get("secure_url", "")
     if not url:
         raise ValueError(f"Cloudinary upload gave no secure_url: {resp}")
@@ -366,35 +402,70 @@ def _tiktok_caption(meta: dict) -> str:
     return "".join(out).rstrip() + "…"
 
 
+def _buffer_public_url_ok(url: str) -> bool:
+    """Logged-out reachability probe for the hosted asset URL (warn-only).
+
+    Buffer fetches the asset server-side, so a non-public URL fails the
+    post. HEAD first, then a short ranged GET fallback (some CDNs reject
+    HEAD). Any 2xx/3xx counts as reachable; all errors return False."""
+    for method in ("head", "get"):
+        try:
+            if method == "head":
+                r = requests.head(url, timeout=15, allow_redirects=True)
+            else:
+                r = requests.get(url, timeout=15, stream=True,
+                                 headers={"Range": "bytes=0-0"})
+            status = getattr(r, "status_code", 0) or 0
+            if 200 <= status < 400:
+                return True
+            log(f"Buffer cloudinary: reachability {method.upper()} "
+                f"got HTTP {status} for {url}")
+        except Exception as e:
+            log(f"Buffer cloudinary: reachability {method.upper()} "
+                f"error for {url}: {type(e).__name__}: {e}")
+    return False
+
+
 def buffer_tiktok_upload(video: Path, meta: dict):
     """Queue the Short to TikTok via Buffer. Never raises (warn + None)."""
     api_key = os.getenv("BUFFER_API_KEY", "")
     if not api_key:
         warn("Buffer key missing -> skipping TikTok (YouTube path unaffected).")
         return None
-    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "") or "epuxrxa5"
-    preset = os.getenv("CLOUDINARY_UPLOAD_PRESET", "") or "buffer_shorts"
-    if not (cloud_name and preset):
-        warn("Cloudinary creds missing -> skipping TikTok "
-             "(Buffer needs a public video URL and has no upload endpoint).")
-        return None
+    raw_cloud = (os.getenv("CLOUDINARY_CLOUD_NAME", "") or "").strip()
+    raw_preset = (os.getenv("CLOUDINARY_UPLOAD_PRESET", "") or "").strip()
+    cloud_name = raw_cloud or "epuxrxa5"
+    preset = raw_preset or "buffer_shorts"
+    if not raw_cloud or not raw_preset:
+        log("Buffer cloudinary: using shared default "
+            f"(cloud={cloud_name!r} preset={preset!r}; override with "
+            "CLOUDINARY_CLOUD_NAME/CLOUDINARY_UPLOAD_PRESET).")
     try:
         channel_id = _buffer_tiktok_channel(
             api_key, os.getenv("BUFFER_TIKTOK_CHANNEL_ID", ""))
         public_url = _cloudinary_upload(video, cloud_name, preset)
-        caption = _tiktok_caption(meta).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        if not _buffer_public_url_ok(public_url):
+            warn(f"TikTok via Buffer skipped (public_url not publicly "
+                 f"reachable: {public_url}).")
+            return None
+        caption = _tiktok_caption(meta)
         mutation = (
-            "mutation CreatePost { createPost( input: { "
-            f'text: "{caption}" channelId: "{channel_id}" '
+            "mutation CreatePost($text: String!, $channelId: ID!, $url: String!) { "
+            "createPost( input: { "
+            "text: $text channelId: $channelId "
             "schedulingType: automatic mode: addToQueue "
-            'assets: [{ video: { url: "' + public_url + '" '
+            "assets: [{ video: { url: $url "
             "metadata: { thumbnailOffset: 2000 } } }] } ) { "
             "... on PostActionSuccess { post { id dueAt } } "
             "... on LimitReachedError { message } "
             "... on InvalidInputError { message } "
             "... on MutationError { message } } }"
         )
-        data = _buffer_graphql(mutation, api_key)
+        data = _buffer_graphql(
+            mutation, api_key,
+            variables={"text": caption, "channelId": channel_id,
+                       "url": public_url},
+            stage="createPost")
         result = data.get("createPost") or {}
         post = result.get("post")
         if post and post.get("id"):

@@ -90,6 +90,10 @@ class StoryConfig(NicheConfig):
     whisper_model: str = "base"
     # Measured speech rate (words/sec); history-calibrated at runtime.
     history_wps: float = 2.9
+    # Length overshoot multiplier on the edge-aware word budget: the edge
+    # TTS path runs faster than history wps implies, so aim above the bare
+    # seconds*wps floor (default 1.08 targets mid-range, not the floor).
+    length_overshoot: float = 1.08
     # Planner floors.
     min_clips: int = 12
     min_segments: int = 25
@@ -207,6 +211,8 @@ class StoryConfig(NicheConfig):
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),
             whisper_model=env_str("WHISPER_MODEL", "base", "STORY_") or "base",
             history_wps=env_float("HISTORY_WPS", 2.9, "STORY_"),
+            length_overshoot=min(1.20, max(1.0, env_float(
+                "LENGTH_OVERSHOOT", 1.08, "STORY_"))),
             timeout=env_int("TIMEOUT", 40, "STORY_"),
             tts_timeout=env_int("TTS_TIMEOUT", 90, "STORY_"),
             tries=env_int("TRIES", 2, "STORY_"),

@@ -84,17 +84,47 @@ def measure_wps(history: list[dict], default: float = 2.9) -> float:
         return default
     rates.sort()
     mid = rates[len(rates) // 2]
-    return min(3.6, max(2.2, mid))
+    return min(4.2, max(2.2, mid))
+
+
+def parse_edge_rate_pct(rate: str | None) -> float:
+    """'+20%' -> 20.0 (edge relative-rate percent); unparseable -> 0.0."""
+    m = re.match(r"\s*([+-]?)(\d+(?:\.\d+)?)\s*%?\s*$", rate or "")
+    if not m:
+        return 0.0
+    val = float(m.group(2))
+    return -val if m.group(1) == "-" else val
+
+
+def effective_wps(cfg: StoryConfig, wps: float) -> float:
+    """Edge-aware speech rate: history wps scaled by STORY_EDGE_RATE,
+    clamped to 2.2-4.2 wps, then multiplied by STORY_LENGTH_OVERSHOOT
+    (clamped 1.0-1.20) so drafts aim mid-range, not the bare floor."""
+    try:
+        base = float(wps) if wps else float(cfg.history_wps)
+    except (TypeError, ValueError):
+        base = float(cfg.history_wps)
+    edge_pct = parse_edge_rate_pct(getattr(cfg, "edge_rate", "+20%"))
+    scaled = base * (1.0 + edge_pct / 100.0)
+    scaled = min(4.2, max(2.2, scaled))
+    try:
+        over = float(getattr(cfg, "length_overshoot", 1.08))
+    except (TypeError, ValueError):
+        over = 1.08
+    over = min(1.20, max(1.0, over))
+    return scaled * over
 
 
 def target_words(cfg: StoryConfig, wps: float) -> tuple[int, int]:
-    """(lo, hi) word budget from TARGET_MIN/MAX * measured wps.
+    """(lo, hi) word budget from TARGET_MIN/MAX * edge-aware effective wps.
 
-    At 100-120s and ~4.3 wps measured edge reality this is roughly
-    430-520 words.
+    At 100-120s, history 2.9 wps, edge +20% and 1.08 overshoot this is
+    roughly 390-490 words (mid ~440w), matching the 3.5-3.8 wps edge
+    reality with headroom instead of the old 290-348w short floor.
     """
-    return (max(60, round(cfg.target_min * wps)),
-            min(600, round(cfg.target_max * wps)))
+    eff = effective_wps(cfg, wps)
+    return (max(60, round(cfg.target_min * eff)),
+            min(600, round(cfg.target_max * eff)))
 
 
 def _str_list(v: object) -> list[str]:
@@ -203,6 +233,9 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
     if " ".join(joined.split()) != " ".join(story.split()):
         raise ValueError("beat texts joined must equal narration exactly")
     extra = {
+        "title": str(data.get("title", "") or "").strip(),
+        "description": str(data.get("description", "") or "").strip(),
+        "tags": _str_list(data.get("tags")),
         "items": key_words,
         "key_words": key_words,
         "bg_queries": bg_queries,
@@ -294,13 +327,23 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
     log(f"Story genre ({slots['topic_source']}): {genre}")
     wps = wps or cfg.history_wps
     lo, hi = target_words(cfg, wps)
+    eff = effective_wps(cfg, wps)
+    mid = (lo + hi) // 2
     secs = f"{cfg.target_min:g}-{cfg.target_max:g}"
+    lo_secs = f"{lo / eff:.0f}" if eff > 0 else "?"
+    hi_secs = f"{hi / eff:.0f}" if eff > 0 else "?"
     prompt = (
         f"Write a YouTube Shorts reddit-style story in the '{genre}' lane.\n\n"
         "This is ONE original, self-contained micro-story told in first or "
         "second person, the kind of tale that goes viral on story channels. "
         "It must be 100 percent original — never copy or retell a real Reddit "
         "post, and never use real people, brands, or defamatory places.\n\n"
+        f"LENGTH MATH — HARD REQUIREMENT (validator REJECTS short scripts):\n"
+        f"TOTAL {lo}-{hi} words, aim {mid} words (never the floor). "
+        f"At ~{eff:.1f} wps, {lo} words ~= {lo_secs}s and {hi} words ~= "
+        f"{hi_secs}s for the {secs}s target. Under {lo} words is "
+        f"under-length and REJECTED — count every word before answering "
+        f"and deliver the FULL {mid}-word count, never a short draft.\n\n"
         f"{history_block(history, cfg.history_prompt_n)}"
         "Return ONLY valid JSON with exactly these keys: title, card_text, "
         "card_highlight_word, hook, story_text, narration, genre, key_words, "
@@ -362,10 +405,78 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "{\"text\": <exact story chunk>, \"query\": <1-3 word filmable stock "
         "query>}. The beat texts joined with single spaces must equal "
         "narration EXACTLY. Each query should match its moment.\n\n"
+        f"Beat budget (aim 5 beats totalling {mid} words, {lo}-{hi} allowed):\n"
+        "Beat 1 (hook + setup) ~90 words (70-100). "
+        "Beat 2 (escalation) ~90 words (70-100). "
+        "Beat 3 (twist build) ~90 words (70-100): EXPAND the climax here "
+        "with 2-3 full sentences of rising tension. "
+        "Beat 4 (post-twist escalation) ~90 words (70-100): EXPAND "
+        "consequences with 2-3 full sentences, carrying the 80-90s re-hook. "
+        "Beat 5 (payoff or cliffhanger) ~75 words (60-80, NEVER under 60): "
+        "a full earned ending, never a one-sentence rush. "
+        "FORBIDDEN rushed closings: 'and I never looked back', 'and we never "
+        "spoke again', 'the end', any single-sentence final beat, or a bare "
+        "'follow for part 2' with no payoff. Expand beats 3-4 first when the "
+        "draft runs short; cut setup adjectives first when it runs long.\n\n"
         "Do not include markdown, notes, or any extra keys. Output only the "
         "JSON object."
     )
     return prompt, slots
+
+
+def _is_length_error(err: Exception) -> bool:
+    """True when the validator rejected the draft for word-count range."""
+    return "out of range" in str(err).lower()
+
+
+def _draft_word_count(raw: object) -> int | None:
+    """Word count of a raw draft payload, or None when unavailable."""
+    if not isinstance(raw, dict):
+        return None
+    draft = raw.get("narration") or raw.get("story_text") or ""
+    if not isinstance(draft, str) or not draft.strip():
+        return None
+    return len(draft.split())
+
+
+def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
+                       raw: object, err: Exception) -> tuple[str, dict]:
+    """Same-model length retry prompt with the measured word delta.
+
+    Aims mid-range, not the floor: short drafts EXPAND beats 2-4 with
+    2-3 sentences each; long drafts CONDENSE setup adjectives first.
+    The beats-joined==narration contract and all other gates stay in
+    the base prompt, which this header prepends to.
+    """
+    lo, hi = target_words(cfg, wps)
+    mid = (lo + hi) // 2
+    n = _draft_word_count(raw)
+    base_prompt, slots = build_prompt(history, cfg, wps)
+    if n is None:
+        return base_prompt, slots
+    if n < lo:
+        delta = mid - n
+        header = (
+            f"CORRECTION — your draft is {n} words but the validator needs "
+            f"{lo}-{hi} (aim {mid}, +{delta} words). EXPAND the SAME story "
+            f"(same hook, same twist, same ending): add 2-3 full sentences "
+            f"to EACH of beats 2, 3 and 4 (reactions, consequences, rising "
+            f"tension into the climax), keep every sentence 30 words or "
+            f"fewer, keep beat texts joined equal to narration EXACTLY, and "
+            f"return the FULL {lo}-{hi}-word JSON with the same keys. Never "
+            f"return another short draft.\n\n")
+    else:
+        delta = n - mid
+        header = (
+            f"CORRECTION — your draft is {n} words but the validator needs "
+            f"{lo}-{hi} (aim {mid}, cut ~{delta} words). CONDENSE the SAME "
+            f"story (same hook, same twist, same ending): trim setup "
+            f"adjectives and merge setup sentences first, keep beats 3-4 "
+            f"and the final beat (>=60 words) fully expanded, keep every "
+            f"sentence 30 words or fewer, keep beat texts joined equal to "
+            f"narration EXACTLY, and return the FULL {lo}-{hi}-word JSON "
+            f"with the same keys.\n\n")
+    return header + base_prompt, slots
 
 
 def _make_client(cfg: StoryConfig):
@@ -428,14 +539,24 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                     data = validate_extra(raw, cfg, wps)
                 except ValueError as e:
                     # Fixable shape reject (sentence length, hook/beats
-                    # mismatch, ...): one same-model retry with a fresh
-                    # prompt before discarding this model.
-                    log(f"Story model {model} draft rejected ({e}), "
-                        "retrying same model once...")
+                    # mismatch, ...): one same-model retry before
+                    # discarding this model. Out-of-range drafts get a
+                    # measured lengthen/tighten prompt aiming mid-range;
+                    # other rejects get a fresh prompt.
+                    if _is_length_error(e):
+                        log(f"Story model {model} draft length rejected "
+                            f"({e}), lengthen/tighten retry same model...")
+                    else:
+                        log(f"Story model {model} draft rejected ({e}), "
+                            "retrying same model once...")
                     time.sleep(2)
                     try:
-                        retry_prompt, _retry_slots = build_prompt(
-                            history, cfg, wps)
+                        if _is_length_error(e):
+                            retry_prompt, _retry_slots = _length_fix_prompt(
+                                history, cfg, wps, raw, e)
+                        else:
+                            retry_prompt, _retry_slots = build_prompt(
+                                history, cfg, wps)
                         data = validate_extra(
                             client.generate_json(
                                 model, retry_prompt, generation_config={
