@@ -33,7 +33,7 @@ _UNSAFE_RE = re.compile(
     r"\b(nude|naked|porn|molest|rape\b|lynch|kill (him|her|them)|"
     r"suicide|self-?harm|gore\b|torture)\b", re.IGNORECASE)
 
-MAX_SENTENCE_WORDS = 20
+MAX_SENTENCE_WORDS = 30
 
 
 def _genres(cfg: StoryConfig) -> tuple[str, ...]:
@@ -105,7 +105,7 @@ def _str_list(v: object) -> list[str]:
 
 
 def _check_sentences(story: str) -> str | None:
-    """Longest-sentence gate (<=20 words); returns reason or None."""
+    """Longest-sentence gate (<=30 words); returns reason or None."""
     for sent in re.split(r"[.!?…]+", story):
         if len(sent.split()) > MAX_SENTENCE_WORDS:
             return (f"sentence over {MAX_SENTENCE_WORDS} words: "
@@ -343,8 +343,10 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "rehooks: exactly 3 objects {\"at\": \"20-30s\" | \"50-60s\" | "
         "\"80-90s\", \"line\": <exact story line>}. Each line must appear "
         "verbatim in the story.\n\n"
-        "TTS-friendly text (strict): short sentences of at most 20 words, "
-        "plain words, no emojis, no markdown, no symbols (* # _ ` | ~ @ ^ < > etc). "
+        "TTS-friendly text (strict): Every sentence MUST be 30 words or "
+        "fewer — split longer thoughts into two short sentences. Short "
+        "punchy sentences only. Plain words, no emojis, no markdown, "
+        "no symbols (* # _ ` | ~ @ ^ < > etc). "
         "Write numbers and ages naturally ('three in the morning', 'twenty bucks'). "
         "No dialogue tags like 'he said' — just tell it.\n\n"
         "Safety (strict): no graphic sexual content, no violence against "
@@ -415,17 +417,41 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
             data = None
             for mi, model in enumerate(models):
                 try:
-                    data = validate_extra(
-                        client.generate_json(model, prompt, generation_config={
-                            "temperature": 0.8, "maxOutputTokens": 4096}),
-                        cfg, wps)
-                    if mi:
-                        models.remove(model)
-                        models.insert(0, model)
-                    break
+                    raw = client.generate_json(
+                        model, prompt, generation_config={
+                            "temperature": 0.8, "maxOutputTokens": 4096})
                 except Exception as e:
                     log(f"Story model {model} unusable ({e}), trying next...")
                     time.sleep(cfg.backoff if mi + 1 >= len(models) else 2)
+                    continue
+                try:
+                    data = validate_extra(raw, cfg, wps)
+                except ValueError as e:
+                    # Fixable shape reject (sentence length, hook/beats
+                    # mismatch, ...): one same-model retry with a fresh
+                    # prompt before discarding this model.
+                    log(f"Story model {model} draft rejected ({e}), "
+                        "retrying same model once...")
+                    time.sleep(2)
+                    try:
+                        retry_prompt, _retry_slots = build_prompt(
+                            history, cfg, wps)
+                        data = validate_extra(
+                            client.generate_json(
+                                model, retry_prompt, generation_config={
+                                    "temperature": 0.8,
+                                    "maxOutputTokens": 4096}),
+                            cfg, wps)
+                    except Exception as e2:
+                        log(f"Story model {model} unusable ({e2}), "
+                            "trying next...")
+                        time.sleep(cfg.backoff if mi + 1 >= len(models)
+                                   else 2)
+                        continue
+                if mi:
+                    models.remove(model)
+                    models.insert(0, model)
+                break
             if data is None:
                 log("All story models failed, using fallback.")
                 break

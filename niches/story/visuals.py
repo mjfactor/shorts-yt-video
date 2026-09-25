@@ -2,7 +2,7 @@
 
 Pipeline: gather BG clips (Pexels → BG_DIR fallback) → pure planner
 (total = narration + 0.4s) → per-seg transcode → concat → card overlay +
-ASS burn + mixed audio in one final pass (crf20/medium/AAC-192k).
+ASS burn + mixed audio in one final pass (crf20/veryfast/AAC-192k).
 """
 from __future__ import annotations
 
@@ -450,11 +450,19 @@ def build_visuals(content: Content, narration: NarrationResult,
     log("Stage 5/6 audio: bed loop ready (ducked under voice in render).")
 
     # Stage 6: single-pass final render (card + captions + voice mix).
+    # veryfast preset: medium-preset 1080x1920 encodes were silently
+    # killed on CI runners (suspected OOM); veryfast halves peak RAM.
+    final_preset = "veryfast"
     require_ass_filter()
     vf_args, cwd = ass_cwd_args(ass_path)
     subs = vf_args[1]  # "ass=<rel>:fontsdir=<dir>" for filter_complex use
     mix_fc = _mix_filter(total)
     out_mp4 = workdir / "short.mp4"
+    render_inputs = [bg_track.name, Path(narration.audio).name, bed.name]
+    if not no_card:
+        render_inputs.append(card_png.name)
+    log(f"Stage 6/6 render: {total:.1f}s total, preset {final_preset}, "
+        f"inputs={render_inputs}.")
     t_render = time.monotonic()
     if no_card:
         run_ffmpeg([
@@ -463,7 +471,7 @@ def build_visuals(content: Content, narration: NarrationResult,
             "-filter_complex",
             f"{mix_fc};[0:v]{subs},format=yuv420p[vout]",
             "-map", "[vout]", "-map", "[aout]",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+            "-c:v", "libx264", "-preset", final_preset, "-crf", "20",
             "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
             "-movflags", "+faststart", "-threads", "0",
             "-t", f"{total:.3f}", str(out_mp4)],
@@ -478,7 +486,7 @@ def build_visuals(content: Content, narration: NarrationResult,
             f"{mix_fc};[0:v]null[base];[3:v]null[card];{card_fc};"
             f"[v1]{subs},format=yuv420p[vout]",
             "-map", "[vout]", "-map", "[aout]",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+            "-c:v", "libx264", "-preset", final_preset, "-crf", "20",
             "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
             "-movflags", "+faststart", "-threads", "0",
             "-t", f"{total:.3f}", str(out_mp4)],
@@ -486,7 +494,8 @@ def build_visuals(content: Content, narration: NarrationResult,
     size_mb = out_mp4.stat().st_size / (1024 * 1024)
     elapsed = time.monotonic() - t_start
     log(f"Stage 6/6 done: {out_mp4.name} ({size_mb:.1f} MB, "
-        f"{ffprobe_duration(out_mp4):.1f}s video, {elapsed:.0f}s render).")
+        f"{ffprobe_duration(out_mp4):.1f}s video, {elapsed:.0f}s render, "
+        f"preset {final_preset}).")
     if size_mb >= 100:
         warn(f"Story video {size_mb:.1f} MB >= 100 MB budget.")
     return VisualsResult(mp4=out_mp4, srt=out_srt, credits=credits,

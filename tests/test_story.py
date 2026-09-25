@@ -137,12 +137,12 @@ class TestStoryValidation(unittest.TestCase):
                  "story_text": d["story_text"] + " suicide",
                  "beats": [{"text": d["narration"] + " suicide", "query": "office"}]}),
             "long sentence": lambda d: d.update(
-                {"narration": "word " * 25,
-                 "story_text": "word " * 25,
+                {"narration": "word " * 35,
+                 "story_text": "word " * 35,
                  "hook": "word word word",
-                 "beats": [{"text": "word " * 25, "query": "office"}],
-                 "rehooks": [{"at": "20-30s", "line": "word " * 25},
-                             {"at": "50-60s", "line": "word " * 25}]}),
+                 "beats": [{"text": "word " * 35, "query": "office"}],
+                 "rehooks": [{"at": "20-30s", "line": "word " * 35},
+                             {"at": "50-60s", "line": "word " * 35}]}),
             "hook mismatch": lambda d: d.update({"hook": "Totally different opening line here"}),
             "few bg queries": lambda d: d.update({"bg_queries": ["office"]}),
             "bad ending": lambda d: d.update({"ending_type": "twist"}),
@@ -160,6 +160,41 @@ class TestStoryValidation(unittest.TestCase):
     def test_non_dict_rejected(self):
         with self.assertRaises(ValueError):
             story_content.validate_extra([])  # type: ignore[arg-type]
+
+
+class TestStorySameModelRetry(unittest.TestCase):
+    def test_prompt_has_hard_sentence_rule(self):
+        prompt, _slots = story_content.build_prompt([], StoryConfig())
+        self.assertIn("Every sentence MUST be 30 words or fewer", prompt)
+
+    def test_validation_reject_retries_same_model_once(self):
+        cfg = StoryConfig(target_min=30.0, target_max=55.0,
+                          similarity_retries=0)
+        good = _make_story()
+        bad = copy.deepcopy(good)
+        long_sent = ("This is a deliberately overlong sentence with far more "
+                     "than thirty words in it so validation must reject it "
+                     "outright without mercy today under the new limit for "
+                     "sure right now indeed please.")
+        for key in ("narration", "story_text"):
+            bad[key] = bad[key] + " " + long_sent
+        bad["beats"] = (list(good["beats"][:-1])
+                        + [{"text": good["beats"][-1]["text"] + " " + long_sent,
+                            "query": good["beats"][-1]["query"]}])
+        with self.assertRaises(ValueError):
+            story_content.validate_extra(bad, cfg, 2.9)
+        client = mock.Mock()
+        client.generate_json.side_effect = [bad, good]
+        with mock.patch.object(story_content, "_make_client",
+                               return_value=client):
+            result = story_content.generate_content([], cfg)
+        self.assertEqual(client.generate_json.call_count, 2)
+        first_model = client.generate_json.call_args_list[0][0][0]
+        second_model = client.generate_json.call_args_list[1][0][0]
+        self.assertEqual(first_model, second_model)
+        self.assertEqual(first_model, list(cfg.story_models)[0])
+        # Retried draft accepted: narration matches the good payload.
+        self.assertEqual(result.narration_text, good["narration"])
 
 
 class TestStoryWordBudget(unittest.TestCase):
