@@ -1,18 +1,85 @@
 # youtube-story — $0 Automated YouTube Shorts
 
-Faceless Top-5 countdown Shorts pipeline. Gemini writes the ranking script,
-edge-tts narrates, Pexels (or AI-still fallback) provides matched visuals,
-FFmpeg renders vertical video, GitHub Actions uploads to YouTube 2x/day.
-No server, no credit card.
+Multi-niche faceless Shorts pipeline. Gemini writes the script, TTS narrates,
+Pexels (or offline fallbacks) supplies visuals, FFmpeg renders vertical video,
+GitHub Actions uploads to YouTube 2x/day. No server, no credit card.
 
-## How it works
+## Architecture
 
 ```
-cron (08:00 + 20:00 UTC daily)
- -> pipeline.py: Gemini script -> edge-tts mp3+srt -> Pexels clips
- -> FFmpeg 1080x1920 + burned subtitles -> YouTube Data API upload
- -> history.json committed back (dedup memory so stories never repeat)
+pipeline.py (thin entry: NICHE env -> niches.load_niche() -> core.run(niche))
+│
+├─ core/          orchestration only: run() chains the 3 stages,
+│                 then upload + history. Never imports a niche —
+│                 only the shared contracts in niches/base.py.
+├─ engine/        policy-free toolbox (no voices, speeds, or queries
+│                 baked in; the niche passes those as params):
+│                 gemini_client, tts_cache, align (estimated timings),
+│                 ass/srt captions, pexels, overlay_card, audio_mix,
+│                 ffmpeg_utils. Never imports core or any niche.
+└─ niches/<name>/ one subpackage per niche, 3 stages:
+                  content.py      generate_content(history, cfg) -> Content
+                  narration.py    narrate(content, cfg, workdir) -> NarrationResult
+                  visuals.py      build_visuals(content, narration, cfg, workdir)
+                                  -> VisualsResult
+                  config.py       per-niche knobs with <PREFIX>_ env overrides
 ```
+
+Imports flow one way: niche → engine, niche → niches.base. Core never
+imports a niche; engine never imports core or a niche.
+
+## Niche contract
+
+Every niche in `niches/*` implements `niches.base.Niche`:
+
+| Method | Input → Output |
+|---|---|
+| `generate_content(history, cfg)` | history + config → `Content` (title, narration_text, description, tags, extras with beats/queries) |
+| `narrate(content, cfg, workdir)` | script → `NarrationResult` (audio path, duration, word count, timed words) |
+| `build_visuals(content, narration, cfg, workdir)` | script + audio → `VisualsResult` (mp4, srt, credits, used clip ids) |
+| `build_metadata(content, ...)` | → upload dict (title/description/tags; default impl passes content through) |
+| `sample_content()` | → offline `Content` for demos/tests (zero API keys) |
+
+`niches/__init__.py` auto-discovers subpackages (`available_niches()`,
+private `_`-prefixed packages like `_template` skipped) and loads the one
+named by `NICHE` (`load_niche()`, default `story`; unknown names raise an
+`ImportError` listing what's available).
+
+| Niche | Format | Signature |
+|---|---|---|
+| `story` | 80–85s Reddit-style micro-story (hook → escalation → twist → payoff), BG-driven 1080x1920 with story card + word-pop captions | re-hooks at 20–30s / 50–60s, word budget from `TARGET_*` × measured wps |
+| `explainer` | ~60–75s "how the world around you actually works" single-concept explainer | beats carry `visual_hint`s (diagram / process_flow / stock_footage / text_card) |
+| `ranking` | ~2-min Top-5 countdown (hook, #5–#1, closer) | 7 beats, leaderboard overlay, mystery #1 blur, ≥2-shared-items dedup |
+
+## Run (per niche)
+
+```bash
+pip install -r requirements.txt
+NICHE=story     python pipeline.py   # Reddit story (default)
+NICHE=explainer python pipeline.py   # how-it-works explainer
+NICHE=ranking   python pipeline.py   # Top-5 countdown
+```
+
+(Windows PowerShell: `$env:NICHE="story"; python pipeline.py`.)
+Needs `ffmpeg` + `ffprobe` on PATH. Output:
+`out/<stamp>_short.{mp4,mp3,srt,json}` (stamp `%Y-%m-%d_%H%M%S`).
+
+## Offline demo (zero API keys, never uploads)
+
+```bash
+python demo.py                  # defaults to --niche story
+python demo.py --niche story
+python demo.py --niche explainer
+python demo.py --niche ranking
+python demo.py --help
+```
+
+Each demo uses that niche's `sample_content()` plus offline stand-ins
+(story: ~80–85s sine-tone WAV via FFmpeg lavfi; explainer/ranking: tone MP3
++ even SRT, the old fixture path) and local backgrounds (real files from
+`BG_DIR` when present, else generated `testsrc`/`rgbtestsrc`/`smptebars`
+color clips). Output: playable 1080x1920 `out/demo_<niche>.mp4`.
+Requires only ffmpeg + ffprobe.
 
 ## Setup (one time)
 
@@ -25,9 +92,65 @@ cron (08:00 + 20:00 UTC daily)
    - Create **OAuth Desktop Client**, set `YT_CLIENT_ID` / `YT_CLIENT_SECRET`
    - Locally: `set YT_CLIENT_ID=... & set YT_CLIENT_SECRET=... & python get_refresh_token.py`
    - Log in with your channel account, copy the printed token into `YT_REFRESH_TOKEN`
-4. Optional: set `VISIBILITY` repo Variable (default `private` — keep until
-   your OAuth app passes YouTube audit).
+4. Optional: set `NICHE` + tuning repo Variables (defaults: `NICHE=story`,
+   `VISIBILITY=private` — keep private until your OAuth app passes YouTube audit).
 5. Actions tab → `daily-short` → **Run workflow** to test one Short.
+
+## Env var reference (see `.env.example`; never hardcode/commit)
+
+Generic ( Secrets for keys, Variables for tuning; bare names are
+cross-niche fallbacks):
+
+- `GEMINI_API_KEY` (+ `GEMINI_API_KEY_2..10` failover; comma-separated keys in one var also work)
+- `PEXELS_API_KEY`, `YT_CLIENT_ID` / `YT_CLIENT_SECRET` / `YT_REFRESH_TOKEN`
+- `VISIBILITY` (default `private`), `TTS_RATE` / `TTS_PITCH` / `TTS_VOLUME`, `BGM_VOLUME`
+- `MIN_AUDIO_SEC=10` / `MAX_AUDIO_SEC=180` (duration guard, not a target)
+- `GEMINI_TIMEOUT` / `GEMINI_TTS_TIMEOUT` / `GEMINI_TRIES` / `GEMINI_BACKOFF`
+
+Per-niche (prefix wins over the bare fallback, per `niches/base.py env_*`):
+
+- `STORY_*` — `TTS_MODEL`, `TTS_VOICES`, `NARRATION_SPEED`, `SEG_MIN/MAX`,
+  `BG_SPEED_MIN/MAX`, `CAPTION_UPPER`, `CARD_SECONDS`, `CHANNEL_HANDLE`,
+  `AVATAR_PATH`, `BG_DIR`, `MAX_SECONDS`, `TARGET_MIN/MAX` (80/85),
+  `STORY_GENRES`, `WHISPER_MODEL`, `PEXELS_API_KEY`
+- `EXPLAINER_*` — `VOICE`, `TTS_RATE/PITCH/VOLUME/ENGINE`,
+  `GEMINI_TTS_VOICES`, `STILLS_PER_BEAT`, `MIN/MAX_AUDIO_SEC`, `PEXELS_MIN_WIDTH`
+- `RANKING_*` — `VOICE/VOICES`, `TTS_RATE/PITCH/VOLUME/STYLE`, `TONE`,
+  `TARGET_WPM`, `STILLS_PER_BEAT`, `MIN/MAX_AUDIO_SEC`, `PEXELS_MIN_WIDTH`,
+  `PEXELS_CACHE_DIR`, `BGM_VOLUME`
+
+New vars must also be wired through `.github/workflows/daily.yml` `env:` —
+secrets/vars do not flow into jobs automatically.
+
+## Branding / fonts / backgrounds
+
+- `assets/avatar.png` — channel avatar drawn on the story card. Missing file
+  falls back to a drawn-initials circle, so the render never breaks.
+- `assets/fonts/` — drop brand `.ttf`s here; the card/caption code prefers
+  bundled fonts, then DejaVu (CI) / Arial (local), then the Pillow default.
+- `assets/backgrounds/` — drop looping portrait clips here for story BGs;
+  when empty, Pexels (with key) or generated testsrc color clips (demo) fill in.
+- `assets/pexels_cache/` — downloaded Pexels clips, kept between runs to
+  save re-downloads. Both dirs are gitignored (only `.gitkeep` placeholders
+  are tracked); `out/`, `assets/`, `.env` stay uncommitted.
+
+Card branding (`STORY_CHANNEL_HANDLE`, theme colors) is config, not code —
+edit env, not `visuals.py`.
+
+## Synthetic-content disclosure
+
+Everything this pipeline emits is AI-generated: Gemini scripts, synthetic
+TTS narration, and (in demos) tone-audio/testsrc stand-ins. When publishing:
+
+- Treat uploads as AI-generated content under each platform's policy
+  (e.g. YouTube's altered-content disclosure where it applies).
+- Stories are 100% original micro-fiction — never real people, brands, or
+  retold Reddit posts (the story prompt + validators enforce this; the demo
+  fallback variants are originals too).
+- Edge-TTS preview voices come from Microsoft Edge's online TTS service via
+  the edge-tts library: a free, keyless, UNOFFICIAL endpoint with no SLA
+  (preview path only — never load-bearing). No commercial-rights claim is
+  made about these voices; check the service terms for your own use.
 
 ## Storage model (why retention is split)
 
@@ -49,72 +172,21 @@ cron (08:00 + 20:00 UTC daily)
 | Artifact storage | 500 MB | ~120 MB rolling |
 | YouTube uploads | 100/day | 2/day |
 | Pexels API | 200 req/hour + 20k/mo | ~28/day |
-| Gemini Flash | free tier | 2 calls/day |
+| Gemini Flash | free tier | a few calls/day |
 
-## Files
+## Known limitations
 
-- `pipeline.py` — thin entry (`NICHES` registry + `main()` → `core.run`)
-- `core.py` — shared machinery (script/audio/visuals/render/upload/history)
-- `niche_ranking.py` — Top-5 countdown niche (prompt, topics, board overlay)
-- `.github/workflows/daily.yml` — schedule + split artifacts + history commit-back
-- `history.json` — committed dedup memory (recent topics/titles/ranked items); the pipeline quotes it into the Gemini prompt so countdowns never repeat
-- `get_refresh_token.py` — one-time OAuth helper (run locally, never in CI)
-- `.env.example` — list of secrets/vars to configure
-
-## Standalone countdowns (~90s each)
-
-Every run is one complete Top-5 countdown with its own topic — no arcs,
-no episode markers, no "part 2". Each video is evergreen: a stranger can
-watch any upload with zero context. Gemini is prompted for 200–220 words
-(~90s of narration: hook teasing #1, countdown #5→#1 with 1–2 concrete
-facts each, comment-bait closer), 7 beats → 14 Pexels cuts, rounded
-approximate numbers only (never invented precise stats). Gemini also adds
-fitting emojis to the title (1) and description (1-2) — metadata only, since
-the on-screen banner sanitizer strips any emoji that slips through. Fallback runs
-(Gemini down) use a built-in ~200-word Top-5 largest animals countdown.
-
-- Runs are serialized (`concurrency: shorts-single`) so the `history.json`
-   commit-back can't race; every run records its topic + ranked items and
-   the next run is forced onto a fresh topic (Gemini proposes one, validated;
-       `TOPICS`, 123 evergreen categories, is the backstop). Same-topic and ≥2 shared items trigger a regeneration.
-
-## Visuals (item-matched stock)
-
-Gemini splits each countdown into 7 beats (hook, #5–#1, closer). Per beat,
-in video order: **Pexels clip** searched with the beat's OWN query — literal
-matches (`lion walking savanna` for the lion entry), no mood forcing — else
-a **title card** with the beat's text (stock-footage-or-text-card only, no AI
-imagery). A persistent leaderboard (slots 1–5,
-left side) fills in with each item's name the moment its rank is revealed —
-current rank highlighted red — burned at the final mux via timed FFmpeg
-`drawtext`, so entries populate exactly in sync with the narration. Screen time
-is weighted by beat word count.
-
-## Captions + music
-
-- **Captions:** the TTS SRT (word-level from edge-tts, or one cue per beat
-  from Gemini TTS, the default engine) is converted to a styled ASS
-  and burned in with the libass `subtitles` filter. They are tiny and bottom-anchored
-  (above the Shorts UI), clear of the left-side leaderboard. The pipeline
-  avoids comma-heavy `force_style` options because
-  some Windows builds silently render zero caption pixels.
-- **Music:** a dark drone bed is generated per run (brown noise → lowpass →
-  slow swell at ~−20dB under the voice). Generated = zero copyright-strike
-  risk and nothing to download. To use your own track instead, commit a
-  loopable `bgm.mp3` (or `bgm1.mp3`, `bgm2.mp3`, ... for a randomly rotated
-  pool) to the repo root (YouTube Audio Library is a safe
-  source) — the pipeline loops it under the narration automatically.
-
-## TikTok dual-post (optional, free via Buffer)
-
-YouTube stays exactly as-is — only TikTok goes through Buffer (Buffer's
-audited TikTok app posts publicly, so no TikTok audit of your own needed):
-
-1. `buffer.com` → connect **TikTok only** → `publish.buffer.com/settings/api` → API key → secret `BUFFER_API_KEY`
-2. Nothing else — the Cloudinary public host is already hardcoded (`epuxrxa5` / `buffer_shorts`, unsigned preset, not sensitive). Override via `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_UPLOAD_PRESET` only if you use your own Cloudinary account (Buffer has no upload endpoint; the mp4 needs a public URL)
-3. Optional secret `BUFFER_TIKTOK_CHANNEL_ID` — auto-picked when empty
-
-Missing creds = TikTok skipped with a warning, YouTube unaffected. The Buffer post id is recorded as `tiktokBufferPostId` in the same `history.json` entry.
+- **No local transcription models** (`engine/align.py`): word timing is
+  estimated proportionally (never fatal), and story narration still ships.
+- **Pexels rate limits** (429): `engine/pexels.py` backs off and retries;
+  sustained limiting degrades to fewer/older cached clips, then Pillow cards.
+- **Gemini free-tier quotas**: key rotation + backoff + OpenRouter `:free`
+  failover + offline fallback variants keep runs green, but quota exhaustion
+  means the fallback script airs — check `topicSource` in `history.json`.
+- **Shorts ceiling — verify before raising targets**: Shorts accept ~3 min
+  for vertical uploads, but confirm the *current* ceiling in YouTube docs
+  before raising `STORY_TARGET_MAX`/`MAX_SECONDS`. Never assume a ≤60s cap
+  anywhere either — the only enforced guard is `MIN/MAX_AUDIO_SEC`.
 
 ## Failure alerts (optional, free)
 
@@ -127,39 +199,28 @@ Set either or both as repo Secrets (both unset = no alerts, runs still work):
   `TELEGRAM_BOT_TOKEN`; get your numeric id from `@userinfobot` → secret
   `TELEGRAM_CHAT_ID`
 
-The message includes the error and a link to the failed run. Alert delivery
-never breaks the run — if the webhook itself fails, it's logged as non-fatal.
+Alert delivery never breaks the run.
 
-## Shorts algorithm and retention
+## TikTok dual-post (optional, free via Buffer)
 
-YouTube first tests a Short with a small audience. Distribution can expand
-when viewers choose to watch instead of swiping away, stay through the video,
-rewatch it, share it, comment, like it, or subscribe. Hashtags help classify
-the topic, but they cannot compensate for a weak opening or poor retention.
+YouTube stays exactly as-is — only TikTok goes through Buffer:
 
-The script prompt is designed around the proven ranked-list pattern:
+1. `buffer.com` → connect **TikTok only** → `publish.buffer.com/settings/api` → API key → secret `BUFFER_API_KEY`
+2. Nothing else — the Cloudinary public host has working defaults; override via `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_UPLOAD_PRESET` only for your own account (Buffer has no upload endpoint; the mp4 needs a public URL)
+3. Optional secret `BUFFER_TIKTOK_CHANNEL_ID` — auto-picked when empty
 
-```
-0-3s    hook teasing #1 without naming it ("...and number 1 is NOT what you think")
-#5→#2   one payoff per item (name + 1-2 concrete facts, rounded numbers)
-#1      biggest payoff, held to the end
-final   comment-bait closer ("Disagree? Comment your ranking")
-```
-
-Each ranked item is a mini open loop that resets attention, and the closer
-drives comments. Scripts use simple words, short sentences, one idea per
-sentence. When reviewing YouTube Analytics, prioritize **Viewed vs
-swiped away**, audience retention, average percentage viewed, completion,
-rewatches, shares, and comments. Test different hooks and topics while
-keeping the countdown format consistent.
+Missing creds = TikTok skipped with a warning, YouTube unaffected.
 
 ## Safety gates
 
 - **Duration guard:** narration audio outside `MIN_AUDIO_SEC`–`MAX_AUDIO_SEC`
-  (defaults 10–180s) aborts the run before rendering, so a broken TTS
-  output can never become an uploaded video.
-- **Intermediates cleanup:** `assets/` working files are deleted after every
-  run (`finally` block); the Pexels clip cache is kept to save re-downloads.
+  aborts the run before rendering, so broken TTS can never become a video.
+- **Dedup:** `history.json` (kept to 110) is quoted into prompts (advisory)
+  plus hard gates per niche (same topic/title, shared ranked items,
+  >35% story word-overlap). New entries record topic/source/genre/items
+  after every successful render, even when upload is skipped.
+- **Intermediates cleanup:** working files are deleted after every run
+  (`finally` block); the Pexels clip cache is kept.
 
 ## Troubleshooting
 
@@ -167,3 +228,4 @@ keeping the countdown format consistent.
 - Videos locked Private → normal for unverified OAuth apps; request YouTube audit or flip `VISIBILITY` later.
 - Cron runs late → normal on GitHub free (5–30 min delays).
 - Workflow disabled → GitHub auto-disables cron after 60 days of repo inactivity; re-enable under Actions.
+- Wrong niche in CI → check the `NICHE` repo Variable (default `story`); per-niche tuning needs the prefixed (`STORY_`/`EXPLAINER_`/`RANKING_`) Variable, since bare names are only fallbacks.

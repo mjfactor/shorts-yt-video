@@ -8,7 +8,7 @@ import os
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+SCOPES = ["https://www.googleapis.com/auth/youtube"]
 
 CLIENT_ID = os.getenv("YT_CLIENT_ID", "PASTE_CLIENT_ID_HERE")
 CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET", "PASTE_CLIENT_SECRET_HERE")
