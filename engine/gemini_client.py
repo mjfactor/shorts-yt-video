@@ -217,21 +217,50 @@ class GeminiClient:
 
     def generate_json(self, model: str, prompt: str, *,
                       generation_config: dict | None = None) -> dict:
-        """JSON-mode completion: forces application/json, strips fences, parses."""
+        """JSON-mode completion: forces application/json, strips fences, parses.
+
+        Invalid/truncated JSON is retried across all keys (up to `tries` each)
+        before giving up — the model may return cut-off JSON on an overloaded
+        shard but succeed on the next key's shard.
+        """
         cfg = dict(generation_config or {})
         cfg.setdefault("responseMimeType", "application/json")
-        text = self.generate_text(model, prompt, generation_config=cfg)
-        clean = text.strip()
-        m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", clean, re.S)
-        if m:
-            clean = m.group(1)
-        try:
-            parsed = json.loads(clean)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Model {model} returned invalid JSON: {e}") from e
-        if not isinstance(parsed, dict):
-            raise ValueError(f"Model {model} returned non-object JSON")
-        return parsed
+        n = len(self.keys)
+        last_err: Exception | None = None
+        for k in range(n):
+            idx = (self._key_idx + k) % n
+            for attempt in range(1, self.tries + 1):
+                try:
+                    text = self.generate_text(model, prompt, generation_config=cfg)
+                except Exception as e:
+                    last_err = e
+                    # generate_text already handles retries/rotation internally;
+                    # if it raised, this model+key combo is done — break inner
+                    # loop and let the outer key loop continue.
+                    break
+                clean = text.strip()
+                m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", clean, re.S)
+                if m:
+                    clean = m.group(1)
+                try:
+                    parsed = json.loads(clean)
+                except json.JSONDecodeError as e:
+                    last_err = ValueError(
+                        f"Model {model} returned invalid JSON (key {idx+1}/{n}, "
+                        f"attempt {attempt}): {e}")
+                    log(f"Gemini key {idx+1}/{n} invalid JSON ({e}), "
+                        f"retrying with next key...")
+                    # Force key rotation by advancing key index.
+                    self._key_idx = (idx + 1) % n
+                    break  # try next key
+                if not isinstance(parsed, dict):
+                    last_err = ValueError(
+                        f"Model {model} returned non-object JSON")
+                    break
+                self._key_idx = idx
+                return parsed
+        assert last_err is not None
+        raise last_err
 
     def synthesize_speech(self, text: str, *, voice: str, models: list[str],
                           style: str = "") -> tuple[bytes, int]:
