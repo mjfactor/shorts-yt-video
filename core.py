@@ -254,7 +254,7 @@ def _thumb_tuning() -> tuple[float, float, float, int]:
         except ValueError:
             warn(f"{name}={raw!r} invalid; using default {default}.")
             return default
-        return val if val > 0 else default
+        return val if val >= 0 else default
 
     def _i(name: str, default: int) -> int:
         raw = (os.getenv(name, "") or "").strip()
@@ -292,6 +292,10 @@ def _wait_for_video_processable(yt, video_id: str) -> bool:
             status = _http_status(e)
             if status == 429:
                 warn(f"YouTube thumbnail wait rate-limited (429), backing off.")
+            elif status == 403:
+                warn("YouTube thumbnail wait skipped (HTTP 403: OAuth token lacks read scope; "
+                     "re-run get_refresh_token.py with full youtube scope to enable); "
+                     "proceeding to set anyway.")
             else:
                 warn(f"YouTube thumbnail wait lookup failed "
                      f"({type(e).__name__}: {e}); proceeding to set anyway.")
@@ -350,16 +354,27 @@ def _set_thumbnail_once(yt, video_id: str, thumb_path: Path):
     return resp
 
 
-def _has_custom_thumbnail(yt, video_id: str) -> bool:
-    """Owner verify: contentDetails.hasCustomThumbnail==true. False on error."""
+def _has_custom_thumbnail(yt, video_id: str) -> bool | None:
+    """Owner verify: contentDetails.hasCustomThumbnail==true.
+
+    Returns:
+        True: verified custom thumbnail is active.
+        False: check succeeded, but hasCustomThumbnail is not true.
+        None: check failed (e.g. HTTP 403 lacks read scope or API error).
+    """
     try:
         resp = yt.videos().list(
             part="snippet,contentDetails",
             id=video_id).execute() or {}
     except Exception as e:
-        warn(f"YouTube thumbnail verify lookup failed "
-             f"({type(e).__name__}: {e}).")
-        return False
+        status = _http_status(e)
+        if status == 403:
+            warn("YouTube thumbnail verify skipped (HTTP 403: OAuth token lacks read scope; "
+                 "re-run get_refresh_token.py with full youtube scope to enable).")
+        else:
+            warn(f"YouTube thumbnail verify lookup failed "
+                 f"({type(e).__name__}: {e}).")
+        return None
     items = resp.get("items") or []
     if not items:
         return False
@@ -385,9 +400,16 @@ def _set_and_verify_thumbnail(yt, video_id: str, thumb_path: Path) -> bool:
             warn(f"YouTube thumbnail skipped ({type(e).__name__}: {e}).")
             return False
         time.sleep(verify_delay)
-        if _has_custom_thumbnail(yt, video_id):
+        verified = _has_custom_thumbnail(yt, video_id)
+        if verified is True:
             log(f"Thumbnail set from {thumb_path.name} "
                 f"(verified hasCustomThumbnail=true).")
+            return True
+        if verified is None:
+            # Lookup failed (e.g. HTTP 403 token lacks read scope or API error).
+            # The set call already succeeded above; do not retry or warn success-but-ignored.
+            log(f"Thumbnail set from {thumb_path.name} "
+                f"(set accepted; verification skipped).")
             return True
         if attempt < max_tries:
             log(f"Thumbnail verify attempt {attempt}/{max_tries}: "
@@ -405,9 +427,8 @@ def upload(video: Path, meta: dict, thumb: Path | str | None = None):
     """Resumable YouTube upload (categoryId 22, VISIBILITY). Skips w/o creds.
 
     When `thumb` points at an existing JPG, it is set as the video
-    thumbnail via thumbnails().set (same youtube.upload-scope client;
-    warn-only — unverified channel / oversize / HttpError never fails
-    the run).
+    thumbnail via thumbnails().set (warn-only — unverified channel /
+    oversize / HttpError never fails the run).
     """
     cid, sec, ref = (os.getenv("YT_CLIENT_ID", ""), os.getenv("YT_CLIENT_SECRET", ""),
                      os.getenv("YT_REFRESH_TOKEN", ""))
@@ -423,8 +444,7 @@ def upload(video: Path, meta: dict, thumb: Path | str | None = None):
         RefreshError = ()
     creds = Credentials(None, refresh_token=ref, client_id=cid,
                         client_secret=sec,
-                        token_uri="https://oauth2.googleapis.com/token",
-                        scopes=["https://www.googleapis.com/auth/youtube.upload"])
+                        token_uri="https://oauth2.googleapis.com/token")
     yt = build("youtube", "v3", credentials=creds)
     body = {
         "snippet": {"title": meta["title"][:100], "description": meta["description"],
