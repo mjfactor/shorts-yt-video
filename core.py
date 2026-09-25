@@ -272,6 +272,140 @@ def upload(video: Path, meta: dict):
     return resp["id"]
 
 
+# ---------- TikTok via Buffer (free, no TikTok audit needed) ----------
+# Buffer's own TikTok app is already audited, so posts via Buffer can be
+# public — unlike a self-registered TikTok Direct-Post app, which is
+# SELF_ONLY/private until it passes TikTok's audit.
+# Docs: https://developers.buffer.com (auth / create-video-post /
+# hosting-media / posts-and-scheduling / character-limits / error-handling).
+# Env is read at call time (not import time) so tests can mock env safely.
+BUFFER_API_URL = "https://api.buffer.com"
+# TikTok captions with a video attached: max 2200 UTF-16 code units
+# (developers.buffer.com/guides/character-limits.html).
+TIKTOK_CAPTION_LIMIT = 2200
+
+
+def _buffer_graphql(query: str, api_key: str) -> dict:
+    """POST one GraphQL query to Buffer. Retries transport errors; raises on
+    system errors (errors[] array: UNAUTHORIZED/FORBIDDEN/NOT_FOUND/etc.)."""
+    def do():
+        r = requests.post(
+            BUFFER_API_URL,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {api_key}"},
+            json={"query": query},
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
+    data = retry("Buffer API", do, tries=3, backoff=10)
+    if isinstance(data, dict) and data.get("errors"):
+        first = data["errors"][0]
+        code = (first.get("extensions") or {}).get("code", "")
+        raise ValueError(f"Buffer API error ({code}): {first.get('message', '?')}")
+    return data.get("data") or {}
+
+
+def _buffer_tiktok_channel(api_key: str, explicit_id: str) -> str | None:
+    """TikTok channel id: explicit env wins, else auto-pick service==tiktok."""
+    if explicit_id:
+        return explicit_id
+    data = _buffer_graphql(
+        "query GetOrganizations { account { organizations { id name } } }",
+        api_key)
+    orgs = ((data.get("account") or {}).get("organizations")) or []
+    if not orgs:
+        raise ValueError("Buffer account has no organizations.")
+    for org in orgs:
+        oid = org.get("id", "")
+        data = _buffer_graphql(
+            f'query GetChannels {{ channels(input: {{ organizationId: "{oid}" }}) '
+            "{ id displayName service } } }",
+            api_key)
+        for ch in data.get("channels") or []:
+            if str(ch.get("service", "")).lower() == "tiktok":
+                log(f"Buffer: using TikTok channel '{ch.get('displayName', '?')}' ({ch['id']})")
+                return ch["id"]
+    raise ValueError("No TikTok channel found in Buffer (connect one at account.buffer.com/channels).")
+
+
+def _cloudinary_upload(video: Path, cloud_name: str, preset: str) -> str:
+    """Host the mp4 at a public URL (Buffer has no upload endpoint — the
+    asset url must be public HTTPS and stay live until the post publishes).
+    Uses a Cloudinary unsigned preset (free tier); returns secure_url."""
+    def do():
+        with open(video, "rb") as f:
+            r = requests.post(
+                f"https://api.cloudinary.com/v1_1/{cloud_name}/video/upload",
+                files={"file": (video.name, f, "video/mp4")},
+                data={"upload_preset": preset},
+                timeout=300,
+            )
+        r.raise_for_status()
+        return r.json()
+    resp = retry("Cloudinary upload", do, tries=3, backoff=10)
+    url = resp.get("secure_url", "")
+    if not url:
+        raise ValueError(f"Cloudinary upload gave no secure_url: {resp}")
+    return url
+
+
+def _tiktok_caption(meta: dict) -> str:
+    """title + description cut to 2200 UTF-16 code units (emoji count 2)."""
+    text = f"{meta.get('title', '')}\n\n{meta.get('description', '')}".strip()
+    units = sum(2 if ord(c) > 0xFFFF else 1 for c in text)
+    if units <= TIKTOK_CAPTION_LIMIT:
+        return text
+    out, used = [], 0
+    for c in text:
+        w = 2 if ord(c) > 0xFFFF else 1
+        if used + w > TIKTOK_CAPTION_LIMIT - 1:
+            break
+        out.append(c)
+        used += w
+    return "".join(out).rstrip() + "…"
+
+
+def buffer_tiktok_upload(video: Path, meta: dict):
+    """Queue the Short to TikTok via Buffer. Never raises (warn + None)."""
+    api_key = os.getenv("BUFFER_API_KEY", "")
+    if not api_key:
+        warn("Buffer key missing -> skipping TikTok (YouTube path unaffected).")
+        return None
+    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "") or "epuxrxa5"
+    preset = os.getenv("CLOUDINARY_UPLOAD_PRESET", "") or "buffer_shorts"
+    if not (cloud_name and preset):
+        warn("Cloudinary creds missing -> skipping TikTok "
+             "(Buffer needs a public video URL and has no upload endpoint).")
+        return None
+    try:
+        channel_id = _buffer_tiktok_channel(
+            api_key, os.getenv("BUFFER_TIKTOK_CHANNEL_ID", ""))
+        public_url = _cloudinary_upload(video, cloud_name, preset)
+        caption = _tiktok_caption(meta).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        mutation = (
+            "mutation CreatePost { createPost( input: { "
+            f'text: "{caption}" channelId: "{channel_id}" '
+            "schedulingType: automatic mode: addToQueue "
+            'assets: [{ video: { url: "' + public_url + '" '
+            "metadata: { thumbnailOffset: 2000 } } }] } ) { "
+            "... on PostActionSuccess { post { id dueAt } } "
+            "... on LimitReachedError { message } "
+            "... on InvalidInputError { message } "
+            "... on MutationError { message } } }"
+        )
+        data = _buffer_graphql(mutation, api_key)
+        result = data.get("createPost") or {}
+        post = result.get("post")
+        if post and post.get("id"):
+            log(f"TikTok queued via Buffer -> post={post['id']} dueAt={post.get('dueAt', '?')}")
+            return post["id"]
+        raise ValueError(f"Buffer rejected post: {result.get('message', '?')}")
+    except Exception as e:
+        warn(f"TikTok via Buffer skipped ({type(e).__name__}: {e}).")
+        return None
+
+
 def notify_failure(error: Exception) -> None:
     """Best-effort failure ping via Discord and/or Telegram. Never raises."""
     if not (DISCORD_WEBHOOK_URL or (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)):
@@ -353,11 +487,15 @@ def run(niche) -> dict:
 
         _stage("UPLOAD")
         video_id = upload(out_mp4, meta)
+        # TikTok dual-post via Buffer: independent of YouTube, never fails
+        # the run (warn + None on missing creds or any error).
+        tiktok_post_id = buffer_tiktok_upload(out_mp4, meta)
 
         entry = {"date": stamp, "title": content.title, "niche": name,
                  "tags": list(content.tags)[:10],
                  "narration": content.narration_text,
-                 "videoId": video_id}
+                 "videoId": video_id,
+                 "tiktokBufferPostId": tiktok_post_id}
         slots = (content.extras or {}).get("slots") or {}
         for key in ("topic", "topic_source", "topicSource", "category"):
             if slots.get(key):
@@ -365,6 +503,7 @@ def run(niche) -> dict:
         save_history(entry)
         log("Done.")
         return {"mp4": out_mp4, "srt": out_srt, "metadata": out_json,
-                "video_id": video_id}
+                "video_id": video_id,
+                "tiktok_buffer_post_id": tiktok_post_id}
     finally:
         cleanup_intermediates(workdir)
