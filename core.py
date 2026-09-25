@@ -231,6 +231,176 @@ def cleanup_intermediates(workdir: Path | None = None) -> None:
     log("Cleaned intermediates (Pexels cache kept).")
 
 
+# Thumbnail robustness (success-but-Studio-shows-auto): YouTube still
+# processes the video right after videos().insert returns the ID, so an
+# immediate thumbnails().set can 200-accept-then-discard (auto-frames win)
+# or 200-success-but-ignore on non-YPP Shorts. Sequence is warn-only and
+# never fails the run: wait for processing -> set (log items[0]) ->
+# verify hasCustomThumbnail with bounded retries.
+THUMB_PROCESS_TIMEOUT_SEC = 180
+THUMB_PROCESS_POLL_SEC = 10
+THUMB_VERIFY_DELAY_SEC = 10
+THUMB_SET_RETRIES = 3
+
+
+def _thumb_tuning() -> tuple[float, float, float, int]:
+    """Thumbnail wait/verify tuning (env overrides win, call-time read)."""
+    def _f(name: str, default: float) -> float:
+        raw = (os.getenv(name, "") or "").strip()
+        if not raw:
+            return default
+        try:
+            val = float(raw)
+        except ValueError:
+            warn(f"{name}={raw!r} invalid; using default {default}.")
+            return default
+        return val if val > 0 else default
+
+    def _i(name: str, default: int) -> int:
+        raw = (os.getenv(name, "") or "").strip()
+        if not raw:
+            return default
+        try:
+            val = int(float(raw))
+        except ValueError:
+            warn(f"{name}={raw!r} invalid; using default {default}.")
+            return default
+        return val if val > 0 else default
+
+    return (_f("YT_THUMB_WAIT_TIMEOUT_SEC", THUMB_PROCESS_TIMEOUT_SEC),
+            _f("YT_THUMB_WAIT_POLL_SEC", THUMB_PROCESS_POLL_SEC),
+            _f("YT_THUMB_VERIFY_DELAY_SEC", THUMB_VERIFY_DELAY_SEC),
+            _i("YT_THUMB_SET_RETRIES", THUMB_SET_RETRIES))
+
+
+def _wait_for_video_processable(yt, video_id: str) -> bool:
+    """Poll until processingStatus==succeeded + thumbnails usable.
+
+    Bounded timeout; failed/terminated stops early. Warn-only: always
+    returns True/False, never raises (caller still attempts set).
+    """
+    timeout, poll, _, _ = _thumb_tuning()
+    deadline = time.time() + timeout
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            resp = yt.videos().list(
+                part="processingDetails,status",
+                id=video_id).execute() or {}
+        except Exception as e:
+            status = _http_status(e)
+            if status == 429:
+                warn(f"YouTube thumbnail wait rate-limited (429), backing off.")
+            else:
+                warn(f"YouTube thumbnail wait lookup failed "
+                     f"({type(e).__name__}: {e}); proceeding to set anyway.")
+            return False
+        items = resp.get("items") or []
+        if not items:
+            warn("YouTube thumbnail wait: video not yet visible "
+                 "(empty videos.list); proceeding to set anyway.")
+            return False
+        details = items[0].get("processingDetails") or {}
+        proc_status = str(details.get("processingStatus", "") or "")
+        thumbs_avail = str(details.get("thumbnailsAvailability", "") or "")
+        if proc_status.lower() == "succeeded" and (
+                not thumbs_avail or thumbs_avail.lower() == "available"):
+            # No thumbnailsAvailability field on some responses: succeeded
+            # alone means processable; proceed to set.
+            return True
+        if proc_status.lower() in ("failed", "terminated"):
+            warn(f"YouTube thumbnail wait stopped early "
+                 f"(processingStatus={proc_status!r}); attempting set anyway.")
+            return False
+        now = time.time()
+        if now >= deadline:
+            warn(f"YouTube thumbnail wait timed out after {timeout:.0f}s "
+                 f"(last processingStatus={proc_status!r} "
+                 f"thumbnailsAvailability={thumbs_avail!r}); "
+                 f"attempting set anyway (may be overwritten by processing).")
+            return False
+        wait = min(poll * (1.3 ** (attempt - 1)), 30.0, max(deadline - now, 0.1))
+        log(f"Thumbnail wait: processingStatus={proc_status!r} "
+            f"thumbnailsAvailability={thumbs_avail!r} "
+            f"(attempt {attempt}); rechecking in {wait:.0f}s...")
+        time.sleep(wait)
+
+
+def _set_thumbnail_once(yt, video_id: str, thumb_path: Path):
+    """One thumbnails().set call (429/5xx retried). Returns API response.
+
+    Raises on failure (caller maps 403/429 to clear warns). Logs
+    response items[0] so no-exception is never mistaken for success.
+    """
+    from googleapiclient.http import MediaFileUpload
+
+    def do():
+        return yt.thumbnails().set(
+            videoId=video_id,
+            media_body=MediaFileUpload(str(thumb_path),
+                                       mimetype="image/jpeg")).execute()
+    resp = retry("YouTube thumbnail set", do, tries=3, backoff=10)
+    try:
+        items = (resp or {}).get("items") or []
+        first = items[0] if items else resp
+        log(f"Thumbnail set response: {first!r}")
+    except Exception:
+        log(f"Thumbnail set response received (unparsed).")
+    return resp
+
+
+def _has_custom_thumbnail(yt, video_id: str) -> bool:
+    """Owner verify: contentDetails.hasCustomThumbnail==true. False on error."""
+    try:
+        resp = yt.videos().list(
+            part="snippet,contentDetails",
+            id=video_id).execute() or {}
+    except Exception as e:
+        warn(f"YouTube thumbnail verify lookup failed "
+             f"({type(e).__name__}: {e}).")
+        return False
+    items = resp.get("items") or []
+    if not items:
+        return False
+    details = items[0].get("contentDetails") or {}
+    return details.get("hasCustomThumbnail") is True
+
+
+def _set_and_verify_thumbnail(yt, video_id: str, thumb_path: Path) -> bool:
+    """Wait -> set -> verify loop (bounded retries). Warn-only, never raises."""
+    _, _, verify_delay, max_tries = _thumb_tuning()
+    _wait_for_video_processable(yt, video_id)
+    for attempt in range(1, max_tries + 1):
+        try:
+            _set_thumbnail_once(yt, video_id, thumb_path)
+        except Exception as e:
+            status = _http_status(e)
+            if status == 403:
+                warn(f"YouTube thumbnail not applied (HTTP 403: {e}). "
+                     f"Channel likely unverified or OAuth lacks permission; "
+                     f"verify in YouTube Studio (desktop) that custom "
+                     f"thumbnails are enabled.")
+                return False
+            warn(f"YouTube thumbnail skipped ({type(e).__name__}: {e}).")
+            return False
+        time.sleep(verify_delay)
+        if _has_custom_thumbnail(yt, video_id):
+            log(f"Thumbnail set from {thumb_path.name} "
+                f"(verified hasCustomThumbnail=true).")
+            return True
+        if attempt < max_tries:
+            log(f"Thumbnail verify attempt {attempt}/{max_tries}: "
+                 f"hasCustomThumbnail not yet true; retrying set+verify...")
+    warn(f"YouTube thumbnail success-but-ignored "
+         f"(set accepted but Studio still shows auto-frames; "
+         f"hasCustomThumbnail=false after {max_tries}x verify). "
+         f"Shorts/custom-thumbnail gating is the usual cause; set it "
+         f"manually in YouTube Studio on desktop (mobile cannot set "
+         f"custom Shorts thumbnails).")
+    return False
+
+
 def upload(video: Path, meta: dict, thumb: Path | str | None = None):
     """Resumable YouTube upload (categoryId 22, VISIBILITY). Skips w/o creds.
 
@@ -281,15 +451,15 @@ def upload(video: Path, meta: dict, thumb: Path | str | None = None):
             thumb_path = Path(thumb)
             if not thumb_path.exists():
                 warn(f"YouTube thumbnail skipped (missing file: {thumb_path}).")
+            elif thumb_path.suffix.lower() not in (".jpg", ".jpeg"):
+                warn(f"YouTube thumbnail skipped (not a JPEG: {thumb_path}).")
             elif thumb_path.stat().st_size >= 2 * 1024 * 1024:
                 warn(f"YouTube thumbnail skipped "
                      f"({thumb_path.stat().st_size / 1024:.0f} KB >= 2MB limit).")
             else:
-                yt.thumbnails().set(
-                    videoId=resp["id"],
-                    media_body=MediaFileUpload(str(thumb_path),
-                                               mimetype="image/jpeg")).execute()
-                log(f"Thumbnail set from {thumb_path.name}.")
+                # Robust sequence: wait for processing -> set -> verify.
+                # Warn-only; never fails the run.
+                _set_and_verify_thumbnail(yt, resp["id"], thumb_path)
         except Exception as e:
             warn(f"YouTube thumbnail skipped ({type(e).__name__}: {e}).")
     return resp["id"]
