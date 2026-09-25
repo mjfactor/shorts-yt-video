@@ -74,6 +74,10 @@ class StoryConfig(NicheConfig):
     # Card branding.
     channel_handle: str = "@UnhingedStories"
     avatar_path: str = "assets/avatar.png"
+    # Card engagement row (KoalaReads-style decorative placeholders).
+    card_likes: str = "420+"
+    card_shares: str = "420+"
+    card_show_reactions: bool = True
     # Clip sources.
     bg_dir: str = "assets/backgrounds"
     pexels_key: str = ""
@@ -214,6 +218,9 @@ class StoryConfig(NicheConfig):
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),
             channel_handle=env_str("CHANNEL_HANDLE", "@UnhingedStories", "STORY_") or "@UnhingedStories",
             avatar_path=env_str("AVATAR_PATH", "assets/avatar.png", "STORY_") or "assets/avatar.png",
+            card_likes=env_str("CARD_LIKES", "420+", "STORY_") or "420+",
+            card_shares=env_str("CARD_SHARES", "420+", "STORY_") or "420+",
+            card_show_reactions=env_bool("CARD_SHOW_REACTIONS", True, "STORY_"),
             bg_dir=env_str("BG_DIR", "assets/backgrounds", "STORY_") or "assets/backgrounds",
             pexels_key=env_str("PEXELS_API_KEY", "", "STORY_"),
             clips_per_query=env_int("CLIPS_PER_QUERY", 2, "STORY_"),

@@ -1,10 +1,14 @@
-"""Themeable Pillow overlay card: avatar, handle, highlight text, icon row.
+"""Themeable Pillow overlay card: avatar, handle, highlight text, engagement row.
 
-No fake numbers anywhere — the icon row is drawn shapes only.
-All branding (handle, avatar, colors) arrives via params/theme.
+Renders viral social-proof Reddit/KoalaReads-style cards:
+- Header: circular avatar, bold handle, verified check badge, and mini awards strip
+- Body: full-width left-aligned text with dynamic wrap and red highlight word
+- Bottom: sleek engagement row with outline heart (likes) + share tray (shares)
+All branding (handle, avatar, colors, counts) arrives via params/theme/config.
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -22,13 +26,14 @@ DEFAULT_REG_FONTS = (
 )
 
 DEFAULT_THEME = {
-    "card_fill": (242, 242, 245, 255),
-    "radius": 36,
-    "handle_color": (20, 20, 22, 255),
+    "card_fill": (255, 255, 255, 255),
+    "card_border": (225, 228, 232, 255),
+    "radius": 40,
+    "handle_color": (20, 23, 26, 255),
     "text_color": (18, 18, 20, 255),
-    "highlight_color": (210, 30, 40, 255),
+    "highlight_color": (224, 0, 0, 255),
     "badge_color": (29, 155, 240, 255),
-    "icon_color": (150, 150, 155, 255),
+    "icon_color": (120, 125, 132, 255),
     "avatar_bg": (30, 30, 34, 255),
     "avatar_fallback_text": "MY",
     "bold_fonts": DEFAULT_BOLD_FONTS,
@@ -66,11 +71,6 @@ def find_bundled_font(*needles: str, font_dir: str | Path = "assets/fonts",
             name = open_font(str(path), 40).getname()
         except Exception:
             continue
-        # Tolerant unpack: getname() is usually (family, subfamily) but
-        # some files yield 1- or 3-tuples. Matching always runs against
-        # the COMBINED "family subfamily" string (never family[0] alone),
-        # so multi-token queries like ("Montserrat", "ExtraBold") resolve
-        # to the right cut instead of any same-family font.
         try:
             fam = str(name[0])
             style = " ".join(str(p) for p in name[1:])
@@ -145,7 +145,7 @@ def circular_avatar(avatar_path: str | Path | None, size: int,
 
 def draw_verified_badge(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int,
                         color: tuple = (29, 155, 240, 255)) -> None:
-    """Filled circle + white check (drawn, no emoji)."""
+    """Filled circle + crisp white checkmark (drawn, no emoji)."""
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
     w = max(2, r // 3)
     draw.line([(cx - r * 0.45, cy), (cx - r * 0.1, cy + r * 0.4)], fill="white", width=w)
@@ -159,7 +159,7 @@ def draw_icon_row(draw: ImageDraw.ImageDraw, x0: int, y: int,
                   upvote_color: tuple = (255, 69, 0, 255),
                   comment_color: tuple = (16, 185, 129, 255),
                   bookmark_color: tuple = (245, 158, 11, 255)) -> None:
-    """Subtle satire icon row: orange upvote, red heart, comment, blue share, bookmark."""
+    """Legacy satire icon row."""
     hx = x0
     _draw_spec_upvote(draw, hx, y, color=upvote_color, size=22)
     sx = hx + 36
@@ -176,7 +176,7 @@ def render_card(text: str, highlight_word: str, *, handle: str,
                 avatar_path: str | Path | None, out_png: str | Path,
                 theme: dict | None = None,
                 width: int = 1080, height: int = 400) -> Path:
-    """Render a transparent story card PNG (caller positions it via FFmpeg)."""
+    """Legacy card renderer (caller positions via FFmpeg)."""
     th = dict(DEFAULT_THEME)
     th.update(theme or {})
     out = Path(out_png)
@@ -201,7 +201,7 @@ def render_card(text: str, highlight_word: str, *, handle: str,
                         color=th["badge_color"])
 
     words = (text or "").strip().split()
-    hl = (highlight_word or "").strip().lower()
+    hl = (highlight_word or "").strip().strip(".,!?\"'").lower()
     max_w = width - hx - pad - 8
     body_size = 40
     lines: list[list[tuple[str, tuple]]] = []
@@ -248,31 +248,38 @@ def render_card(text: str, highlight_word: str, *, handle: str,
 
 
 # ---------------------------------------------------------------------------
-# Spec-exact opening card (story niche): ~900px RGBA, radius 48, #E6E6E6.
+# Spec-exact opening card (story niche): ~900px RGBA, pure white #FFFFFF.
 # ---------------------------------------------------------------------------
 
 SPEC_CARD_THEME = {
-    "card_fill": (230, 230, 230, 255),  # #E6E6E6
+    "card_fill": (255, 255, 255, 255),     # Clean, modern pure white
+    "card_border": (225, 228, 232, 255),   # Subtle border edge
     "font_family": "Montserrat ExtraBold",
-    "radius": 48,
-    "avatar_size": 120,
+    "radius": 40,
+    "avatar_size": 96,
     "avatar_bg": (30, 30, 34, 255),
-    "handle_color": (20, 20, 22, 255),
-    "handle_size": 44,
+    "handle_color": (20, 23, 26, 255),
+    "handle_size": 38,
     "badge_color": (29, 155, 240, 255),
-    "badge_radius": 14,
+    "badge_radius": 13,
     "text_color": (18, 18, 20, 255),
-    "highlight_color": (224, 0, 0, 255),  # #E00000
-    "body_size": 64,
+    "highlight_color": (224, 0, 0, 255),   # Vibrant red #E00000
+    "body_size": 54,
     "body_min_size": 32,
     "body_max_lines": 3,
-    "icon_color": (150, 150, 155, 255),
-    "heart_color": (235, 32, 60, 255),    # Vibrant Red
-    "share_color": (29, 155, 240, 255),   # Twitter/Verified Blue
-    "upvote_color": (255, 69, 0, 255),    # Reddit Orange-Red
-    "comment_color": (16, 185, 129, 255), # Emerald Green
-    "bookmark_color": (245, 158, 11, 255),# Amber Gold
-    "icon_spacing": 82,
+    "icon_color": (120, 125, 132, 255),
+    "heart_color": (235, 32, 60, 255),     # Vibrant Red
+    "heart_filled": False,
+    "share_color": (120, 125, 132, 255),
+    "upvote_color": (255, 69, 0, 255),
+    "comment_color": (16, 185, 129, 255),
+    "bookmark_color": (245, 158, 11, 255),
+    "likes_text": "420+",
+    "shares_text": "420+",
+    "engagement_color": (120, 125, 132, 255),
+    "engagement_size": 32,
+    "show_awards": True,
+    "show_reactions": True,
     "pad": 36,
     "heart_icon_path": "assets/icons/heart.png",
     "share_icon_path": "assets/icons/share.png",
@@ -305,19 +312,11 @@ def _spec_wrap_text(text: str, highlight_word: str, max_w: int,
                     theme: dict) -> tuple[list, Any, int, int]:
     """Wrap body to width with font shrink on overflow. Returns
     (lines, font, size, line_h); lines hold (word, color) pairs.
-
-    Capacity (measured Montserrat ExtraBold, 684px body budget):
-    comfortable max at full 64px is ~13 words (~85 chars, 3 lines);
-    shrink runs 64px down to the 32px floor, which holds worst-case
-    8x12-char words in exactly 3 lines (measured: 4 lines at 36px,
-    3 lines at 32px — the floor exists for this case). 32px is the
-    legibility floor; beyond 3 lines there the card GROWS taller
-    (never clipped). validate_extra enforces the <=8-word card cap.
     """
     words = (text or "").strip().split()
-    hl = (highlight_word or "").strip().lower()
-    size = int(theme.get("body_size", 64))
-    min_size = int(theme.get("body_min_size", 36))
+    hl = (highlight_word or "").strip().strip(".,!?\"'").lower()
+    size = int(theme.get("body_size", 54))
+    min_size = int(theme.get("body_min_size", 32))
     max_lines = int(theme.get("body_max_lines", 3))
     lines: list = []
     font = load_font(size, bold=True, theme=theme)
@@ -326,8 +325,9 @@ def _spec_wrap_text(text: str, highlight_word: str, max_w: int,
         space_w = _spec_glyph_width(font, " ")
         lines, cur, cur_w = [], [], 0
         for w in words:
+            clean_w = w.strip(".,!?\"'").lower()
             color = (theme["highlight_color"]
-                     if hl and w.strip(".,!?\"'").lower() == hl
+                     if hl and clean_w == hl
                      else theme["text_color"])
             ww = _spec_glyph_width(font, w)
             if cur and cur_w + space_w + ww > max_w:
@@ -339,8 +339,8 @@ def _spec_wrap_text(text: str, highlight_word: str, max_w: int,
             lines.append(cur)
         if len(lines) <= max_lines or size <= min_size:
             break
-        size -= 4
-    return lines, font, size, size + 12
+        size = max(min_size, size - 4)
+    return lines, font, size, size + 14
 
 
 def _bezier_point(p0: tuple[float, float], p1: tuple[float, float],
@@ -381,7 +381,7 @@ def _heart_points(cx: float, cy: float, width: float, height: float,
 
 def _draw_spec_heart(draw: ImageDraw.ImageDraw, x: int, y: int,
                      color: tuple, r: int = 16) -> None:
-    """Smooth vector heart (~4r wide, ~4r high), grey, no numbers."""
+    """Smooth vector heart (~4r wide, ~4r high), grey/color."""
     w = 4 * r
     h = int(w * 0.95)
     cx = x + w / 2.0
@@ -390,9 +390,146 @@ def _draw_spec_heart(draw: ImageDraw.ImageDraw, x: int, y: int,
     draw.polygon(pts, fill=color)
 
 
+def _draw_heart_outline(draw: ImageDraw.ImageDraw, cx: float, cy: float,
+                        size: int = 30, color: tuple = (120, 125, 132, 255),
+                        stroke: int = 3) -> None:
+    """Draw a smooth, modern hollow heart centered at (cx, cy)."""
+    pts = []
+    scale = size / 34.0
+    for i in range(100):
+        t = i * 2.0 * math.pi / 100.0
+        x = 16.0 * (math.sin(t) ** 3)
+        y = -(13.0 * math.cos(t) - 5.0 * math.cos(2 * t) - 2.0 * math.cos(3 * t) - math.cos(4 * t))
+        pts.append((cx + x * scale, cy + (y + 2) * scale))
+    pts.append(pts[0])
+    draw.line(pts, fill=color, width=stroke, joint="curve")
+
+
+def _draw_heart_filled(draw: ImageDraw.ImageDraw, cx: float, cy: float,
+                       size: int = 30, color: tuple = (235, 32, 60, 255)) -> None:
+    """Draw a smooth, modern filled heart centered at (cx, cy)."""
+    pts = []
+    scale = size / 34.0
+    for i in range(100):
+        t = i * 2.0 * math.pi / 100.0
+        x = 16.0 * (math.sin(t) ** 3)
+        y = -(13.0 * math.cos(t) - 5.0 * math.cos(2 * t) - 2.0 * math.cos(3 * t) - math.cos(4 * t))
+        pts.append((cx + x * scale, cy + (y + 2) * scale))
+    draw.polygon(pts, fill=color)
+
+
+def _draw_spec_heart_outline(draw: ImageDraw.ImageDraw, x: int, y: int,
+                             color: tuple, r: int = 13,
+                             width: int = 4) -> int:
+    """Outline heart helper (compatible with legacy tests)."""
+    cx = x + 2 * r
+    cy = y + 2 * r
+    _draw_heart_outline(draw, cx, cy, size=4 * r, color=color, stroke=width)
+    return 4 * r
+
+
+def _draw_share_tray(draw: ImageDraw.ImageDraw, x: int, y: int,
+                     size: int = 30, color: tuple = (120, 125, 132, 255),
+                     stroke: int = 3) -> None:
+    """Draw a modern share/upload tray icon (open box with upward arrow)."""
+    w = size * 0.88
+    h = size
+    tray_top = y + h * 0.45
+    tray_bottom = y + h - stroke
+    x_left = x + 1
+    x_right = x + w - 1
+    draw.line([(x_left, tray_top), (x_left, tray_bottom)], fill=color, width=stroke)
+    draw.line([(x_left, tray_bottom), (x_right, tray_bottom)], fill=color, width=stroke)
+    draw.line([(x_right, tray_bottom), (x_right, tray_top)], fill=color, width=stroke)
+    cx = (x_left + x_right) / 2.0
+    shaft_top = y + stroke
+    shaft_bottom = tray_bottom - stroke * 2
+    draw.line([(cx, shaft_bottom), (cx, shaft_top)], fill=color, width=stroke)
+    head_w = w * 0.38
+    head_h = h * 0.32
+    draw.line([(cx - head_w, shaft_top + head_h), (cx, shaft_top), (cx + head_w, shaft_top + head_h)],
+              fill=color, width=stroke, joint="curve")
+
+
+def _draw_mini_awards(draw: ImageDraw.ImageDraw, x: int, y: int,
+                      size: int = 24, spacing: int = 6) -> int:
+    """Draw a strip of authentic-looking Reddit/social award badges."""
+    cur_x = x
+    r = size // 2
+
+    # 1. Gold Heart Medal
+    cx, cy = cur_x + r, y + r
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(245, 185, 30, 255), outline=(215, 150, 15, 255), width=2)
+    _draw_heart_outline(draw, cx, cy, size=14, color=(220, 20, 40, 255), stroke=2)
+    draw.polygon([(cx - 4, cy - 2), (cx, cy + 4), (cx + 4, cy - 2)], fill=(220, 20, 40, 255))
+    cur_x += size + spacing
+
+    # 2. Emerald Gem Badge
+    cx, cy = cur_x + r, y + r
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(16, 185, 129, 255), outline=(5, 150, 105, 255), width=2)
+    draw.polygon([(cx, cy - r + 4), (cx + r - 4, cy), (cx, cy + r - 4), (cx - r + 4, cy)], fill=(255, 255, 255, 230))
+    cur_x += size + spacing
+
+    # 3. Rocket Award (orange flame)
+    cx, cy = cur_x + r, y + r
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(60, 64, 75, 255))
+    draw.polygon([(cx, cy - r + 3), (cx + 5, cy + 2), (cx - 5, cy + 2)], fill=(240, 240, 245, 255))
+    draw.polygon([(cx - 3, cy + 2), (cx + 3, cy + 2), (cx, cy + r - 2)], fill=(255, 69, 0, 255))
+    cur_x += size + spacing
+
+    # 4. Platinum / Skull Badge
+    cx, cy = cur_x + r, y + r
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(185, 200, 215, 255), outline=(150, 170, 190, 255), width=2)
+    draw.ellipse([cx - 4, cy - 3, cx + 4, cy + 3], fill=(70, 80, 95, 255))
+    draw.rectangle([cx - 3, cy + 2, cx + 3, cy + 5], fill=(70, 80, 95, 255))
+    cur_x += size + spacing
+
+    # 5. Red Heart Award
+    cx, cy = cur_x + r, y + r
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 235, 238, 255), outline=(255, 180, 190, 255), width=1)
+    _draw_heart_outline(draw, cx, cy, size=15, color=(235, 32, 60, 255), stroke=2)
+    draw.polygon([(cx - 4, cy - 2), (cx, cy + 4), (cx + 4, cy - 2)], fill=(235, 32, 60, 255))
+    cur_x += size + spacing
+
+    # 6. Fire Award
+    cx, cy = cur_x + r, y + r
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 243, 224, 255), outline=(255, 170, 130, 255), width=1)
+    draw.polygon([(cx, cy - r + 3), (cx + 5, cy), (cx + 3, cy + 4), (cx - 3, cy + 4), (cx - 5, cy)], fill=(245, 80, 40, 255))
+    cur_x += size + spacing
+
+    # 7. Snoo / Wholesome Seal
+    cx, cy = cur_x + r, y + r
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(240, 242, 245, 255), outline=(200, 205, 215, 255), width=2)
+    draw.ellipse([cx - 5, cy - 2, cx - 2, cy + 1], fill=(50, 55, 65, 255))
+    draw.ellipse([cx + 2, cy - 2, cx + 5, cy + 1], fill=(50, 55, 65, 255))
+    draw.line([(cx - 3, cy + 3), (cx, cy + 5), (cx + 3, cy + 3)], fill=(50, 55, 65, 255), width=2)
+    cur_x += size + spacing
+
+    # 8. Gold Coin / Star
+    cx, cy = cur_x + r, y + r
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 205, 30, 255), outline=(220, 170, 10, 255), width=2)
+    draw.polygon([(cx, cy - 5), (cx + 2, cy - 1), (cx + 6, cy - 1), (cx + 3, cy + 2), (cx + 4, cy + 6),
+                  (cx, cy + 3), (cx - 4, cy + 6), (cx - 3, cy + 2), (cx - 6, cy - 1), (cx - 2, cy - 1)],
+                 fill=(255, 255, 255, 255))
+    cur_x += size + spacing
+
+    # 9. Sapphire Diamond
+    cx, cy = cur_x + r, y + r
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(29, 155, 240, 255), outline=(15, 125, 200, 255), width=2)
+    draw.polygon([(cx, cy - 5), (cx + 5, cy), (cx, cy + 5), (cx - 5, cy)], fill=(255, 255, 255, 255))
+    cur_x += size
+    return cur_x - x
+
+
+def _draw_reaction_strip(draw: ImageDraw.ImageDraw, x: int, y_center: float,
+                         colors: tuple | list, size: int = 30) -> int:
+    """Reaction strip helper (fallback / test compatibility)."""
+    return _draw_mini_awards(draw, x, int(y_center) - size // 2, size=size)
+
+
 def _draw_spec_share(draw: ImageDraw.ImageDraw, x: int, y: int,
                      color: tuple, size: int = 46) -> None:
-    """Modern 3-node share icon: root on left, two branches on right."""
+    """Share icon helper (compatible with legacy tests)."""
     r = max(4.0, size * 0.16)
     w_line = max(3, int(size * 0.10))
     x_left = x + r
@@ -455,12 +592,23 @@ def _draw_spec_bookmark(draw: ImageDraw.ImageDraw, x: int, y: int,
     draw.polygon(pts, fill=color)
 
 
+def _draw_engagement_count(draw: ImageDraw.ImageDraw, x: int, y_center: float,
+                           text: str, font, color: tuple) -> int:
+    """Draw a count label (e.g. "420+") vertically centered; returns width."""
+    label = str(text or "").strip() or "420+"
+    label = "".join(c for c in label if 32 <= ord(c) < 127) or "420+"
+    top = int(y_center - int(getattr(font, "size", 30)) / 2)
+    draw.text((x, top), label, font=font, fill=color)
+    try:
+        return int(draw.textlength(label, font=font))
+    except Exception:
+        box = draw.textbbox((x, top), label, font=font)
+        return int(box[2]) - int(box[0])
+
+
 def _paste_custom_icon(img: Image.Image, icon_path: str | Path | None,
                        x: int, y: int, size: int) -> bool:
-    """Attempt to load and paste a custom PNG/image icon onto img at (x, y).
-
-    Returns True if an image was successfully loaded and pasted, False otherwise.
-    """
+    """Attempt to load and paste a custom PNG/image icon onto img at (x, y)."""
     if not icon_path:
         return False
     try:
@@ -478,95 +626,121 @@ def _paste_custom_icon(img: Image.Image, icon_path: str | Path | None,
 def render_spec_card(text: str, highlight_word: str, *, handle: str,
                      avatar_path: str | Path | None, out_png: str | Path,
                      theme: dict | None = None,
-                     width: int = 900) -> Path:
-    """Spec-exact opening card: transparent RGBA ~900px wide, radius 48.
+                     width: int = 900,
+                     likes: str | None = None,
+                     shares: str | None = None,
+                     show_reactions: bool | None = None,
+                     show_awards: bool | None = None) -> Path:
+    """Spec-exact viral social card (KoalaReads style): transparent RGBA ~900px wide.
 
-    Top row: ~120px circular avatar (ellipse mask; solid circle + handle
-    first letter when the file is missing), bold handle + small blue
-    circle with a line-drawn white check (no emoji). Body: bold ~64px
-    wrapped word-by-word (highlight in #E00000 red, case-insensitive),
-    shrunk on overflow via textbbox measurement. Bottom row: vibrant
-    satire action buttons (orange upvote, red heart, green comment,
-    blue share, amber bookmark, or custom image icons if provided).
-    Height is dynamic but canvas-bounded.
+    Header:
+    - Circular avatar at top-left
+    - Bold handle + Twitter/Instagram verified blue badge
+    - Colorful strip of authentic Reddit/social awards directly beneath handle
+
+    Body:
+    - Full-width left-aligned text (starts under the avatar header)
+    - Dynamic font scaling for punchy 1-3 lines
+    - Highlight word rendered in bold red (#E00000)
+
+    Bottom:
+    - Clean engagement row with neutral grey hollow heart + like count (e.g. 420+)
+    - Modern share tray icon + share count (e.g. 420+)
+    - Counts and visibility customizable via kwargs or theme
     """
     th = dict(SPEC_CARD_THEME)
     th.update(theme or {})
+    likes_text = (str(likes) if likes is not None
+                  else str(th.get("likes_text", "420+")))
+    shares_text = (str(shares) if shares is not None
+                   else str(th.get("shares_text", "420+")))
+    awards = (show_awards if show_awards is not None
+              else (show_reactions if show_reactions is not None
+                    else bool(th.get("show_awards", th.get("show_reactions", True)))))
+
     pad = int(th.get("pad", 36))
-    av_size = int(th.get("avatar_size", 120))
-    hx = pad + av_size + 24
-    max_w = width - hx - pad  # body starts right of the avatar
+    av_size = int(th.get("avatar_size", 96))
+    hx = pad + av_size + 18
+
+    # Body spans full width of card (starts from left margin under avatar)
+    max_body_w = width - 2 * pad - 8
     lines, body_font, _size, lh = _spec_wrap_text(
-        text, highlight_word, max_w, th)
-    top_h = pad + av_size + 28
+        text, highlight_word, max_body_w, th)
+
+    header_h = av_size + (24 if awards else 8)
+    body_y = pad + header_h + 10
     body_h = len(lines) * lh
-    height = top_h + body_h + 28 + 48 + pad
+    eng_y = body_y + body_h + 18
+    height = eng_y + 44 + pad
+
     out = Path(out_png)
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([6, 6, width - 6, height - 6],
-                        radius=int(th.get("radius", 48)),
-                        fill=th["card_fill"])
 
+    # 1. Card Background
+    card_fill = th.get("card_fill", (255, 255, 255, 255))
+    card_border = th.get("card_border", (225, 228, 232, 255))
+    radius = int(th.get("radius", 40))
+    d.rounded_rectangle([4, 4, width - 4, height - 4],
+                        radius=radius, fill=card_fill,
+                        outline=card_border, width=2)
+
+    # 2. Circular Avatar
     letter = _spec_handle_letter(handle)
     avatar = circular_avatar(
         avatar_path, av_size,
         theme={**th, "avatar_fallback_text": letter})
     img.paste(avatar, (pad, pad), avatar)
 
-    handle_h = int(th.get("handle_size", 44))
+    # 3. Handle & Verified Badge
+    handle_h = int(th.get("handle_size", 38))
     handle_font = load_font(handle_h, bold=True, theme=th)
-    # Vertically align handle with avatar midpoint instead of hugging the top edge
-    handle_y = pad + max(0, (av_size - handle_h) // 2)
-    d.text((hx, handle_y), handle, font=handle_font,
-           fill=th["handle_color"])
-    badge_cx = hx + text_width(d, handle, handle_font) + 26
-    badge_cy = handle_y + handle_h // 2 + 3
-    draw_verified_badge(d, badge_cx, badge_cy,
-                        int(th.get("badge_radius", 14)),
-                        color=th["badge_color"])
+    handle_y = pad + (10 if awards else max(0, (av_size - handle_h) // 2))
+    d.text((hx, handle_y), handle, font=handle_font, fill=th["handle_color"])
+    badge_r = int(th.get("badge_radius", 13))
+    badge_cx = hx + text_width(d, handle, handle_font) + 20
+    badge_cy = handle_y + handle_h // 2 + 1
+    draw_verified_badge(d, badge_cx, badge_cy, badge_r,
+                        color=th.get("badge_color", (29, 155, 240, 255)))
 
+    # 4. Mini Awards Strip (directly below handle)
+    if awards:
+        awards_y = handle_y + handle_h + 8
+        _draw_mini_awards(d, hx, awards_y, size=24, spacing=6)
+
+    # 5. Body Text (left-aligned under header)
     space_w = _spec_glyph_width(body_font, " ")
-    y = top_h
+    y = body_y
     for line in lines:
-        x = hx
+        x = pad + 4
         for w, color in line:
             d.text((x, y), w, font=body_font, fill=color)
             x += _spec_glyph_width(body_font, w) + space_w
         y += lh
 
-    iy = top_h + body_h + 28
-    spacing = int(th.get("icon_spacing", 82))
-    cur_x = hx
+    # 6. Bottom Engagement Row (KoalaReads style)
+    eng_font = load_font(int(th.get("engagement_size", 32)), bold=False, theme=th)
+    eng_color = th.get("engagement_color", (120, 125, 132, 255))
+    cur_x = pad + 6
+    row_mid = eng_y + 16
 
-    # 1. Orange Upvote (Reddit satire)
-    upvote_col = th.get("upvote_color", (255, 69, 0, 255))
-    if not _paste_custom_icon(img, th.get("upvote_icon_path"), cur_x, iy, 44):
-        _draw_spec_upvote(d, cur_x, iy, color=upvote_col, size=44)
-    cur_x += spacing
-
-    # 2. Red Heart (Like)
+    # Item 1: Outline / Filled Heart + likes count
     heart_col = th.get("heart_color", (235, 32, 60, 255))
-    if not _paste_custom_icon(img, th.get("heart_icon_path"), cur_x, iy, 48):
-        _draw_spec_heart(d, cur_x, iy, color=heart_col, r=13)
-    cur_x += spacing
+    pasted_heart = _paste_custom_icon(img, th.get("heart_icon_path"), cur_x, row_mid - 15, 30)
+    if not pasted_heart:
+        if th.get("heart_filled", False):
+            _draw_heart_filled(d, cur_x + 15, row_mid, size=30, color=heart_col)
+        else:
+            _draw_heart_outline(d, cur_x + 15, row_mid, size=30, color=heart_col, stroke=3)
+    cur_x += 34 + 10
+    cur_x += _draw_engagement_count(d, cur_x, row_mid, likes_text, eng_font, eng_color) + 40
 
-    # 3. Satire Comment Bubble
-    comment_col = th.get("comment_color", (16, 185, 129, 255))
-    if not _paste_custom_icon(img, th.get("comment_icon_path"), cur_x, iy + 2, 42):
-        _draw_spec_comment(d, cur_x, iy + 2, color=comment_col, size=42)
-    cur_x += spacing
-
-    # 4. Blue Share
-    share_col = th.get("share_color", (29, 155, 240, 255))
-    if not _paste_custom_icon(img, th.get("share_icon_path"), cur_x, iy + 2, 44):
-        _draw_spec_share(d, cur_x, iy + 2, color=share_col, size=44)
-    cur_x += spacing
-
-    # 5. Satire Bookmark
-    bookmark_col = th.get("bookmark_color", (245, 158, 11, 255))
-    if not _paste_custom_icon(img, th.get("bookmark_icon_path"), cur_x, iy + 2, 40):
-        _draw_spec_bookmark(d, cur_x, iy + 2, color=bookmark_col, size=40)
+    # Item 2: Share Tray + shares count
+    pasted_share = _paste_custom_icon(img, th.get("share_icon_path"), cur_x, row_mid - 15, 30)
+    if not pasted_share:
+        _draw_share_tray(d, cur_x, row_mid - 15, size=30, color=eng_color, stroke=3)
+    cur_x += 32 + 10
+    cur_x += _draw_engagement_count(d, cur_x, row_mid, shares_text, eng_font, eng_color)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(out, "PNG")

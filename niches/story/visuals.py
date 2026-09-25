@@ -525,7 +525,13 @@ def build_visuals(content: Content, narration: NarrationResult,
         content.extras.get("card_text", content.title),
         content.extras.get("card_highlight_word", ""),
         handle=cfg.channel_handle, avatar_path=cfg.avatar_path,
-        out_png=workdir / "card.png", theme=_card.SPEC_CARD_THEME)
+        out_png=workdir / "card.png",
+        theme={**_card.SPEC_CARD_THEME,
+               "likes_text": cfg.card_likes,
+               "shares_text": cfg.card_shares,
+               "show_reactions": cfg.card_show_reactions},
+        likes=cfg.card_likes, shares=cfg.card_shares,
+        show_reactions=cfg.card_show_reactions)
     log(f"Stage 4/6 card: {card_png.name} visible 0-{card_dur:.1f}s "
         f"(line end {card_end:.1f}s).")
     # Burned captions start AFTER the card line ends (the card text
