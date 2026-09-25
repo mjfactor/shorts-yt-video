@@ -454,34 +454,53 @@ def build_visuals(content: Content, narration: NarrationResult,
     # killed on CI runners (suspected OOM); veryfast halves peak RAM.
     final_preset = "veryfast"
     require_ass_filter()
-    vf_args, cwd = ass_cwd_args(ass_path)
+    # fontsdir must be the real font dir, never workdir (workdir holds
+    # bg_*.mp4/bed.mp3/etc and libass spams "Error opening memory font"
+    # for every media file). Ensure the dir exists and always pass it:
+    # an empty scan means no spam, and libass still uses fontconfig
+    # system fonts (DejaVu on CI).
+    _fonts_dir = Path(__file__).resolve().parents[2] / "assets" / "fonts"
+    try:
+        _fonts_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass  # still pass the path: missing dir scans nothing (≠ workdir)
+    vf_args, cwd = ass_cwd_args(ass_path, fontsdir=_fonts_dir.resolve())
     subs = vf_args[1]  # "ass=<rel>:fontsdir=<dir>" for filter_complex use
     mix_fc = _mix_filter(total)
     out_mp4 = workdir / "short.mp4"
-    render_inputs = [bg_track.name, Path(narration.audio).name, bed.name]
+    # ffmpeg runs with cwd=workdir (for the cwd-relative ASS filter), so
+    # every -i input and the output must be absolute; repo-relative
+    # "out/<stamp>_work/..." paths would resolve to "<workdir>/out/..."
+    # and fail with "[in#0] No such file".
+    bg_abs = str(Path(bg_track).resolve())
+    narr_abs = str(Path(narration.audio).resolve())
+    bed_abs = str(Path(bed).resolve())
+    card_abs = str(Path(card_png).resolve())
+    out_abs = str(Path(out_mp4).resolve())
+    render_inputs = [bg_abs, narr_abs, bed_abs]
     if not no_card:
-        render_inputs.append(card_png.name)
+        render_inputs.append(card_abs)
     log(f"Stage 6/6 render: {total:.1f}s total, preset {final_preset}, "
         f"inputs={render_inputs}.")
     t_render = time.monotonic()
     if no_card:
         run_ffmpeg([
-            "ffmpeg", "-y", "-i", str(bg_track), "-i", str(narration.audio),
-            "-i", str(bed),
+            "ffmpeg", "-y", "-i", bg_abs, "-i", narr_abs,
+            "-i", bed_abs,
             "-filter_complex",
             f"{mix_fc};[0:v]{subs},format=yuv420p[vout]",
             "-map", "[vout]", "-map", "[aout]",
             "-c:v", "libx264", "-preset", final_preset, "-crf", "20",
             "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
             "-movflags", "+faststart", "-threads", "0",
-            "-t", f"{total:.3f}", str(out_mp4)],
+            "-t", f"{total:.3f}", out_abs],
             "final-render", cwd=cwd)
     else:
-        card_args = _card_input_args(card_png.resolve(), card_dur)
+        card_args = _card_input_args(Path(card_abs), card_dur)
         card_fc = _card_filter(card_dur)
         run_ffmpeg([
-            "ffmpeg", "-y", "-i", str(bg_track), "-i", str(narration.audio),
-            "-i", str(bed), *card_args,
+            "ffmpeg", "-y", "-i", bg_abs, "-i", narr_abs,
+            "-i", bed_abs, *card_args,
             "-filter_complex",
             f"{mix_fc};[0:v]null[base];[3:v]null[card];{card_fc};"
             f"[v1]{subs},format=yuv420p[vout]",
@@ -489,7 +508,7 @@ def build_visuals(content: Content, narration: NarrationResult,
             "-c:v", "libx264", "-preset", final_preset, "-crf", "20",
             "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
             "-movflags", "+faststart", "-threads", "0",
-            "-t", f"{total:.3f}", str(out_mp4)],
+            "-t", f"{total:.3f}", out_abs],
             "final-render", cwd=cwd)
     size_mb = out_mp4.stat().st_size / (1024 * 1024)
     elapsed = time.monotonic() - t_start
