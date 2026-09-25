@@ -540,8 +540,8 @@ class TestPlanner(unittest.TestCase):
         for seg in segs:
             self.assertLess(seg["clip_idx"], 40)
             self.assertGreater(seg["dur"], 0)
-            self.assertGreaterEqual(seg["speed"], 1.15)
-            self.assertLessEqual(seg["speed"], 1.5)
+            self.assertGreaterEqual(seg["speed"], 2.0)
+            self.assertLessEqual(seg["speed"], 3.0)
         # hard rule: no clip id twice in one video ...
         self.assertEqual(len({s["clip_idx"] for s in segs}), len(segs))
         # ... so no clip repeats within 4 segments either
@@ -591,8 +591,8 @@ class TestPlannerSpec(unittest.TestCase):
             # window = out * speed, inside the source clip
             self.assertAlmostEqual(s["window"], s["dur"] * s["speed"],
                                    places=2)
-            self.assertGreaterEqual(s["speed"], 1.15)
-            self.assertLessEqual(s["speed"], 1.5)
+            self.assertGreaterEqual(s["speed"], 2.0)
+            self.assertLessEqual(s["speed"], 3.0)
             clip_dur = by_clip[s["clip_id"]]
             self.assertLessEqual(s["start_offset"] + s["window"],
                                  clip_dur + 1e-6)
@@ -1622,6 +1622,122 @@ class TestClipUniqueness(unittest.TestCase):
         self.assertEqual(StoryConfig().clips_per_query, 2)
         with mock.patch.dict(os.environ, {"STORY_CLIPS_PER_QUERY": "3"}):
             self.assertEqual(StoryConfig.from_env().clips_per_query, 3)
+
+
+class TestCleaningPriority(unittest.TestCase):
+    def test_speed_and_cleaning_config_defaults_and_env(self):
+        cfg = StoryConfig()
+        self.assertEqual(cfg.bg_speed_min, 2.0)
+        self.assertEqual(cfg.bg_speed_max, 3.0)
+        self.assertEqual(cfg.cleaning_clips_per_query, 3)
+        self.assertAlmostEqual(cfg.cleaning_share, 0.55)
+        env = {"STORY_BG_SPEED_MIN": "2.5", "STORY_BG_SPEED_MAX": "3.5",
+               "STORY_CLEANING_CLIPS_PER_QUERY": "4",
+               "STORY_CLEANING_SHARE": "0.7", "BG_SPEED_MIN": "9.9",
+               "CLEANING_SHARE": "0.1"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            cfg2 = StoryConfig.from_env()
+        # STORY_ prefix wins over the bare fallback
+        self.assertEqual(cfg2.bg_speed_min, 2.5)
+        self.assertEqual(cfg2.bg_speed_max, 3.5)
+        self.assertEqual(cfg2.cleaning_clips_per_query, 4)
+        self.assertAlmostEqual(cfg2.cleaning_share, 0.7)
+
+    def test_cleaning_queries_ahead_of_ambient(self):
+        pool = list(story_visuals.EVERGREEN_QUERIES)
+        first_ambient = min(pool.index(q)
+                            for q in story_visuals.AMBIENT_QUERIES)
+        last_cleaning = max(pool.index(q)
+                            for q in story_visuals.CLEANING_QUERIES)
+        self.assertLess(last_cleaning, first_ambient)
+
+    def test_gather_cleaning_priority_order_limits_and_kinds(self):
+        limits = {}
+
+        def _fake_fetch_many(query, api_key, cache_dir, used, limit=2):
+            limits[query] = limit
+            vid = f"vid-{query.replace(' ', '-')}"
+            return [(Path(f"/tmp/{vid}.mp4"), vid, "Pexels: T")]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = StoryConfig(pexels_key="fake-key",
+                              bg_dir="no-such-dir",
+                              pexels_cache_dir=str(Path(tmp) / "cache"))
+            with mock.patch("niches.story.visuals._fetch_many",
+                            side_effect=_fake_fetch_many):
+                clips, _credits, _ids, kinds = story_visuals.gather_clips(
+                    ["office desk night"], "workplace", cfg)
+        self.assertEqual(len(clips), len(kinds))
+        # cleaning fetched deeper than story/ambient
+        for q in story_visuals.CLEANING_QUERIES:
+            self.assertEqual(limits[q], 3)
+        self.assertEqual(limits["office desk night"], 2)
+        self.assertEqual(limits["city night lights"], 2)
+        # kinds follow query priority: story block, then every cleaning
+        # clip precedes every ambient clip
+        clean_pos = [i for i, k in enumerate(kinds) if k == "cleaning"]
+        amb_pos = [i for i, k in enumerate(kinds) if k == "ambient"]
+        self.assertTrue(clean_pos)
+        self.assertTrue(amb_pos)
+        self.assertLess(max(clean_pos), min(amb_pos))
+        self.assertEqual(kinds[0], "story")
+
+    def _tagged_pool(self, n_clean=18, n_other=22, dur=30.0):
+        pool = [{"id": f"clean{i}", "duration": dur, "kind": "cleaning"}
+                for i in range(n_clean)]
+        pool += [{"id": f"story{i}", "duration": dur, "kind": "story"}
+                 for i in range(n_other)]
+        return pool
+
+    def test_plan_cleaning_share_and_consecutive_runs(self):
+        total = 82.9
+        segs = story_visuals.plan(total, seed=7, clips=self._tagged_pool())
+        # 82.9/3.5 -> need 25 segments; 55% -> exactly 14 cleaning
+        self.assertEqual(len(segs), 25)
+        self.assertAlmostEqual(sum(s["dur"] for s in segs), total, places=2)
+        n_clean = sum(1 for s in segs if s["kind"] == "cleaning")
+        self.assertEqual(n_clean, 14)
+        self.assertGreaterEqual(n_clean / len(segs), 0.50)
+        # consecutive satisfying runs, starting at segment 0
+        self.assertEqual(segs[0]["kind"], "cleaning")
+        best = cur = 0
+        for s in segs:
+            cur = cur + 1 if s["kind"] == "cleaning" else 0
+            best = max(best, cur)
+        self.assertGreaterEqual(best, 3)
+        # planner contracts survive the partition
+        self.assertEqual(len({s["clip_id"] for s in segs}), len(segs))
+        for s in segs:
+            self.assertGreaterEqual(s["dur"], 2.5)
+            self.assertLessEqual(s["dur"], 4.5)
+            self.assertGreaterEqual(s["speed"], 2.0)
+            self.assertLessEqual(s["speed"], 3.0)
+
+    def test_plan_share_zero_restores_uniform_mix(self):
+        segs = story_visuals.plan(82.9, seed=7,
+                                  clips=self._tagged_pool(),
+                                  cleaning_share=0.0)
+        self.assertEqual(len(segs), 25)
+        n_clean = sum(1 for s in segs if s["kind"] == "cleaning")
+        # uniform hypergeometric draw (25 picks from 18C/22S):
+        # mixed, never the forced 14-run layout
+        self.assertGreaterEqual(n_clean, 2)
+        self.assertLessEqual(n_clean, 18)
+        kinds = [s["kind"] for s in segs]
+        self.assertIn("story", kinds)
+        self.assertAlmostEqual(sum(s["dur"] for s in segs), 82.9, places=2)
+
+    def test_plan_long_windows_fit_short_sources(self):
+        pool = ([{"id": f"clean{i}", "duration": 8.0, "kind": "cleaning"}
+                 for i in range(20)]
+                + [{"id": f"story{i}", "duration": 8.0, "kind": "story"}
+                   for i in range(20)])
+        segs = story_visuals.plan(82.9, seed=7, clips=pool)
+        by_id = {c["id"]: c["duration"] for c in pool}
+        for s in segs:
+            self.assertLessEqual(s["start_offset"] + s["window"],
+                                 by_id[s["clip_id"]] + 1e-6)
+        self.assertEqual(len({s["clip_id"] for s in segs}), len(segs))
 
 
 class TestStoryBed(unittest.TestCase):

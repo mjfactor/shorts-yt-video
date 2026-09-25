@@ -58,8 +58,8 @@ jobs:
       BG_DIR: ${{ vars.BG_DIR || 'assets/backgrounds/' }}
       SEG_MIN: ${{ vars.SEG_MIN || '2.0' }}
       SEG_MAX: ${{ vars.SEG_MAX || '4.0' }}
-      BG_SPEED_MIN: ${{ vars.BG_SPEED_MIN || '1.15' }}
-      BG_SPEED_MAX: ${{ vars.BG_SPEED_MAX || '1.5' }}
+      BG_SPEED_MIN: ${{ vars.BG_SPEED_MIN || '2.0' }}
+      BG_SPEED_MAX: ${{ vars.BG_SPEED_MAX || '3.0' }}
       CAPTION_UPPER: ${{ vars.CAPTION_UPPER || '0' }}
       CARD_SECONDS: ${{ vars.CARD_SECONDS || '3.0' }}
       CHANNEL_HANDLE: ${{ vars.CHANNEL_HANDLE }}
@@ -76,6 +76,8 @@ jobs:
       STORY_SEG_MAX: ${{ vars.STORY_SEG_MAX }}
       STORY_BG_SPEED_MIN: ${{ vars.STORY_BG_SPEED_MIN }}
       STORY_BG_SPEED_MAX: ${{ vars.STORY_BG_SPEED_MAX }}
+      STORY_CLEANING_CLIPS_PER_QUERY: ${{ vars.STORY_CLEANING_CLIPS_PER_QUERY }}
+      STORY_CLEANING_SHARE: ${{ vars.STORY_CLEANING_SHARE }}
       STORY_CAPTION_UPPER: ${{ vars.STORY_CAPTION_UPPER }}
       STORY_CARD_SECONDS: ${{ vars.STORY_CARD_SECONDS }}
       STORY_CHANNEL_HANDLE: ${{ vars.STORY_CHANNEL_HANDLE }}

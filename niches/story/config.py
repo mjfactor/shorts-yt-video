@@ -60,10 +60,12 @@ class StoryConfig(NicheConfig):
                                     "en-US-GuyNeural")
     edge_rate: str = "+20%"
     # BG segment length bounds (seconds) + playback speed range.
+    # Satisfying-timelapse range: slow mopping/cleaning footage is
+    # near-invisible at 1.15-1.5x, so the default runs 2.0-3.0x.
     seg_min: float = 2.5
     seg_max: float = 4.5
-    bg_speed_min: float = 1.15
-    bg_speed_max: float = 1.5
+    bg_speed_min: float = 2.0
+    bg_speed_max: float = 3.0
     # Captions: 1/true = uppercase word-pop.
     caption_upper: bool = False
     # Card floor: overlay shows max(card_seconds, card_line_end + pad).
@@ -77,10 +79,17 @@ class StoryConfig(NicheConfig):
     pexels_key: str = ""
     pexels_cache_dir: str = "assets/pexels_cache"
     # Clips fetched per Pexels query (distinct videos). Cap math for a
-    # full run: ~20 queries x K=2 x ~10MB worst case ≈ ~400MB transient
-    # (typical portrait clips are smaller; the id cache skips re-downloads
-    # on retry). Lower to 1 to restore one-clip-per-query behavior.
+    # full run: ~17 story/ambient queries x K=2 + 6 cleaning queries x
+    # CLEANING_K=3 x ~10MB worst case ≈ ~500MB transient (typical
+    # portrait clips are smaller; the id cache skips re-downloads on
+    # retry). Lower to 1 to restore one-clip-per-query behavior.
     clips_per_query: int = 2
+    # Cleaning queries fetch deeper (default 3 vs 2) so the satisfying
+    # pool outnumbers ambient stock before the planner partitions it.
+    cleaning_clips_per_query: int = 3
+    # Planner share of segments drawn from cleaning clips, laid as
+    # consecutive runs (0.0-1.0; capped by the cleaning pool size).
+    cleaning_share: float = 0.55
     # Optional BGM bed file (preview tools); empty = pool/drone path.
     bed_path: str = ""
     # Repo-root-relative glob for the random per-video BGM pool.
@@ -197,8 +206,8 @@ class StoryConfig(NicheConfig):
             edge_rate=env_str("EDGE_RATE", "+20%", "STORY_") or "+20%",
             seg_min=env_float("SEG_MIN", 2.5, "STORY_"),
             seg_max=env_float("SEG_MAX", 4.5, "STORY_"),
-            bg_speed_min=env_float("BG_SPEED_MIN", 1.15, "STORY_"),
-            bg_speed_max=env_float("BG_SPEED_MAX", 1.5, "STORY_"),
+            bg_speed_min=env_float("BG_SPEED_MIN", 2.0, "STORY_"),
+            bg_speed_max=env_float("BG_SPEED_MAX", 3.0, "STORY_"),
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),
             channel_handle=env_str("CHANNEL_HANDLE", "@UnhingedStories", "STORY_") or "@UnhingedStories",
@@ -206,6 +215,10 @@ class StoryConfig(NicheConfig):
             bg_dir=env_str("BG_DIR", "assets/backgrounds", "STORY_") or "assets/backgrounds",
             pexels_key=env_str("PEXELS_API_KEY", "", "STORY_"),
             clips_per_query=env_int("CLIPS_PER_QUERY", 2, "STORY_"),
+            cleaning_clips_per_query=env_int(
+                "CLEANING_CLIPS_PER_QUERY", 3, "STORY_"),
+            cleaning_share=min(1.0, max(0.0, env_float(
+                "CLEANING_SHARE", 0.55, "STORY_"))),
             bed_path=env_str("BED_PATH", "", "STORY_"),
             bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_") or "bgm*.mp3",
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),

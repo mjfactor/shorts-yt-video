@@ -6,6 +6,7 @@ ASS burn + mixed audio in one final pass (crf20/veryfast/AAC-192k).
 """
 from __future__ import annotations
 
+import math
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,15 +34,20 @@ STORY_CARD_THEME = {
     "handle_color": (245, 245, 247, 255),
 }
 
-EVERGREEN_QUERIES = (
+AMBIENT_QUERIES = (
     "city night lights", "rain window night", "empty street dusk",
     "coffee shop morning", "highway cars night", "forest fog moody",
     "ocean waves dark", "office desk lamp",
+)
+CLEANING_QUERIES = (
     # Satisfying-cleaning compilations (verified Pexels depth: 22K+ cleaning,
     # 39.7K+ window-cleaning, 6-8K+ pressure-washing, 40K+ commercial).
     "window cleaning", "pressure washing", "car wash",
     "floor mopping", "soap sponge", "vacuum carpet",
 )
+# Cleaning first: gather_clips fetches in this order and the planner
+# partitions the pool so cleaning holds >=cleaning_share of segments.
+EVERGREEN_QUERIES = (*CLEANING_QUERIES, *AMBIENT_QUERIES)
 GENRE_EVERGREEN = {
     "workplace": ("office desk night", "empty office hallway", "city office windows"),
     "revenge": ("apartment building night", "door knock night", "city street night"),
@@ -67,9 +73,11 @@ def _pick_window(rng: random.Random, clip_dur: float, window: float,
 def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
          n_clips: int = 1, seed: int | None = None,
          min_segments: int = 25, max_segments: int = 40,
-         speed_min: float = 1.15, speed_max: float = 1.5,
+         speed_min: float = 2.0, speed_max: float = 3.0,
          recent_ids: tuple = (),
-         clips: list[dict] | None = None) -> list[dict]:
+         clips: list[dict] | None = None,
+         cleaning_share: float = 0.55,
+         clean_kind: str = "cleaning") -> list[dict]:
     """Pure planner: segments summing to total_dur exactly (within 1 frame).
 
     Hard rule: each clip id is used at most ONCE per video (no-repeat-4
@@ -77,12 +85,20 @@ def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
     repeat). Rules: every out_duration in [SEG_MIN, SEG_MAX] (duration
     bounds win over the segment-count range for tiny totals); last
     segment trims the rounding drift; no overlapping source window per
-    video id; speeds in [1.15, 1.5]; each source window (out_dur*speed)
-    fits inside its clip. Aims for >=12 distinct clips. When the pool is
-    smaller than the segments needed, the plan shrinks to pool-sized
-    longer cuts (capped at SEG_MAX) with a loud warning naming the
-    shortfall — repeats are refused, never silent. clips=[{id, duration}]
-    overrides the legacy n_clips count (which assumes 30s clips).
+    video id; speeds in [speed_min, speed_max] (satisfying-timelapse
+    default 2.0-3.0x); each source window (out_dur*speed) fits inside
+    its clip — clips too short for even speed_min are skipped in favor
+    of roomier ones, and the speed is eased down just enough to fit
+    when no roomier clip remains. Aims for >=12 distinct clips. When
+    the pool is smaller than the segments needed, the plan shrinks to
+    pool-sized longer cuts (capped at SEG_MAX) with a loud warning
+    naming the shortfall — repeats are refused, never silent.
+    clips=[{id, duration, kind?}] overrides the legacy n_clips count
+    (which assumes 30s clips). Entries tagged kind=="cleaning" hold
+    ~cleaning_share of the segments (capped by the cleaning pool
+    size), laid as consecutive runs of 3-5 from segment 0 so the
+    satisfying footage plays as runs, not scatter. cleaning_share<=0
+    (or an untagged pool) restores the legacy uniform mix.
     """
     rng = random.Random(seed)
     total = max(0.0, float(total_dur))
@@ -94,11 +110,13 @@ def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
     smax = max(float(speed_min), float(speed_max))
     if clips:
         table = [{"id": str(c.get("id", i)),
-                  "duration": max(0.1, float(c.get("duration", 30.0) or 30.0))}
+                  "duration": max(0.1, float(c.get("duration", 30.0) or 30.0)),
+                  "kind": str(c.get("kind", "") or "")}
                  for i, c in enumerate(clips)]
     else:
         n = max(1, int(n_clips or 1))
-        table = [{"id": f"clip{i}", "duration": 30.0} for i in range(n)]
+        table = [{"id": f"clip{i}", "duration": 30.0, "kind": ""}
+                 for i in range(n)]
     n = len(table)
     need = min(max_segments, max(min_segments, round(total / ((lo + hi) / 2))))
     if total / need < lo:
@@ -119,24 +137,69 @@ def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
         base = total / count
         durs = [round(base, 3)] * count
         durs[-1] = round(total - sum(durs[:-1]), 3)
+    share = min(1.0, max(0.0, float(cleaning_share or 0.0)))
+    clean_pool = [i for i in range(n)
+                  if table[i].get("kind", "") == clean_kind]
+    want_clean = (min(len(clean_pool), round(count * share))
+                  if share > 0 and clean_pool else 0)
+    is_clean = [False] * count
+    if want_clean:
+        # Consecutive satisfying runs from segment 0 (runs of 3-5,
+        # 1-2 story segs between runs) instead of uniform scatter.
+        remaining, pos, first = want_clean, 0, True
+        while remaining > 0 and pos < count:
+            if not first:
+                pos += rng.randint(1, 2)
+            run = min(remaining, rng.randint(3, 5))
+            take = min(run, count - pos)
+            for j in range(take):
+                is_clean[pos + j] = True
+            remaining -= take
+            pos += take
+            first = False
+        if want_clean < round(count * share):
+            log(f"Story plan: cleaning pool holds {len(clean_pool)} clips "
+                f"(<{round(count * share)} wanted); using all of it.")
     recent = {str(r) for r in (recent_ids or ())}
     segs: list[dict] = []
     prev: list[int] = []
     uses = dict.fromkeys(range(n), 0)
     used_windows: dict[int, list[tuple[float, float]]] = {}
     cursor: dict[int, float] = {}
-    for dur in durs:
+    for pos, dur in enumerate(durs):
         # Unused clips first: with count <= pool size one always exists,
         # so the trailing fallback is unreachable (kept as pure safety).
-        unused = [i for i in range(n) if uses[i] == 0]
-        eligible = ([i for i in unused if i not in prev[-4:]]
-                    or unused or list(range(n)))
+        # Cleaning positions draw from the cleaning pool only (falling
+        # back to any unused clip when that pool is exhausted); story
+        # positions draw from everything else first.
+        if is_clean[pos]:
+            pool = [i for i in clean_pool if uses[i] == 0]
+            pool = pool or [i for i in range(n) if uses[i] == 0]
+        else:
+            pool = [i for i in range(n)
+                    if uses[i] == 0 and i not in clean_pool]
+            pool = pool or [i for i in range(n) if uses[i] == 0]
+        eligible = ([i for i in pool if i not in prev[-4:]]
+                    or pool or list(range(n)))
         fresh = ([i for i in eligible if table[i]["id"] not in recent]
                  or eligible)
-        idx = rng.choice(fresh)
+        # Prefer sources roomy enough for the full timelapse window
+        # (dur*smax, up to ~13.5s); fall back to speed_min fit, then any.
+        roomy = [i for i in fresh
+                 if table[i]["duration"] >= dur * smax - 1e-9]
+        roomy = (roomy or [i for i in fresh
+                           if table[i]["duration"] >= dur * smin - 1e-9]
+                 or fresh)
+        idx = rng.choice(roomy)
         speed = round(rng.uniform(smin, smax), 3)
         window = round(dur * max(0.2, speed), 3)
         cdur = table[idx]["duration"]
+        if window > cdur:
+            # Short source: ease the timelapse down just enough to fit
+            # (fit wins over the speed floor; floored so the rounded
+            # window never overshoots the clip; transcode clamps anyway).
+            speed = max(0.2, math.floor(cdur / dur * 1000) / 1000)
+            window = round(dur * max(0.2, speed), 3)
         cur = cursor.get(idx, 0.0)
         if cur + window <= cdur and all(
                 cur + window <= us or cur >= ue
@@ -152,6 +215,7 @@ def plan(total_dur: float, *, seg_min: float = 2.5, seg_max: float = 4.5,
         segs.append({
             "clip_idx": idx,
             "clip_id": table[idx]["id"],
+            "kind": table[idx].get("kind", ""),
             "start_offset": start,
             "dur": dur,
             "speed": speed,
@@ -203,22 +267,50 @@ def _fetch_many(query: str, api_key: str, cache_dir: Path,
 
 
 def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
-                 recent_ids: tuple = ()) -> tuple[list[Path], list[str], list[str]]:
-    """BG clips: Pexels (prefetched) → BG_DIR fallback. Clear error if none."""
+                 recent_ids: tuple = ()
+                 ) -> tuple[list[Path], list[str], list[str], list[str]]:
+    """BG clips: Pexels (prefetched) → BG_DIR fallback. Clear error if none.
+
+    Query priority (deduped): story/beat queries → genre evergreen →
+    CLEANING_QUERIES → AMBIENT_QUERIES, so the satisfying pool is
+    fetched before ambient stock. Cleaning queries fetch
+    cleaning_clips_per_query clips each (default 3 vs clips_per_query
+    2). Returns (clips, credits, used_ids, kinds) with kinds parallel
+    to clips ("cleaning" / "story" / "ambient" / "local") for the
+    planner's share partition.
+    """
     cache_dir = Path(cfg.pexels_cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    queries: list[str] = list(dict.fromkeys([*(bg_queries or []),
-                                  *GENRE_EVERGREEN.get((genre or "").lower(), ()),
-                                  *EVERGREEN_QUERIES]))
+    ordered: list[tuple[str, str]] = []
+    seen_q: set[str] = set()
+
+    def _add(qs, kind: str) -> None:
+        for q in qs or ():
+            q = (str(q) or "").strip()
+            if q and q not in seen_q:
+                seen_q.add(q)
+                ordered.append((q, kind))
+
+    _add(bg_queries, "story")
+    _add(GENRE_EVERGREEN.get((genre or "").lower(), ()), "story")
+    _add(CLEANING_QUERIES, "cleaning")
+    _add(AMBIENT_QUERIES, "ambient")
+    queries: list[str] = [q for q, _ in ordered]
+    kind_of = dict(ordered)
     clips: list[Path] = []
     credits: list[str] = []
+    kinds: list[str] = []
     used: set[str] = {str(r) for r in (recent_ids or ())}
     used_ids: list[str] = []
     per_query = max(1, int(getattr(cfg, "clips_per_query", 2) or 2))
+    clean_per = max(1, int(getattr(cfg, "cleaning_clips_per_query",
+                                   per_query) or per_query))
+    limits = {q: (clean_per if kind_of[q] == "cleaning" else per_query)
+              for q in queries}
     if cfg.pexels_key:
         with ThreadPoolExecutor(max_workers=4) as pool:
             futs = {pool.submit(_fetch_many, q, cfg.pexels_key, cache_dir,
-                                used, per_query): q
+                                used, limits[q]): q
                     for q in queries}
             by_query: dict[str, list] = {}
             for fut in as_completed(futs):
@@ -229,8 +321,10 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
                         clips.append(path)
                         credits.append(credit)
                         used_ids.append(vid)
+                        kinds.append(kind_of[q])
         log(f"Story BG: {len(clips)} Pexels clips for {len(queries)} queries "
-            f"(up to {per_query}/query).")
+            f"(up to {per_query}/query, {clean_per}/cleaning query; "
+            f"{sum(1 for k in kinds if k == 'cleaning')} cleaning).")
     else:
         log("Story BG: no PEXELS key, using BG_DIR only.")
     bg_dir = Path(cfg.bg_dir)
@@ -240,6 +334,7 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
         for p in local:
             if str(p) not in {str(c) for c in clips}:
                 clips.append(p)
+                kinds.append("local")
         if local:
             log(f"Story BG: +{len(local)} local clips from {bg_dir}.")
     if not clips:
@@ -250,7 +345,7 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
     if len(clips) < cfg.min_clips:
         warn(f"Story BG: only {len(clips)} clips (<{cfg.min_clips} target); "
              "reuse spacing relaxed.")
-    return clips, credits, used_ids
+    return clips, credits, used_ids, kinds
 
 
 def _pick_bgm(cfg: StoryConfig) -> Path | None:
@@ -382,12 +477,19 @@ def build_visuals(content: Content, narration: NarrationResult,
     total = narration.duration + 0.4
     log(f"Story visuals: {narration.duration:.1f}s narration → {total:.1f}s video.")
 
-    # Stage 1: clips.
-    clips, credits, used_ids = gather_clips(
-        list(content.extras.get("bg_queries", [])) or
-        list(narration.extras.get("bg_queries", [])),
+    # Stage 1: clips (beats[].query used to sit dead in extras — merge
+    # beat queries with the content/narration bg_queries up front).
+    beat_queries = [str(b.get("query", "")).strip()
+                    for b in (content.extras.get("beats") or [])
+                    if isinstance(b, dict) and str(b.get("query", "")).strip()]
+    clips, credits, used_ids, kinds = gather_clips(
+        list(dict.fromkeys([
+            *(content.extras.get("bg_queries", []) or []),
+            *beat_queries,
+            *(narration.extras.get("bg_queries", []) or [])])),
         genre, cfg)
-    log(f"Stage 1/6 clips: {len(clips)} BG sources, {len(used_ids)} Pexels ids.")
+    log(f"Stage 1/6 clips: {len(clips)} BG sources, {len(used_ids)} Pexels ids "
+        f"({sum(1 for k in kinds if k == 'cleaning')} cleaning).")
 
     # Stage 2: plan + transcode (planner gets real clip durations for
     # exact source-window math).
@@ -398,12 +500,15 @@ def build_visuals(content: Content, narration: NarrationResult,
         except Exception:
             c_dur = 30.0
         cid = used_ids[i] if i < len(used_ids) else Path(c).stem
-        clip_infos.append({"id": str(cid), "duration": c_dur})
+        clip_infos.append({"id": str(cid), "duration": c_dur,
+                           "kind": kinds[i] if i < len(kinds) else "local"})
     segs = plan(total, seg_min=cfg.seg_min, seg_max=cfg.seg_max,
                 n_clips=len(clips), speed_min=cfg.bg_speed_min,
                 speed_max=cfg.bg_speed_max,
                 min_segments=cfg.min_segments, max_segments=cfg.max_segments,
-                clips=clip_infos)
+                clips=clip_infos,
+                cleaning_share=float(getattr(cfg, "cleaning_share", 0.55)
+                                     or 0.0))
     log(f"Stage 2/6 plan: {len(segs)} segments "
         f"({segs[0]['dur']:.2f}s avg, speeds {segs[0]['speed']}).")
     seg_files = _transcode_segments(clips, segs, workdir)
