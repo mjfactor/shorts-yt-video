@@ -24,6 +24,11 @@ class StoryNiche(Niche):
     NAME = NAME
     LABEL = LABEL
     MODE = MODE
+    Config = StoryConfig
+
+    def load_config(self, name: str | None = None) -> StoryConfig:
+        """Build StoryConfig (used by core._resolve_config)."""
+        return StoryConfig.from_env(name or self.NAME or MODE)
 
     def generate_content(self, history: list[dict],
                          cfg: NicheConfig) -> Content:
