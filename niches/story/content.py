@@ -579,7 +579,7 @@ def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
 
 
 def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
-                      raw: object, err: Exception) -> tuple[str, dict]:
+                      raw: object, err: Exception | None) -> tuple[str, dict]:
     """Same-model shape retry prompt carrying the validator's specifics.
 
     Mirrors _length_fix_prompt: the base prompt is rebuilt and a
@@ -714,6 +714,17 @@ def _to_content(meta: dict, slots: dict, wps: float,
                 "recent_pexels_ids": recent_ids})
 
 
+def _model_attempts(cfg: StoryConfig, model: str) -> int:
+    """Per-model draft budget: Lite models get cfg.lite_retries (default
+    5) so misses converge; every other model keeps 2."""
+    if "lite" in str(model or "").lower():
+        try:
+            return min(8, max(1, int(getattr(cfg, "lite_retries", 5))))
+        except (TypeError, ValueError):
+            return 5
+    return 2
+
+
 def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
     """Gemini story with similarity regens; offline fallback only when keyless.
 
@@ -733,73 +744,72 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
             prompt, slots = build_prompt(history, cfg, wps)
             data = None
             for mi, model in enumerate(models):
-                try:
-                    raw = client.generate_json(
-                        model, prompt, generation_config={
-                            "temperature": 0.8, "maxOutputTokens": 8192})
-                except Exception as e:
-                    last_error = e
-                    log(f"Story model {model} unusable ({e}), trying next...")
-                    time.sleep(cfg.backoff if mi + 1 >= len(models) else 2)
-                    continue
-                try:
-                    data = validate_extra(raw, cfg, wps, micro_accept=True)
-                except ValueError as e:
-                    # Fixable shape reject (sentence length, hook/beats
-                    # mismatch, ...): one same-model retry before
-                    # discarding this model. Out-of-range drafts get a
-                    # measured lengthen/tighten prompt aiming mid-range;
-                    # other rejects get a targeted shape-fix prompt naming
-                    # the validator error and offending excerpt. Near-misses
-                    # (within micro margin) are accepted without a retry
-                    # call so an off-by-one never burns a model.
-                    if _is_length_error(e):
-                        n0 = _draft_word_count(raw)
-                        if n0 is not None:
-                            _lo, _hi = target_words(cfg, wps)
-                            if _is_near_miss(n0, _lo, _hi):
-                                log(f"Story model {model} draft near-miss "
-                                    f"({n0} words vs {_lo - 15}-{_hi + 15}), "
-                                    "micro-accepting without retry...")
-                                try:
-                                    data = validate_extra(
-                                        raw, cfg, wps, micro_accept=True)
-                                except ValueError as e_nm:
-                                    log(f"Story model {model} draft rejected "
-                                        f"({e_nm}), retrying same model once...")
-                                    data = None
-                                if data is not None:
-                                    if mi:
-                                        models.remove(model)
-                                        models.insert(0, model)
-                                    break
-                        if data is None:
-                            log(f"Story model {model} draft length rejected "
-                                f"({e}), lengthen/tighten retry same model...")
-                    else:
-                        log(f"Story model {model} draft rejected ({e}), "
-                            "retrying same model once...")
-                    time.sleep(2)
+                tries = _model_attempts(cfg, model)
+                raw_latest: object = None
+                err_latest: Exception | None = None
+                for attempt in range(1, tries + 1):
                     try:
-                        if _is_length_error(e):
-                            retry_prompt, _retry_slots = _length_fix_prompt(
-                                history, cfg, wps, raw, e)
+                        if attempt == 1:
+                            raw_latest = client.generate_json(
+                                model, prompt, generation_config={
+                                    "temperature": 0.8, "maxOutputTokens": 8192})
                         else:
-                            retry_prompt, _retry_slots = _shape_fix_prompt(
-                                history, cfg, wps, raw, e)
-                        data = validate_extra(
-                            client.generate_json(
-                                model, retry_prompt, generation_config={
-                                    "temperature": 0.8,
-                                    "maxOutputTokens": 8192}),
-                            cfg, wps, micro_accept=True)
-                    except Exception as e2:
-                        last_error = e2
-                        log(f"Story model {model} unusable ({e2}), "
-                            "trying next...")
-                        time.sleep(cfg.backoff if mi + 1 >= len(models)
-                                   else 2)
-                        continue
+                            # Every retry re-aims from the LATEST draft so a
+                            # wrong-direction miss corrects instead of
+                            # compounding: deficit/surplus to mid plus card
+                            # shorten + verbatim sentence 1 in one prompt.
+                            fix_prompt, _retry_slots = _shape_fix_prompt(
+                                history, cfg, wps, raw_latest, err_latest)
+                            raw_latest = client.generate_json(
+                                model, fix_prompt, generation_config={
+                                    "temperature": 0.8, "maxOutputTokens": 8192})
+                    except Exception as e:
+                        last_error = e
+                        log(f"Story model {model} unusable ({e}), trying next...")
+                        time.sleep(cfg.backoff if mi + 1 >= len(models) else 2)
+                        raw_latest = None
+                        break
+                    try:
+                        data = validate_extra(raw_latest, cfg, wps, micro_accept=True)
+                    except ValueError as e:
+                        err_latest = e
+                        # Fixable reject: same-model retries before
+                        # discarding this model. Length near-misses
+                        # (within micro/grace margin) are accepted without
+                        # a retry call so an off-by-one never burns a model.
+                        if _is_length_error(e):
+                            n0 = _draft_word_count(raw_latest)
+                            if n0 is not None:
+                                _lo, _hi = target_words(cfg, wps)
+                                if _is_near_miss(n0, _lo, _hi):
+                                    log(f"Story model {model} draft near-miss "
+                                        f"({n0} words vs {_lo - 15}-{_hi + 15}), "
+                                        "micro-accepting without retry...")
+                                    try:
+                                        data = validate_extra(
+                                            raw_latest, cfg, wps, micro_accept=True)
+                                    except ValueError as e_nm:
+                                        err_latest = e_nm
+                                        log(f"Story model {model} draft rejected "
+                                            f"({e_nm}), retrying same model...")
+                                        data = None
+                                    if data is not None:
+                                        break
+                        if data is None and attempt < tries:
+                            n_latest = _draft_word_count(raw_latest)
+                            log(f"Story model {model} draft rejected "
+                                f"({e})"
+                                f"{f' [{n_latest} words]' if n_latest else ''}, "
+                                f"retry {attempt + 1}/{tries} same model...")
+                            time.sleep(2)
+                            continue
+                    if data is not None:
+                        break
+                if data is None:
+                    if raw_latest is not None:
+                        log(f"Story model {model} exhausted after {tries} "
+                            "attempts, trying next...")
+                    continue
                 if mi:
                     models.remove(model)
                     models.insert(0, model)
