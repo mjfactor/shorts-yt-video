@@ -21,9 +21,9 @@ DEFAULT_GENRES = (
     "wedding", "roommate", "inheritance", "social-media", "petty-revenge",
 )
 
-DEFAULT_TEXT_MODELS = ("gemini-3.8-flash", "gemini-3.7-flash",
-                       "gemini-3.5-flash", "gemini-3.5-flash-lite",
-                       "gemini-3.1-flash-lite")
+DEFAULT_TEXT_MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+                       "gemini-3.5-flash", "gemini-3.7-flash",
+                       "gemini-3.8-flash")
 DEFAULT_TTS_MODELS = ("gemini-2.5-flash-preview-tts",
                       "gemini-3.1-flash-tts-preview")
 
@@ -44,6 +44,13 @@ class StoryConfig(NicheConfig):
     max_seconds: float = 130.0
     # Narration render speed multiplier.
     narration_speed: float = 1.15
+    # Gapless narration: trim per-chunk leading/trailing silence before
+    # concat so no per-sentence pause is baked in (1/true = on).
+    trim_chunk_silence: bool = True
+    # Controlled inter-chunk pause restored after trim (seconds, 0.0-0.5;
+    # default 0.10 = slight natural beat, far below the old ~0.42s baked
+    # pauses). Applies only when trim_chunk_silence is on.
+    chunk_pause_sec: float = 0.10
     # Gemini TTS speech model + voice pool (rotated per video).
     # tts_model is kept for backward compat and always equals tts_models[0].
     tts_model: str = "gemini-3.1-flash-tts-preview"
@@ -210,6 +217,9 @@ class StoryConfig(NicheConfig):
             target_max_seconds=tmax,
             max_seconds=env_float("MAX_SECONDS", 130.0, "STORY_"),
             narration_speed=env_float("NARRATION_SPEED", 1.15, "STORY_"),
+            trim_chunk_silence=env_bool("TRIM_CHUNK_SILENCE", True, "STORY_"),
+            chunk_pause_sec=min(0.5, max(0.0, env_float(
+                "CHUNK_PAUSE_SEC", 0.10, "STORY_"))),
             tts_model=tts_pool[0],
             tts_models=tts_pool,
             story_models=_story_models(),

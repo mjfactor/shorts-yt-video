@@ -54,7 +54,12 @@ def pcm_to_wav(pcm: bytes, sample_rate: int, out_path: str | Path) -> Path:
 
 
 class GeminiClient:
-    """Sticky-key client: 429 backs off same-key, 4xx/timeout fail over fast."""
+    """Sticky-key client: 429 cools that key and rotates (quota-hint 429s
+    kill the model for the run), 4xx/timeout fail over fast."""
+
+    # 429 body hints meaning "this model is done for today" (not a
+    # transient per-minute limit): skip the model for the rest of the run.
+    _QUOTA_HINTS = ("rpd", "per day", "per-day", "perday", "daily", "quota")
 
     def __init__(self, keys: list[str], *, timeout: int = 40,
                  tts_timeout: int = 90, tries: int = 2, backoff: int = 5,
@@ -68,6 +73,8 @@ class GeminiClient:
         self.backoff = backoff
         self.safety = safety_settings if safety_settings is not None else DEFAULT_SAFETY_SETTINGS
         self._key_idx = 0
+        self._cooldowns: dict[int, float] = {}
+        self._dead_models: set[str] = set()
 
     @classmethod
     def from_env(cls, prefix: str = "GEMINI_API_KEY", **kw) -> "GeminiClient":
@@ -115,17 +122,75 @@ class GeminiClient:
                 pass
         return None
 
+    @staticmethod
+    def _url_model(url: str) -> str:
+        """Model ID embedded in a generate URL ('' when absent)."""
+        m = re.search(r"/models/([^/:?]+)", url or "")
+        return m.group(1) if m else ""
+
+    @staticmethod
+    def _body_blob(exc: Exception) -> str:
+        """Lowercased response body + error text for hint matching."""
+        try:
+            resp = getattr(exc, "response", None)
+            body = str(getattr(resp, "text", "") or "") \
+                if resp is not None else ""
+            return f"{body} {exc}".lower()
+        except Exception:
+            return str(exc).lower()
+
+    @classmethod
+    def _is_quota_exhausted(cls, exc: Exception) -> bool:
+        """True when a 429 body hints RPD / per-day / quota exhaustion."""
+        blob = cls._body_blob(exc)
+        return any(h in blob for h in cls._QUOTA_HINTS)
+
+    @staticmethod
+    def _retry_after_seconds(exc: Exception) -> float | None:
+        """Retry-After header in seconds, or None when absent/unparseable."""
+        try:
+            resp = getattr(exc, "response", None)
+            headers = getattr(resp, "headers", None) \
+                if resp is not None else None
+            val = headers.get("Retry-After") if headers else None
+            if val is None or str(val).strip() == "":
+                return None
+            return max(0.0, float(str(val).strip()))
+        except (TypeError, ValueError, AttributeError):
+            pass
+        return None
+
     def post(self, url: str, payload: dict, *, timeout: int | None = None,
              validate=None) -> dict:
-        """POST with rotation. `url` is keyless; `validate` gates 200 payloads."""
+        """POST with rotation. `url` is keyless; `validate` gates 200 payloads.
+
+        429 cools that key (Retry-After header, else backoff+jitter) and
+        rotates to a non-cooled key; cooldowns expire via monotonic. One
+        key always stays usable so single-key setups keep the old
+        sleep-and-retry behavior. A 429 hinting RPD/per-day/quota marks
+        the model dead for the run (like _is_dead_model) instead.
+        """
         tries = self.tries
         backoff = self.backoff
         timeout = self.timeout if timeout is None else timeout
         n = len(self.keys)
+        model_id = self._url_model(url)
+        if model_id and model_id in self._dead_models:
+            raise RuntimeError(
+                f"Gemini model {model_id} marked quota-dead earlier this "
+                "run, skipping...")
+        now = time.monotonic()
+        order = [(self._key_idx + k) % n for k in range(n)]
+        usable = [i for i in order if self._cooldowns.get(i, 0.0) <= now]
+        if not usable:
+            usable = [min(order,
+                          key=lambda i: self._cooldowns.get(i, 0.0))]
+            log(f"Gemini keys all cooling down, using least-cooled key "
+                f"{usable[0] + 1}/{n}...")
         last_err: Exception | None = None
         server_only_failures = 0
-        for k in range(n):
-            idx = (self._key_idx + k) % n
+        for j, idx in enumerate(usable):
+            last_in_line = (j == len(usable) - 1)
             sep = "&" if "?" in url else "?"
             keyed = f"{url}{sep}key={self.keys[idx]}"
             key_server_only = True
@@ -140,10 +205,11 @@ class GeminiClient:
                         except Exception as ve:
                             last_err = ve
                             key_server_only = False
-                            if k < n - 1:
+                            if not last_in_line:
                                 log(f"Gemini key {idx + 1}/{n} unusable payload, failing over...")
                             break
                     self._key_idx = idx
+                    self._cooldowns.clear()
                     return data
                 except Exception as e:
                     last_err = e
@@ -158,16 +224,32 @@ class GeminiClient:
                         raise
                     if status == 429:
                         key_server_only = False
+                        if self._is_quota_exhausted(e):
+                            if model_id:
+                                self._dead_models.add(model_id)
+                            log(f"Gemini model {model_id or '?'} quota-exhausted "
+                                "(429 hints RPD/per-day/quota), marking dead "
+                                "for run...")
+                            raise
+                        wait = self._retry_after_seconds(e)
+                        if wait is None:
+                            wait = max(20.0, backoff * attempt * 4) \
+                                + random.uniform(1.0, 3.0)
+                        self._cooldowns[idx] = time.monotonic() + wait
+                        if not last_in_line:
+                            log(f"Gemini key {idx + 1}/{n} rate-limited, "
+                                f"cooling {wait:.1f}s and failing over...")
+                            break
                         if attempt == tries:
                             break
-                        wait = max(20.0, backoff * attempt * 4) + random.uniform(1.0, 3.0)
-                        log(f"Gemini key {idx + 1}/{n} rate-limited, waiting {wait:.1f}s...")
-                        time.sleep(wait)
+                        sleep = min(wait, 120.0)
+                        log(f"Gemini key {idx + 1}/{n} rate-limited, waiting {sleep:.1f}s...")
+                        time.sleep(sleep)
                         continue
                     if status in (401, 403, 408):
                         # Key/auth problems only: fail over to the next key.
                         key_server_only = False
-                        if k < n - 1:
+                        if not last_in_line:
                             log(f"Gemini key {idx + 1}/{n} rejected (HTTP {status}), failing over...")
                         break
                     if status is not None and 400 <= status < 500:

@@ -562,6 +562,50 @@ def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
     return header + base_prompt, slots
 
 
+def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
+                      raw: object, err: Exception) -> tuple[str, dict]:
+    """Same-model shape retry prompt carrying the validator's specifics.
+
+    Mirrors _length_fix_prompt: the base prompt is rebuilt and a
+    CORRECTION header is prepended naming the exact validator error,
+    the offending sentence excerpt(s), and the card-vs-first-sentence
+    diff. Instructs a surgical fix only (split >30w sentences at
+    conjunctions, card verbatim as sentence 1, beats joined == narration
+    exactly, total kept in range). Non-dict/empty drafts fall back to a
+    fresh prompt. The micro-accept path in the caller is unchanged.
+    """
+    lo, hi = target_words(cfg, wps)
+    mid = (lo + hi) // 2
+    base_prompt, slots = build_prompt(history, cfg, wps)
+    if not isinstance(raw, dict):
+        return base_prompt, slots
+    narr = raw.get("narration") or raw.get("story_text") or ""
+    if not isinstance(narr, str) or not narr.strip():
+        return base_prompt, slots
+    narr = narr.strip()
+    n = len(narr.split())
+    long_hits = [s.strip() for s in re.split(r"[.!?…]+", narr)
+                 if s.strip() and len(s.split()) > MAX_SENTENCE_WORDS][:2]
+    card = str(raw.get("card_text", "") or "").strip()
+    first = re.split(r"[.!?…]+", narr, maxsplit=1)[0].strip()
+    specifics = [f"validator error: {err}."]
+    for s in long_hits:
+        specifics.append(
+            f"offending sentence ({len(s.split())} words): "
+            f"'{s[:120]}...' — split it into two sentences at a "
+            "conjunction (and/but/because/so/when/while/which/that).")
+    if card and first != card:
+        specifics.append(
+            f"card line is '{card}' but the story opens with "
+            f"'{first[:80]}' — copy the card line VERBATIM as sentence 1.")
+    specifics.append(
+        f"keep the SAME story (same hook, twist, ending), keep every "
+        f"sentence 30 words or fewer, keep beat texts joined equal to "
+        f"narration EXACTLY, and hold the total near {n} words inside "
+        f"{lo}-{hi} (aim {mid}) — surgical fix only, no rewrite.")
+    return "CORRECTION — " + " ".join(specifics) + "\n\n" + base_prompt, slots
+
+
 def _make_client(cfg: StoryConfig):
     """Engine client or None when keyless (offline path)."""
     keys = list(cfg.gemini_keys)
@@ -647,7 +691,8 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                     # mismatch, ...): one same-model retry before
                     # discarding this model. Out-of-range drafts get a
                     # measured lengthen/tighten prompt aiming mid-range;
-                    # other rejects get a fresh prompt. Near-misses
+                    # other rejects get a targeted shape-fix prompt naming
+                    # the validator error and offending excerpt. Near-misses
                     # (within micro margin) are accepted without a retry
                     # call so an off-by-one never burns a model.
                     if _is_length_error(e):
@@ -682,8 +727,8 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                             retry_prompt, _retry_slots = _length_fix_prompt(
                                 history, cfg, wps, raw, e)
                         else:
-                            retry_prompt, _retry_slots = build_prompt(
-                                history, cfg, wps)
+                            retry_prompt, _retry_slots = _shape_fix_prompt(
+                                history, cfg, wps, raw, e)
                         data = validate_extra(
                             client.generate_json(
                                 model, retry_prompt, generation_config={
