@@ -1,7 +1,7 @@
 """Story stage 2: chunked Gemini TTS with PCM cache and a duration-fit loop.
 
-Flow: 60-90w sentence chunks (hash-cached PCM, resume missing) → 80ms
-crossfade concat → atempo + silenceremove + loudnorm → fit loop
+Flow: 60-90w sentence chunks (hash-cached PCM, resume missing) → gapless
+concat (per-chunk silence trimmed, zero overlap) → atempo + silenceremove + loudnorm → fit loop
 (100-120 proceed; 95-100/120-125 re-speed from cached PCM; else one
 paced re-synth; else sentence trim) → estimated word timings on the
 FINAL mix only (proportional fallback; no local transcription models).
@@ -35,7 +35,14 @@ from .config import StoryConfig
 
 CHUNK_MIN_WORDS = 60
 CHUNK_MAX_WORDS = 90
-XFADE_SEC = 0.08
+XFADE_SEC = 0.0  # gapless: chunk boundaries joined with zero overlap/pad
+# Per-chunk gap trim: strips TTS leading/trailing silence before concat,
+# then restores a short controlled pause (CHUNK_PAUSE_SEC, default 0.10s)
+# so delivery stays fast but natural. Softer -50dB threshold removes
+# digital padding without eating speech breath.
+GAP_TRIM_DB = -50
+GAP_TRIM_DUR = 0.02
+DEFAULT_CHUNK_PAUSE_SEC = 0.10
 MID_TARGET = 110.0  # midpoint of the 100-120s window
 
 GENRE_STYLES = {
@@ -191,28 +198,81 @@ def _pcm_to_chunk_mp3(pcm: bytes, rate: int, speed: float,
     return out_mp3
 
 
-def _concat_crossfade(chunks: list[Path], out_mp3: Path) -> Path:
-    """Join chunk mp3s with 80ms crossfades."""
-    if len(chunks) == 1:
-        run_ffmpeg(["ffmpeg", "-y", "-i", str(chunks[0]),
+def _trim_gap(src: Path, dst: Path) -> Path:
+    """Strip leading/trailing silence from one chunk (gapless join).
+
+    Same areverse idiom as _postprocess (exact on all builds); -50dB/20ms
+    removes digital padding without eating speech. Re-encodes.
+    """
+    filt = (f"silenceremove=start_periods=1:start_duration={GAP_TRIM_DUR}:"
+            f"start_threshold={GAP_TRIM_DB}dB,"
+            f"areverse,silenceremove=start_periods=1:"
+            f"start_duration={GAP_TRIM_DUR}:"
+            f"start_threshold={GAP_TRIM_DB}dB,areverse")
+    run_ffmpeg(["ffmpeg", "-y", "-i", str(src),
+                "-af", filt, "-c:a", "libmp3lame", str(dst)],
+               "chunk-gaptrim")
+    return dst
+
+
+def _pad_pause(src: Path, dst: Path, sec: float) -> Path:
+    """Append a short controlled silence after a trimmed chunk.
+
+    sec<=0 is a plain re-encode-free copy path (no pause added).
+    """
+    if sec <= 0:
+        run_ffmpeg(["ffmpeg", "-y", "-i", str(src),
+                    "-c:a", "libmp3lame", str(dst)], "chunk-nopad")
+        return dst
+    run_ffmpeg(["ffmpeg", "-y", "-i", str(src),
+                "-af", f"apad=pad_dur={float(sec):.3f}",
+                "-c:a", "libmp3lame", str(dst)], "chunk-pad")
+    return dst
+
+
+def _concat_crossfade(chunks: list[Path], out_mp3: Path,
+                      pause_sec: float = 0.0) -> Path:
+    """Join chunk mp3s: trim each, restore a short pause (all but last),
+    then concat with zero overlap (XFADE_SEC>0 keeps the legacy xfade)."""
+    trimmed: list[Path] = []
+    for i, c in enumerate(chunks):
+        t = c.parent / f"{c.stem}_notrim{c.suffix}"
+        _trim_gap(c, t)
+        if pause_sec > 0 and i < len(chunks) - 1:
+            p = c.parent / f"{c.stem}_pause{c.suffix}"
+            _pad_pause(t, p, pause_sec)
+            t = p
+        trimmed.append(t)
+    if len(trimmed) == 1:
+        run_ffmpeg(["ffmpeg", "-y", "-i", str(trimmed[0]),
                     "-c:a", "libmp3lame", str(out_mp3)], "chunk-copy")
         return out_mp3
-    inputs: list[str] = []
-    for c in chunks:
-        inputs += ["-i", str(c)]
-    filt, cur = "", "[0:a]"
-    for i in range(1, len(chunks)):
-        nxt = f"[a{i}]" if i < len(chunks) - 1 else "[aout]"
-        filt += f"{cur}[{i}:a]acrossfade=d={XFADE_SEC:.2f}:curve=tri{nxt};"
-        cur = nxt
-    run_ffmpeg(["ffmpeg", "-y", *inputs, "-filter_complex", filt,
-                "-map", "[aout]", "-c:a", "libmp3lame", str(out_mp3)],
-               "chunk-xfade")
+    if XFADE_SEC > 0:
+        inputs: list[str] = []
+        for c in trimmed:
+            inputs += ["-i", str(c)]
+        filt, cur = "", "[0:a]"
+        for i in range(1, len(trimmed)):
+            nxt = f"[a{i}]" if i < len(trimmed) - 1 else "[aout]"
+            filt += f"{cur}[{i}:a]acrossfade=d={XFADE_SEC:.2f}:curve=tri{nxt};"
+            cur = nxt
+        run_ffmpeg(["ffmpeg", "-y", *inputs, "-filter_complex", filt,
+                    "-map", "[aout]", "-c:a", "libmp3lame", str(out_mp3)],
+                   "chunk-xfade")
+        return out_mp3
+    # Exact concat: zero overlap; only the controlled pause added above.
+    lst = out_mp3.parent / f"{out_mp3.stem}_gapless.txt"
+    lst.write_text("".join(f"file '{p.resolve()}'\n" for p in trimmed),
+                   encoding="utf-8")
+    run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", str(lst), "-c", "copy", str(out_mp3)],
+               "chunk-concat")
     return out_mp3
 
 
 def _postprocess(raw_mp3: Path, out_mp3: Path) -> Path:
     """Leading/trailing silence trim + broadcast loudnorm on the full mix.
+    No padding/pauses added; inter-chunk gaps already removed at concat.
 
     Trailing trim uses the areverse idiom: the stop_periods form
     mis-trims speech on some builds (ffmpeg 9.0.1 collapsed 26s of
@@ -356,7 +416,7 @@ def _check_edge_sanity(words: list[dict], dur: float) -> str | None:
 
 
 def _concat_edge_parts(parts: list[Path], out_mp3: Path) -> Path:
-    """Exact concat (no crossfade drift) for the edge chunk fallback."""
+    """Gapless concat for the edge chunk fallback (parts pre-trimmed)."""
     lst = out_mp3.parent / f"{out_mp3.stem}_parts.txt"
     lst.write_text("".join(f"file '{p.resolve()}'\n" for p in parts),
                    encoding="utf-8")
@@ -387,6 +447,20 @@ def _edge_chunked(text: str, voice: str, rate: str, cfg: StoryConfig,
             waits=(2.0, 4.0),
             pitch=getattr(cfg, "edge_pitch", "+0Hz"),
         )
+        # Trim per-sentence silence BEFORE measuring the offset, then
+        # restore a short controlled pause (all but last sentence) so the
+        # pace stays fast but natural. Offsets use final durations.
+        gap_trim = getattr(cfg, "trim_chunk_silence", True)
+        pause_sec = float(getattr(cfg, "chunk_pause_sec",
+                                  DEFAULT_CHUNK_PAUSE_SEC) or 0.0)
+        if gap_trim:
+            tseg = workdir / f"narr_edge_c{i:02d}_notrim.mp3"
+            _trim_gap(seg, tseg)
+            tseg.replace(seg)
+            if pause_sec > 0 and i < len(sents) - 1:
+                pseg = workdir / f"narr_edge_c{i:02d}_pause.mp3"
+                _pad_pause(seg, pseg, pause_sec)
+                pseg.replace(seg)
         dur = ffprobe_duration(seg)
         if dur <= 0:
             raise ValueError(f"edge chunk {i} has no duration")
@@ -400,6 +474,90 @@ def _edge_chunked(text: str, voice: str, rate: str, cfg: StoryConfig,
             f"({dur:.1f}s, offset {offset:.1f}s)")
     mp3 = _concat_edge_parts(parts, workdir / "narr_edge_chunks.mp3")
     return mp3, words, len(parts)
+
+
+def _edge_single_surgery(raw_mp3: Path, words: list[dict], text: str,
+                         cfg: StoryConfig, workdir: Path,
+                         tag: str = "seg") -> tuple[Path, list[dict]]:
+    """Sentence-segment surgery on a whole-script single-call mp3.
+
+    Splits the mp3 at sentence boundaries from WordBoundary timings
+    aligned with _split_sentences, _trim_gap each segment, restores
+    cfg.chunk_pause_sec on all but last, then gapless-concats and
+    re-offsets timings from ffprobe'd segment durations (like
+    _edge_chunked, plus a monotonic clamp so WordBoundary end-overshoot
+    never overlaps). Offline ffmpeg only — the one network call already
+    happened. Returns (mp3, words); bails out unchanged when trimming
+    is disabled or words cannot align to sentences.
+    """
+    sents = _split_sentences(text)
+    if len(sents) < 2 or not words:
+        return raw_mp3, words
+    if not getattr(cfg, "trim_chunk_silence", True):
+        return raw_mp3, words
+    counts = [len(s.split()) for s in sents]
+    if sum(counts) != len(words):
+        warn(f"Story edge surgery: {len(words)} timed words vs "
+             f"{sum(counts)} sentence words; keeping single-call audio.")
+        return raw_mp3, words
+    raw_dur = ffprobe_duration(raw_mp3)
+    if raw_dur <= 0:
+        raise ValueError("edge single-call mp3 has no duration")
+    pause_sec = float(getattr(cfg, "chunk_pause_sec",
+                              DEFAULT_CHUNK_PAUSE_SEC) or 0.0)
+    parts: list[Path] = []
+    new_words: list[dict] = []
+    offset, idx, prev_end, pos = 0.0, 0, 0.0, 0.0
+    for i, cnt in enumerate(counts):
+        seg_words = words[idx:idx + cnt]
+        idx += cnt
+        s0 = max(0.0, float(seg_words[0].get("start", 0.0)) - 0.05)
+        s1 = min(raw_dur, float(seg_words[-1].get("end", 0.0)) + 0.05)
+        s0 = max(s0, pos)  # clamp: end-overshoot never overlaps
+        if s1 <= s0:
+            s1 = min(raw_dur, s0 + 0.05)
+        seg = workdir / f"narr_edge_{tag}{i:02d}.mp3"
+        run_ffmpeg(["ffmpeg", "-y", "-ss", f"{s0:.3f}", "-i", str(raw_mp3),
+                    "-t", f"{max(0.05, s1 - s0):.3f}",
+                    "-c:a", "libmp3lame", str(seg)], "edge-seg-slice")
+        tseg = workdir / f"narr_edge_{tag}{i:02d}_notrim.mp3"
+        _trim_gap(seg, tseg)
+        tseg.replace(seg)
+        if pause_sec > 0 and i < len(counts) - 1:
+            pseg = workdir / f"narr_edge_{tag}{i:02d}_pause.mp3"
+            _pad_pause(seg, pseg, pause_sec)
+            pseg.replace(seg)
+        dur = ffprobe_duration(seg)
+        if dur <= 0:
+            raise ValueError(f"edge surgery segment {i} has no duration")
+        for w in seg_words:
+            # Re-base to the slice start (single-call timeline is absolute;
+            # chunked-path events are per-chunk relative), then offset.
+            s = round(float(w.get("start", 0.0)) - s0 + offset, 3)
+            e = round(float(w.get("end", 0.0)) - s0 + offset, 3)
+            s = max(s, prev_end)  # monotonic clamp
+            e = max(e, s)
+            new_words.append({"word": str(w.get("word", "")),
+                              "start": s, "end": e})
+            prev_end = e
+        offset += dur
+        pos = s1
+        parts.append(seg)
+    mp3 = _concat_edge_parts(parts, workdir / f"narr_edge_{tag}.mp3")
+    log(f"Story edge surgery: {len(parts)} segments, "
+        f"{raw_dur:.1f}s -> {ffprobe_duration(mp3):.1f}s.")
+    return mp3, new_words
+
+
+def _synth_single_seg(text: str, voice: str, rate: str, cfg: StoryConfig,
+                      workdir: Path, tag: str) -> tuple[Path, list[dict]]:
+    """One edge synth_sync + offline sentence-segment surgery."""
+    seg_mp3 = workdir / f"narr_edge_{tag}_raw.mp3"
+    events = edge_client.synth_sync(
+        text, voice, rate, seg_mp3,
+        pitch=getattr(cfg, "edge_pitch", "+0Hz"))
+    words = _map_edge_words(events, text)
+    return _edge_single_surgery(seg_mp3, words, text, cfg, workdir, tag)
 
 
 def _edge_wav(src_mp3: Path, out_wav: Path) -> Path:
@@ -436,7 +594,9 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
     no SLA — preview path only; no commercial-rights claim on voices).
 
     Whole-script single call; sentence chunks only on observed failure.
-    No atempo/silenceremove/loudnorm here so timings stay sample-true.
+    The single-call mp3 gets offline sentence-segment surgery (trim +
+    controlled pause, timings re-offset) so baked TTS pauses never air;
+    no atempo/loudnorm here so levels stay intact.
     When TTS_PROVIDER_ORDER includes gemini (default edge,gemini),
     edge exhaustion falls back to whole-script gemini TTS.
     """
@@ -462,9 +622,8 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
     timing_note = ""
     n_chunks = 1
     try:
-        events = edge_client.synth_sync(text, voice, rate, raw_mp3,
-                                               pitch=getattr(cfg, "edge_pitch", "+0Hz"))
-        words = _map_edge_words(events, text)
+        raw_mp3, words = _synth_single_seg(
+            text, voice, rate, cfg, workdir, "raw")
         timing_note = f"edge boundaries ({len(words)} words)"
         n_chunks = 1
     except Exception as e:
@@ -494,10 +653,8 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
         for attempt in (1, 2):
             rate = _edge_refit_rate(rate, dur)
             log(f"Story edge fit: re-synth {attempt}/2 @ {rate}...")
-            raw_mp3 = workdir / f"narr_edge_refit{attempt}.mp3"
-            events = edge_client.synth_sync(text, voice, rate, raw_mp3,
-                                               pitch=getattr(cfg, "edge_pitch", "+0Hz"))
-            words = _map_edge_words(events, text)
+            raw_mp3, words = _synth_single_seg(
+                text, voice, rate, cfg, workdir, f"refit{attempt}")
             n_chunks = 1
             wav = _edge_wav(
                 raw_mp3, workdir / f"narr_edge_refit{attempt}.wav")
@@ -646,9 +803,11 @@ def narrate(content: Content, cfg: StoryConfig,
                               tries=cfg.tries, backoff=cfg.backoff)
     chunks = chunk_text(text)
     log(f"Story TTS: {len(chunks)} chunks, {len(text.split())} words")
+    pause = (float(getattr(cfg, "chunk_pause_sec", 0.10) or 0.0)
+             if getattr(cfg, "trim_chunk_silence", True) else 0.0)
 
     def _render_all(cur_style: str, tag: str) -> Path:
-        """Synthesize (resume cached) + crossfade + postprocess. Returns mp3."""
+        """Synthesize (resume cached) + trim/pause concat + postprocess."""
         chunk_mp3s = []
         for i, ch in enumerate(chunks):
             if i > 0:
@@ -663,7 +822,8 @@ def narrate(content: Content, cfg: StoryConfig,
                 log(f"Story TTS chunk {i + 1}/{len(chunks)} (cached)")
             chunk_mp3s.append(_pcm_to_chunk_mp3(
                 pcm, rate, cfg.narration_speed, workdir / f"chunk_{tag}_{i}.mp3"))
-        raw = _concat_crossfade(chunk_mp3s, workdir / f"narr_raw_{tag}.mp3")
+        raw = _concat_crossfade(chunk_mp3s, workdir / f"narr_raw_{tag}.mp3",
+                                pause)
         return _postprocess(raw, workdir / f"narr_{tag}.mp3")
 
     mp3 = _render_all(style, "a")
@@ -685,7 +845,8 @@ def narrate(content: Content, cfg: StoryConfig,
             sped.append(_pcm_to_chunk_mp3(
                 pcm, rate, cfg.narration_speed * factor,
                 workdir / f"chunk_b_{i}.mp3"))
-        mp3 = _postprocess(_concat_crossfade(sped, workdir / "narr_raw_b.mp3"),
+        mp3 = _postprocess(_concat_crossfade(sped, workdir / "narr_raw_b.mp3",
+                                             pause),
                            workdir / "narr_b.mp3")
         dur = ffprobe_duration(mp3)
         fit_note += f" -> re-speed {dur:.1f}s"

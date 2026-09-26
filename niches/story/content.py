@@ -164,6 +164,11 @@ def _starts_with_card(story: str, card_text: str) -> bool:
 
 _MICRO_WORDS = 5
 _MICRO_FRAC = 0.02
+# Under-floor grace: drafts up to this many words under the strict floor
+# (lo - 15) still air with a warning instead of burning a retry or
+# failing the run (~5s short at edge pace; 347/350 admitted, 243 still
+# expands). Ceiling side keeps the plain micro margin only.
+_MICRO_FLOOR_WORDS = 20
 
 
 def _micro_margin(lo: int, hi: int) -> int:
@@ -174,22 +179,27 @@ def _micro_margin(lo: int, hi: int) -> int:
 
 def _is_near_miss(n: int, lo: int, hi: int, tol: int = 15) -> bool:
     """True when n sits just outside the strict [lo-tol, hi+tol] window
-    but inside the micro margin — accept without a retry call."""
+    but inside the micro margin — accept without a retry call.
+
+    The floor side uses the under-floor grace band (up to
+    _MICRO_FLOOR_WORDS under); the ceiling side keeps the micro margin.
+    """
     s_lo, s_hi = lo - tol, hi + tol
     if s_lo <= n <= s_hi:
         return False
     m = _micro_margin(lo, hi)
-    return (s_lo - m) <= n <= (s_hi + m)
+    return (s_lo - max(m, _MICRO_FLOOR_WORDS)) <= n <= (s_hi + m)
 
 
 def validate_extra(data: dict, cfg: StoryConfig | None = None,
                    wps: float = 2.9, *, micro_accept: bool = False) -> dict:
     """Strict-check the story payload. Raises ValueError when unusable.
 
-    `micro_accept=True` widens ONLY the word-count gate by a micro margin
-    (max(5 words, 2% of mid)) so near-miss drafts (e.g. off-by-one) are
-    accepted without burning a retry model call. Every other gate is
-    enforced unchanged.
+    `micro_accept=True` widens the word-count gate: the ceiling keeps the
+    micro margin (max(5 words, 2% of mid)) while the floor admits drafts up
+    to _MICRO_FLOOR_WORDS under it with a warning, so near-miss drafts
+    (e.g. 347/350 vs a 361 floor) air a few seconds short instead of
+    burning a retry call. Every other gate is enforced unchanged.
     """
     if not isinstance(data, dict):
         raise ValueError("story output is not a JSON object")
@@ -206,12 +216,16 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
         s_lo, s_hi = lo - 15, hi + 15
         if micro_accept:
             m = _micro_margin(lo, hi)
-            s_lo, s_hi = s_lo - m, s_hi + m
+            s_lo, s_hi = s_lo - max(m, _MICRO_FLOOR_WORDS), s_hi + m
     else:
         lo, hi = 80, 160
         s_lo, s_hi = lo, hi
     if words < s_lo or words > s_hi:
         raise ValueError(f"'story_text' out of range ({words} words, need {lo - 15 if cfg is not None else lo}-{hi + 15 if cfg is not None else hi})")
+    if cfg is not None and micro_accept and words < lo - 15:
+        warn(f"'story_text' {words} words is under the {lo - 15}-word floor "
+             f"(grace to {lo - 15 - _MICRO_FLOOR_WORDS}) — airing with "
+             f"warning; narration runs a few seconds short.")
     for field in ("story_text", "hook"):
         text = story if field == "story_text" else str(data.get(field, "") or "")
         bad = _TTS_BAD_RE.search(text) or _EMOJI_RE.search(text)
@@ -411,7 +425,9 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         f"At ~{eff:.1f} wps, {lo} words ~= {lo_secs}s and {hi} words ~= "
         f"{hi_secs}s for the {secs}s target. Under {lo} words is "
         f"under-length and REJECTED — count every word before answering "
-        f"and deliver the FULL {mid}-word count, never a short draft.\n\n"
+        f"and deliver the FULL {mid}-word count, never a short draft. "
+        f"Under {lo - 15 - _MICRO_FLOOR_WORDS} words is unusable even on "
+        f"grace.\n\n"
         f"{history_block(history, cfg.history_prompt_n)}"
         "Return ONLY valid JSON with exactly these keys: title, card_text, "
         "card_highlight_word, hook, story_text, narration, genre, narrator_gender, key_words, "
@@ -562,6 +578,84 @@ def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
     return header + base_prompt, slots
 
 
+def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
+                      raw: object, err: Exception) -> tuple[str, dict]:
+    """Same-model shape retry prompt carrying the validator's specifics.
+
+    Mirrors _length_fix_prompt: the base prompt is rebuilt and a
+    CORRECTION header is prepended naming the exact validator error,
+    the offending sentence excerpt(s), and the card-vs-first-sentence
+    diff. Instructs a surgical fix only (split >30w sentences at
+    conjunctions, card verbatim as sentence 1 — shortened to <=8 words
+    first when the card itself is overlong, beats joined == narration
+    exactly, under-range totals pulled back with scaled sensory-beat
+    expansion per beat (same delta math as _length_fix_prompt) and
+    over-range totals condensed). Non-dict/empty drafts fall back to a
+    fresh prompt. The micro-accept path in the caller is unchanged.
+    """
+    lo, hi = target_words(cfg, wps)
+    mid = (lo + hi) // 2
+    base_prompt, slots = build_prompt(history, cfg, wps)
+    if not isinstance(raw, dict):
+        return base_prompt, slots
+    narr = raw.get("narration") or raw.get("story_text") or ""
+    if not isinstance(narr, str) or not narr.strip():
+        return base_prompt, slots
+    narr = narr.strip()
+    n = len(narr.split())
+    long_hits = [s.strip() for s in re.split(r"[.!?…]+", narr)
+                 if s.strip() and len(s.split()) > MAX_SENTENCE_WORDS][:2]
+    card = str(raw.get("card_text", "") or "").strip()
+    first = re.split(r"[.!?…]+", narr, maxsplit=1)[0].strip()
+    card_n = len(card.split()) if card else 0
+    specifics = [f"validator error: {err}."]
+    for s in long_hits:
+        specifics.append(
+            f"offending sentence ({len(s.split())} words): "
+            f"'{s[:120]}...' — split it into two sentences at a "
+            "conjunction (and/but/because/so/when/while/which/that).")
+    if card and card_n > 8:
+        specifics.append(
+            f"card line is {card_n} words ('{card}') — shorten the card "
+            f"itself to 8 words or fewer, then copy that shortened card "
+            f"VERBATIM as sentence 1 (replace the opening sentence "
+            f"wholesale, do not merge).")
+    elif card and first != card:
+        specifics.append(
+            f"card line is '{card}' but the story opens with "
+            f"'{first[:80]}' — copy the card line VERBATIM as sentence 1 "
+            f"(replace the opening sentence wholesale, do not merge).")
+    s_lo, s_hi = lo - 15, hi + 15
+    if n < s_lo:
+        deficit = mid - n
+        per_beat = max(1, min(3, round(deficit / 36)))
+        total = per_beat * 3
+        s_word = "sentence" if per_beat == 1 else "sentences"
+        specifics.append(
+            f"draft is {n} words but needs {s_lo}-{s_hi} (aim {mid}, "
+            f"+{deficit} words): EXPAND the same story by adding "
+            f"{per_beat} full {s_word} of concrete sensory beats "
+            f"(sights, sounds, physical actions, evidence, rising "
+            f"consequences) to EACH of beats 2, 3 and 4 (~{total} "
+            f"sentences / ~{deficit} words total, no filler monologue), "
+            f"keep the card line verbatim as sentence 1, keep every "
+            f"sentence 30 words or fewer, and keep beat texts joined "
+            f"equal to narration EXACTLY.")
+    elif n > s_hi:
+        specifics.append(
+            f"draft is {n} words but needs {s_lo}-{s_hi}: CONDENSE by "
+            f"cutting ~{n - mid} words of setup adjectives first, keeping "
+            f"beats 3-4 and the final beat fully expanded.")
+    else:
+        specifics.append(
+            f"hold the total near {n} words inside {lo}-{hi} (aim {mid}).")
+    specifics.append(
+        f"keep the SAME story (same hook, twist, ending), keep every "
+        f"sentence 30 words or fewer, keep beat texts joined equal to "
+        f"narration EXACTLY — surgical fix only, no rewrite.")
+    return "CORRECTION — " + " ".join(specifics) + "\n\n" + base_prompt, slots
+
+
 def _make_client(cfg: StoryConfig):
     """Engine client or None when keyless (offline path)."""
     keys = list(cfg.gemini_keys)
@@ -621,13 +715,20 @@ def _to_content(meta: dict, slots: dict, wps: float,
 
 
 def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
-    """Gemini story with similarity regens; offline fallback when keyless."""
+    """Gemini story with similarity regens; offline fallback only when keyless.
+
+    When keys exist but every model fails (transport/JSON errors or
+    unfixable validator rejects), raises RuntimeError instead of airing
+    a short silent fallback — the error propagates through core.run
+    (no history recorded) to pipeline notify_failure + exit 1.
+    """
     history = history or []
     wps = measure_wps(history, cfg.history_wps)
     client = _make_client(cfg)
     if client is not None:
         models = list(getattr(cfg, "story_models", None)
                       or DEFAULT_TEXT_MODELS)
+        last_error: Exception | None = None
         for _attempt in range(1 + cfg.similarity_retries):
             prompt, slots = build_prompt(history, cfg, wps)
             data = None
@@ -637,6 +738,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                         model, prompt, generation_config={
                             "temperature": 0.8, "maxOutputTokens": 8192})
                 except Exception as e:
+                    last_error = e
                     log(f"Story model {model} unusable ({e}), trying next...")
                     time.sleep(cfg.backoff if mi + 1 >= len(models) else 2)
                     continue
@@ -647,7 +749,8 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                     # mismatch, ...): one same-model retry before
                     # discarding this model. Out-of-range drafts get a
                     # measured lengthen/tighten prompt aiming mid-range;
-                    # other rejects get a fresh prompt. Near-misses
+                    # other rejects get a targeted shape-fix prompt naming
+                    # the validator error and offending excerpt. Near-misses
                     # (within micro margin) are accepted without a retry
                     # call so an off-by-one never burns a model.
                     if _is_length_error(e):
@@ -682,8 +785,8 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                             retry_prompt, _retry_slots = _length_fix_prompt(
                                 history, cfg, wps, raw, e)
                         else:
-                            retry_prompt, _retry_slots = build_prompt(
-                                history, cfg, wps)
+                            retry_prompt, _retry_slots = _shape_fix_prompt(
+                                history, cfg, wps, raw, e)
                         data = validate_extra(
                             client.generate_json(
                                 model, retry_prompt, generation_config={
@@ -691,6 +794,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                                     "maxOutputTokens": 8192}),
                             cfg, wps, micro_accept=True)
                     except Exception as e2:
+                        last_error = e2
                         log(f"Story model {model} unusable ({e2}), "
                             "trying next...")
                         time.sleep(cfg.backoff if mi + 1 >= len(models)
@@ -701,8 +805,11 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                     models.insert(0, model)
                 break
             if data is None:
-                log("All story models failed, using fallback.")
-                break
+                raise RuntimeError(
+                    f"Story Gemini failed on all {len(models)} models "
+                    f"(last error: {last_error}); refusing silent "
+                    f"fallback — fix keys/quota/prompt and re-run."
+                ) from last_error
             window = [h for h in history[-cfg.dedup_window:]
                       if h.get("niche", "") == MODE]
             reason = similarity_reason(data, slots, window, window[-30:])
@@ -716,7 +823,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
             warn(f"Story draft still similar ({reason}), accepting best-effort.")
             data["title"] = sanitize_title(data.get("title", ""), slots)
             return _to_content(data, slots, wps, history)
-    warn("Gemini unavailable: using standalone fallback story.")
+    warn("No Gemini keys: using standalone fallback story.")
     meta, slots = fallback_script(history)
     return _to_content(meta, slots, wps, history)
 
