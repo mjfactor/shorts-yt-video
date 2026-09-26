@@ -164,6 +164,11 @@ def _starts_with_card(story: str, card_text: str) -> bool:
 
 _MICRO_WORDS = 5
 _MICRO_FRAC = 0.02
+# Under-floor grace: drafts up to this many words under the strict floor
+# (lo - 15) still air with a warning instead of burning a retry or
+# failing the run (~5s short at edge pace; 347/350 admitted, 243 still
+# expands). Ceiling side keeps the plain micro margin only.
+_MICRO_FLOOR_WORDS = 20
 
 
 def _micro_margin(lo: int, hi: int) -> int:
@@ -174,22 +179,27 @@ def _micro_margin(lo: int, hi: int) -> int:
 
 def _is_near_miss(n: int, lo: int, hi: int, tol: int = 15) -> bool:
     """True when n sits just outside the strict [lo-tol, hi+tol] window
-    but inside the micro margin — accept without a retry call."""
+    but inside the micro margin — accept without a retry call.
+
+    The floor side uses the under-floor grace band (up to
+    _MICRO_FLOOR_WORDS under); the ceiling side keeps the micro margin.
+    """
     s_lo, s_hi = lo - tol, hi + tol
     if s_lo <= n <= s_hi:
         return False
     m = _micro_margin(lo, hi)
-    return (s_lo - m) <= n <= (s_hi + m)
+    return (s_lo - max(m, _MICRO_FLOOR_WORDS)) <= n <= (s_hi + m)
 
 
 def validate_extra(data: dict, cfg: StoryConfig | None = None,
                    wps: float = 2.9, *, micro_accept: bool = False) -> dict:
     """Strict-check the story payload. Raises ValueError when unusable.
 
-    `micro_accept=True` widens ONLY the word-count gate by a micro margin
-    (max(5 words, 2% of mid)) so near-miss drafts (e.g. off-by-one) are
-    accepted without burning a retry model call. Every other gate is
-    enforced unchanged.
+    `micro_accept=True` widens the word-count gate: the ceiling keeps the
+    micro margin (max(5 words, 2% of mid)) while the floor admits drafts up
+    to _MICRO_FLOOR_WORDS under it with a warning, so near-miss drafts
+    (e.g. 347/350 vs a 361 floor) air a few seconds short instead of
+    burning a retry call. Every other gate is enforced unchanged.
     """
     if not isinstance(data, dict):
         raise ValueError("story output is not a JSON object")
@@ -206,12 +216,16 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
         s_lo, s_hi = lo - 15, hi + 15
         if micro_accept:
             m = _micro_margin(lo, hi)
-            s_lo, s_hi = s_lo - m, s_hi + m
+            s_lo, s_hi = s_lo - max(m, _MICRO_FLOOR_WORDS), s_hi + m
     else:
         lo, hi = 80, 160
         s_lo, s_hi = lo, hi
     if words < s_lo or words > s_hi:
         raise ValueError(f"'story_text' out of range ({words} words, need {lo - 15 if cfg is not None else lo}-{hi + 15 if cfg is not None else hi})")
+    if cfg is not None and micro_accept and words < lo - 15:
+        warn(f"'story_text' {words} words is under the {lo - 15}-word floor "
+             f"(grace to {lo - 15 - _MICRO_FLOOR_WORDS}) — airing with "
+             f"warning; narration runs a few seconds short.")
     for field in ("story_text", "hook"):
         text = story if field == "story_text" else str(data.get(field, "") or "")
         bad = _TTS_BAD_RE.search(text) or _EMOJI_RE.search(text)
@@ -411,7 +425,9 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         f"At ~{eff:.1f} wps, {lo} words ~= {lo_secs}s and {hi} words ~= "
         f"{hi_secs}s for the {secs}s target. Under {lo} words is "
         f"under-length and REJECTED — count every word before answering "
-        f"and deliver the FULL {mid}-word count, never a short draft.\n\n"
+        f"and deliver the FULL {mid}-word count, never a short draft. "
+        f"Under {lo - 15 - _MICRO_FLOOR_WORDS} words is unusable even on "
+        f"grace.\n\n"
         f"{history_block(history, cfg.history_prompt_n)}"
         "Return ONLY valid JSON with exactly these keys: title, card_text, "
         "card_highlight_word, hook, story_text, narration, genre, narrator_gender, key_words, "
@@ -572,9 +588,10 @@ def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
     diff. Instructs a surgical fix only (split >30w sentences at
     conjunctions, card verbatim as sentence 1 — shortened to <=8 words
     first when the card itself is overlong, beats joined == narration
-    exactly, off-range totals pulled back with expand/condense direction).
-    Non-dict/empty drafts fall back to a fresh prompt. The micro-accept
-    path in the caller is unchanged.
+    exactly, under-range totals pulled back with scaled sensory-beat
+    expansion per beat (same delta math as _length_fix_prompt) and
+    over-range totals condensed). Non-dict/empty drafts fall back to a
+    fresh prompt. The micro-accept path in the caller is unchanged.
     """
     lo, hi = target_words(cfg, wps)
     mid = (lo + hi) // 2
@@ -610,10 +627,20 @@ def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
             f"(replace the opening sentence wholesale, do not merge).")
     s_lo, s_hi = lo - 15, hi + 15
     if n < s_lo:
+        deficit = mid - n
+        per_beat = max(1, min(3, round(deficit / 36)))
+        total = per_beat * 3
+        s_word = "sentence" if per_beat == 1 else "sentences"
         specifics.append(
-            f"draft is {n} words but needs {s_lo}-{s_hi}: EXPAND the same "
-            f"story with ~{mid - n} words of concrete action and "
-            f"consequences across beats 2-4 (no filler monologue).")
+            f"draft is {n} words but needs {s_lo}-{s_hi} (aim {mid}, "
+            f"+{deficit} words): EXPAND the same story by adding "
+            f"{per_beat} full {s_word} of concrete sensory beats "
+            f"(sights, sounds, physical actions, evidence, rising "
+            f"consequences) to EACH of beats 2, 3 and 4 (~{total} "
+            f"sentences / ~{deficit} words total, no filler monologue), "
+            f"keep the card line verbatim as sentence 1, keep every "
+            f"sentence 30 words or fewer, and keep beat texts joined "
+            f"equal to narration EXACTLY.")
     elif n > s_hi:
         specifics.append(
             f"draft is {n} words but needs {s_lo}-{s_hi}: CONDENSE by "
