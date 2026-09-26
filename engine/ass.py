@@ -263,10 +263,11 @@ def _wordpop_colorize(word: str, display: str, key_words: set[str]) -> str:
 
 def _wordpop_events(words: list[dict], *, key_words: set[str],
                     upper: bool, start_after: float) -> list[tuple]:
-    """Filter/shift to start_after, group, then chain end=next.start.
+    """Filter/shift to start_after, group, then cap each event.
 
-    Chaining absorbs gaps of any size (gaps > 0.4 are filled by extending
-    the previous event); the last event ends at word end + 0.15.
+    Each event holds at most 0.15s past its word end (gaps stay gaps
+    instead of stretching the prior caption across them); the last
+    event ends at word end + 0.15.
     """
     shifted: list[dict] = []
     for w in words or []:
@@ -286,12 +287,16 @@ def _wordpop_events(words: list[dict], *, key_words: set[str],
     groups = _wordpop_groups(shifted)
     for gi, g in enumerate(groups):
         start = float(g[0].get("start", 0.0))
+        word_end = float(g[-1].get("end", start + 0.4))
+        cap = word_end + 0.15
         if gi + 1 < len(groups):
             end = float(groups[gi + 1][0].get("start", start))
+            if end > cap:
+                end = cap  # hold at most 0.15s; gaps stay visible
             if end <= start:
                 end = start + 0.2  # never overlap
         else:
-            end = float(g[-1].get("end", start + 0.4)) + 0.15
+            end = cap
         parts = []
         for item in g:
             w = str(item.get("word", ""))

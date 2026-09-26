@@ -136,7 +136,7 @@ class TestWordpopEvents(unittest.TestCase):
             write_wordpop_ass(words, out)
             dlgs = _dialogues(out.read_text(encoding="utf-8"))
         self.assertEqual(len(dlgs), 2)
-        self.assertEqual(_dlg_times(dlgs[0])[1], "0:00:05.00")
+        self.assertEqual(_dlg_times(dlgs[0])[1], "0:00:00.45")
 
 
 class TestWordpopHighlight(unittest.TestCase):
