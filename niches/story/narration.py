@@ -476,6 +476,90 @@ def _edge_chunked(text: str, voice: str, rate: str, cfg: StoryConfig,
     return mp3, words, len(parts)
 
 
+def _edge_single_surgery(raw_mp3: Path, words: list[dict], text: str,
+                         cfg: StoryConfig, workdir: Path,
+                         tag: str = "seg") -> tuple[Path, list[dict]]:
+    """Sentence-segment surgery on a whole-script single-call mp3.
+
+    Splits the mp3 at sentence boundaries from WordBoundary timings
+    aligned with _split_sentences, _trim_gap each segment, restores
+    cfg.chunk_pause_sec on all but last, then gapless-concats and
+    re-offsets timings from ffprobe'd segment durations (like
+    _edge_chunked, plus a monotonic clamp so WordBoundary end-overshoot
+    never overlaps). Offline ffmpeg only — the one network call already
+    happened. Returns (mp3, words); bails out unchanged when trimming
+    is disabled or words cannot align to sentences.
+    """
+    sents = _split_sentences(text)
+    if len(sents) < 2 or not words:
+        return raw_mp3, words
+    if not getattr(cfg, "trim_chunk_silence", True):
+        return raw_mp3, words
+    counts = [len(s.split()) for s in sents]
+    if sum(counts) != len(words):
+        warn(f"Story edge surgery: {len(words)} timed words vs "
+             f"{sum(counts)} sentence words; keeping single-call audio.")
+        return raw_mp3, words
+    raw_dur = ffprobe_duration(raw_mp3)
+    if raw_dur <= 0:
+        raise ValueError("edge single-call mp3 has no duration")
+    pause_sec = float(getattr(cfg, "chunk_pause_sec",
+                              DEFAULT_CHUNK_PAUSE_SEC) or 0.0)
+    parts: list[Path] = []
+    new_words: list[dict] = []
+    offset, idx, prev_end, pos = 0.0, 0, 0.0, 0.0
+    for i, cnt in enumerate(counts):
+        seg_words = words[idx:idx + cnt]
+        idx += cnt
+        s0 = max(0.0, float(seg_words[0].get("start", 0.0)) - 0.05)
+        s1 = min(raw_dur, float(seg_words[-1].get("end", 0.0)) + 0.05)
+        s0 = max(s0, pos)  # clamp: end-overshoot never overlaps
+        if s1 <= s0:
+            s1 = min(raw_dur, s0 + 0.05)
+        seg = workdir / f"narr_edge_{tag}{i:02d}.mp3"
+        run_ffmpeg(["ffmpeg", "-y", "-ss", f"{s0:.3f}", "-i", str(raw_mp3),
+                    "-t", f"{max(0.05, s1 - s0):.3f}",
+                    "-c:a", "libmp3lame", str(seg)], "edge-seg-slice")
+        tseg = workdir / f"narr_edge_{tag}{i:02d}_notrim.mp3"
+        _trim_gap(seg, tseg)
+        tseg.replace(seg)
+        if pause_sec > 0 and i < len(counts) - 1:
+            pseg = workdir / f"narr_edge_{tag}{i:02d}_pause.mp3"
+            _pad_pause(seg, pseg, pause_sec)
+            pseg.replace(seg)
+        dur = ffprobe_duration(seg)
+        if dur <= 0:
+            raise ValueError(f"edge surgery segment {i} has no duration")
+        for w in seg_words:
+            # Re-base to the slice start (single-call timeline is absolute;
+            # chunked-path events are per-chunk relative), then offset.
+            s = round(float(w.get("start", 0.0)) - s0 + offset, 3)
+            e = round(float(w.get("end", 0.0)) - s0 + offset, 3)
+            s = max(s, prev_end)  # monotonic clamp
+            e = max(e, s)
+            new_words.append({"word": str(w.get("word", "")),
+                              "start": s, "end": e})
+            prev_end = e
+        offset += dur
+        pos = s1
+        parts.append(seg)
+    mp3 = _concat_edge_parts(parts, workdir / f"narr_edge_{tag}.mp3")
+    log(f"Story edge surgery: {len(parts)} segments, "
+        f"{raw_dur:.1f}s -> {ffprobe_duration(mp3):.1f}s.")
+    return mp3, new_words
+
+
+def _synth_single_seg(text: str, voice: str, rate: str, cfg: StoryConfig,
+                      workdir: Path, tag: str) -> tuple[Path, list[dict]]:
+    """One edge synth_sync + offline sentence-segment surgery."""
+    seg_mp3 = workdir / f"narr_edge_{tag}_raw.mp3"
+    events = edge_client.synth_sync(
+        text, voice, rate, seg_mp3,
+        pitch=getattr(cfg, "edge_pitch", "+0Hz"))
+    words = _map_edge_words(events, text)
+    return _edge_single_surgery(seg_mp3, words, text, cfg, workdir, tag)
+
+
 def _edge_wav(src_mp3: Path, out_wav: Path) -> Path:
     """mp3 -> wav via ffmpeg. Plain convert only: no volume gain (edge
     speech already peaks ~-4 dB) and no atempo/silenceremove/loudnorm,
@@ -510,7 +594,9 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
     no SLA — preview path only; no commercial-rights claim on voices).
 
     Whole-script single call; sentence chunks only on observed failure.
-    No atempo/silenceremove/loudnorm here so timings stay sample-true.
+    The single-call mp3 gets offline sentence-segment surgery (trim +
+    controlled pause, timings re-offset) so baked TTS pauses never air;
+    no atempo/loudnorm here so levels stay intact.
     When TTS_PROVIDER_ORDER includes gemini (default edge,gemini),
     edge exhaustion falls back to whole-script gemini TTS.
     """
@@ -536,9 +622,8 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
     timing_note = ""
     n_chunks = 1
     try:
-        events = edge_client.synth_sync(text, voice, rate, raw_mp3,
-                                               pitch=getattr(cfg, "edge_pitch", "+0Hz"))
-        words = _map_edge_words(events, text)
+        raw_mp3, words = _synth_single_seg(
+            text, voice, rate, cfg, workdir, "raw")
         timing_note = f"edge boundaries ({len(words)} words)"
         n_chunks = 1
     except Exception as e:
@@ -568,10 +653,8 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
         for attempt in (1, 2):
             rate = _edge_refit_rate(rate, dur)
             log(f"Story edge fit: re-synth {attempt}/2 @ {rate}...")
-            raw_mp3 = workdir / f"narr_edge_refit{attempt}.mp3"
-            events = edge_client.synth_sync(text, voice, rate, raw_mp3,
-                                               pitch=getattr(cfg, "edge_pitch", "+0Hz"))
-            words = _map_edge_words(events, text)
+            raw_mp3, words = _synth_single_seg(
+                text, voice, rate, cfg, workdir, f"refit{attempt}")
             n_chunks = 1
             wav = _edge_wav(
                 raw_mp3, workdir / f"narr_edge_refit{attempt}.wav")
