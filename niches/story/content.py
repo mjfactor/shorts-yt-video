@@ -570,9 +570,11 @@ def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
     CORRECTION header is prepended naming the exact validator error,
     the offending sentence excerpt(s), and the card-vs-first-sentence
     diff. Instructs a surgical fix only (split >30w sentences at
-    conjunctions, card verbatim as sentence 1, beats joined == narration
-    exactly, total kept in range). Non-dict/empty drafts fall back to a
-    fresh prompt. The micro-accept path in the caller is unchanged.
+    conjunctions, card verbatim as sentence 1 — shortened to <=8 words
+    first when the card itself is overlong, beats joined == narration
+    exactly, off-range totals pulled back with expand/condense direction).
+    Non-dict/empty drafts fall back to a fresh prompt. The micro-accept
+    path in the caller is unchanged.
     """
     lo, hi = target_words(cfg, wps)
     mid = (lo + hi) // 2
@@ -588,21 +590,42 @@ def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
                  if s.strip() and len(s.split()) > MAX_SENTENCE_WORDS][:2]
     card = str(raw.get("card_text", "") or "").strip()
     first = re.split(r"[.!?…]+", narr, maxsplit=1)[0].strip()
+    card_n = len(card.split()) if card else 0
     specifics = [f"validator error: {err}."]
     for s in long_hits:
         specifics.append(
             f"offending sentence ({len(s.split())} words): "
             f"'{s[:120]}...' — split it into two sentences at a "
             "conjunction (and/but/because/so/when/while/which/that).")
-    if card and first != card:
+    if card and card_n > 8:
+        specifics.append(
+            f"card line is {card_n} words ('{card}') — shorten the card "
+            f"itself to 8 words or fewer, then copy that shortened card "
+            f"VERBATIM as sentence 1 (replace the opening sentence "
+            f"wholesale, do not merge).")
+    elif card and first != card:
         specifics.append(
             f"card line is '{card}' but the story opens with "
-            f"'{first[:80]}' — copy the card line VERBATIM as sentence 1.")
+            f"'{first[:80]}' — copy the card line VERBATIM as sentence 1 "
+            f"(replace the opening sentence wholesale, do not merge).")
+    s_lo, s_hi = lo - 15, hi + 15
+    if n < s_lo:
+        specifics.append(
+            f"draft is {n} words but needs {s_lo}-{s_hi}: EXPAND the same "
+            f"story with ~{mid - n} words of concrete action and "
+            f"consequences across beats 2-4 (no filler monologue).")
+    elif n > s_hi:
+        specifics.append(
+            f"draft is {n} words but needs {s_lo}-{s_hi}: CONDENSE by "
+            f"cutting ~{n - mid} words of setup adjectives first, keeping "
+            f"beats 3-4 and the final beat fully expanded.")
+    else:
+        specifics.append(
+            f"hold the total near {n} words inside {lo}-{hi} (aim {mid}).")
     specifics.append(
         f"keep the SAME story (same hook, twist, ending), keep every "
         f"sentence 30 words or fewer, keep beat texts joined equal to "
-        f"narration EXACTLY, and hold the total near {n} words inside "
-        f"{lo}-{hi} (aim {mid}) — surgical fix only, no rewrite.")
+        f"narration EXACTLY — surgical fix only, no rewrite.")
     return "CORRECTION — " + " ".join(specifics) + "\n\n" + base_prompt, slots
 
 
@@ -665,13 +688,20 @@ def _to_content(meta: dict, slots: dict, wps: float,
 
 
 def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
-    """Gemini story with similarity regens; offline fallback when keyless."""
+    """Gemini story with similarity regens; offline fallback only when keyless.
+
+    When keys exist but every model fails (transport/JSON errors or
+    unfixable validator rejects), raises RuntimeError instead of airing
+    a short silent fallback — the error propagates through core.run
+    (no history recorded) to pipeline notify_failure + exit 1.
+    """
     history = history or []
     wps = measure_wps(history, cfg.history_wps)
     client = _make_client(cfg)
     if client is not None:
         models = list(getattr(cfg, "story_models", None)
                       or DEFAULT_TEXT_MODELS)
+        last_error: Exception | None = None
         for _attempt in range(1 + cfg.similarity_retries):
             prompt, slots = build_prompt(history, cfg, wps)
             data = None
@@ -681,6 +711,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                         model, prompt, generation_config={
                             "temperature": 0.8, "maxOutputTokens": 8192})
                 except Exception as e:
+                    last_error = e
                     log(f"Story model {model} unusable ({e}), trying next...")
                     time.sleep(cfg.backoff if mi + 1 >= len(models) else 2)
                     continue
@@ -736,6 +767,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                                     "maxOutputTokens": 8192}),
                             cfg, wps, micro_accept=True)
                     except Exception as e2:
+                        last_error = e2
                         log(f"Story model {model} unusable ({e2}), "
                             "trying next...")
                         time.sleep(cfg.backoff if mi + 1 >= len(models)
@@ -746,8 +778,11 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                     models.insert(0, model)
                 break
             if data is None:
-                log("All story models failed, using fallback.")
-                break
+                raise RuntimeError(
+                    f"Story Gemini failed on all {len(models)} models "
+                    f"(last error: {last_error}); refusing silent "
+                    f"fallback — fix keys/quota/prompt and re-run."
+                ) from last_error
             window = [h for h in history[-cfg.dedup_window:]
                       if h.get("niche", "") == MODE]
             reason = similarity_reason(data, slots, window, window[-30:])
@@ -761,7 +796,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
             warn(f"Story draft still similar ({reason}), accepting best-effort.")
             data["title"] = sanitize_title(data.get("title", ""), slots)
             return _to_content(data, slots, wps, history)
-    warn("Gemini unavailable: using standalone fallback story.")
+    warn("No Gemini keys: using standalone fallback story.")
     meta, slots = fallback_script(history)
     return _to_content(meta, slots, wps, history)
 
