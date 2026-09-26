@@ -143,6 +143,10 @@ class StoryConfig(NicheConfig):
     tries: int = 2
     backoff: int = 5
     similarity_retries: int = 2
+    # Per-model draft attempts: Lite models get this many (default 5) so
+    # out-of-range drafts converge instead of burning the model; other
+    # models keep 2 (initial + one fix retry).
+    lite_retries: int = 5
     history_prompt_n: int = 20
     dedup_window: int = 110
     gemini_keys: tuple[str, ...] = field(default_factory=tuple)
@@ -269,5 +273,6 @@ class StoryConfig(NicheConfig):
             tts_timeout=env_int("TTS_TIMEOUT", 90, "STORY_"),
             tries=env_int("TRIES", 2, "STORY_"),
             backoff=env_int("BACKOFF", 5, "STORY_"),
+            lite_retries=min(8, max(1, env_int("LITE_RETRIES", 5, "STORY_"))),
             gemini_keys=tuple(parse_keys()),
         )
