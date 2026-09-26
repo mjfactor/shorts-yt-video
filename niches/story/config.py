@@ -117,6 +117,9 @@ class StoryConfig(NicheConfig):
     # >0 = static-leaning queries rewritten toward moving footage;
     # cleaning-pool queries always pass through untouched).
     motion_bias: float = 1.0
+    # Narrator gender: auto alternates male/female by same-niche history
+    # parity (odd = male, even = female); male/female force one voice.
+    narrator_gender_mode: str = "auto"
     # Optional BGM bed file (preview tools); empty = pool/drone path.
     bed_path: str = ""
     # Repo-root-relative glob for the random per-video BGM pool.
@@ -267,6 +270,9 @@ class StoryConfig(NicheConfig):
                 "CLEANING_SHARE", 0.55, "STORY_"))),
             motion_bias=min(1.0, max(0.0, env_float(
                 "MOTION_BIAS", 1.0, "STORY_"))),
+            narrator_gender_mode=(env_str("NARRATOR_GENDER_MODE", "auto",
+                                          "STORY_").strip().lower()
+                                  or "auto"),
             bed_path=env_str("BED_PATH", "", "STORY_"),
             bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_") or "bgm*.mp3",
             bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.15, "STORY_")),

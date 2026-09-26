@@ -888,6 +888,10 @@ def run(niche) -> dict:
         for key in ("topic", "topic_source", "topicSource", "category"):
             if slots.get(key):
                 entry[key] = slots[key]
+        narrator = str((content.extras or {}).get("narrator_gender", "")
+                       or slots.get("narrator_gender", "")).strip()
+        if narrator:
+            entry["narratorGender"] = narrator
         save_history(entry)
         log("Done.")
         return {"mp4": out_mp4, "srt": out_srt, "metadata": out_json,

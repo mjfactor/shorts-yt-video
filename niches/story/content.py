@@ -57,6 +57,33 @@ def _pick_genre(history: list[dict], cfg: StoryConfig) -> str:
     return genre
 
 
+def _narrator_gender(history: list[dict], cfg: StoryConfig,
+                      model_choice: str = "") -> str:
+    """Resolve the narrator gender for this video.
+
+    auto (default): alternates by same-niche history parity — odd count
+    is male, even count is female — so consecutive videos flip instead of
+    looping on one voice. `model_choice` is only a tiebreak when parity
+    is unavailable (history missing/malformed), never the primary source.
+    Forced modes (male/female) win over parity. Never raises.
+    """
+    mode = str(getattr(cfg, "narrator_gender_mode", "auto") or "auto") \
+        .strip().lower()
+    if mode in ("male", "female"):
+        return mode
+    try:
+        same = [h for h in (history or [])
+                if isinstance(h, dict) and h.get("niche", "") == MODE]
+    except TypeError:  # malformed history object
+        same = []
+    if not history and not same:
+        # No parity signal yet: fall back to the model's own choice when it
+        # named a valid gender, else default female (first video only).
+        pick = str(model_choice or "").strip().lower()
+        return pick if pick in ("male", "female") else "female"
+    return "male" if len(same) % 2 else "female"
+
+
 def format_history_line(h: dict) -> str:
     """One-line history entry for the dedup prompt block."""
     premise = str(h.get("narration", "")).strip().replace("\n", " ")[:60]
@@ -393,7 +420,9 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
     """Gemini prompt for a 100-120s Reddit-style story. Returns (prompt, slots)."""
     history = history or []
     genre = _pick_genre(history, cfg)
-    slots = {"genre": genre, "topic": genre, "topic_source": "genre-rotation"}
+    gender = _narrator_gender(history, cfg)
+    slots = {"genre": genre, "topic": genre, "topic_source": "genre-rotation",
+             "narrator_gender": gender}
     log(f"Story genre ({slots['topic_source']}): {genre}")
     wps = wps or cfg.history_wps
     lo, hi = target_words(cfg, wps)
@@ -459,8 +488,10 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "story_text and narration must be IDENTICAL: the full spoken story, "
         f"{lo}-{hi} words (card line included in the total). "
         f"genre must echo '{genre}'. "
-        "narrator_gender is the narrator's own gender (\"male\" or \"female\", "
-        "default \"female\" when ambiguous — never infer it from other characters). "
+        f"narrator_gender MUST be \"{gender}\" — this channel alternates "
+        f"male and female narrators, so use \"{gender}\" even when the story "
+        f"feels ambiguous (write the narration in that voice; it is the "
+        f"narrator's own gender, never inferred from other characters). "
         "key_words: 4-8 lowercase content words (people, places, objects, "
         "moods) for dedup and visuals. bg_queries: 5-8 background-footage "
         "search queries, 1-3 concrete filmable words each "
@@ -826,10 +857,18 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                 ) from last_error
             window = [h for h in history[-cfg.dedup_window:]
                       if h.get("niche", "") == MODE]
+            # Narrator gender is decided by parity (not the model), so the
+            # alternating male/female voice never loops; slots already
+            # carry the same value, keeping prompt + extras + history in sync.
+            data["narrator_gender"] = slots.get(
+                "narrator_gender",
+                _narrator_gender(history, cfg,
+                                 str(data.get("narrator_gender", ""))))
             reason = similarity_reason(data, slots, window, window[-30:])
             if reason is None:
                 data["title"] = sanitize_title(data.get("title", ""), slots)
-                log(f"Story script OK: {data.get('title')}")
+                log(f"Story script OK: {data.get('title')} "
+                    f"(narrator={data['narrator_gender']})")
                 return _to_content(data, slots, wps, history)
             if _attempt < cfg.similarity_retries:
                 warn(f"Story draft too similar ({reason}), regenerating...")
@@ -839,6 +878,8 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
             return _to_content(data, slots, wps, history)
     warn("No Gemini keys: using standalone fallback story.")
     meta, slots = fallback_script(history)
+    meta["narrator_gender"] = _narrator_gender(
+        history, cfg, str(meta.get("narrator_gender", "")))
     return _to_content(meta, slots, wps, history)
 
 
