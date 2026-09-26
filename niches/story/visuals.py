@@ -590,18 +590,38 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
 
 def _pick_bgm(cfg: StoryConfig) -> Path | None:
     """Bed source priority: explicit STORY_BED_PATH file → one random
-    bgm*.mp3 from the repo-root pool (sorted glob, random.choice per
-    video, logged) → None (caller synthesizes the drone)."""
+    match for bgm_glob from cfg.bgm_dir → the same pattern at the repo
+    root (legacy layout) → None (caller synthesizes the drone).
+
+    Pool is sorted then random.choice per video and logged with the file
+    name and pool size. Both layouts work, so moving the tracks between
+    them never silences the bed.
+    """
     if cfg.bed_path:
         explicit = Path(cfg.bed_path)
         if explicit.exists():
             return explicit
         warn(f"Story bed file missing ({explicit}); trying bgm pool.")
-    pool = sorted(Path().glob(cfg.bgm_glob or "bgm*.mp3"))
+    pattern = cfg.bgm_glob or "bgm*.mp3"
+    candidates = [Path(getattr(cfg, "bgm_dir", "") or "")]
+    for base in candidates:
+        if base.is_dir():
+            pool = sorted(base.glob(pattern))
+            if pool:
+                pick = random.choice(pool)
+                log(f"Story BGM pool: picked {pick.name} "
+                    f"({len(pool)} files) from {base.as_posix() or '.'}.")
+                return pick
+    # Legacy layout: pool at the repo root.
+    pool = sorted(Path().glob(pattern))
     if pool:
         pick = random.choice(pool)
-        log(f"Story BGM pool: picked {pick.name} ({len(pool)} files).")
+        log(f"Story BGM pool: picked {pick.name} ({len(pool)} files) "
+            "from the repo root.")
         return pick
+    log(f"Story BGM pool: no {pattern} match in "
+        f"{getattr(cfg, 'bgm_dir', '') or '.'} or the repo root; "
+        "using the synthesized drone.")
     return None
 
 
@@ -666,12 +686,14 @@ def _concat(segs: list[Path], workdir: Path) -> Path:
 def _mix_filter(total: float, bed_volume: float = 0.12) -> str:
     """Voice-forward mix chain (inputs: 0=BG video, 1=narration, 2=bed).
 
-    Ducked bed under untouched narration, 2s outro fade. Spec-exact.
+    Looser ducking (threshold 0.15, ratio 3, release 180) so the bed sits
+    higher between words; narration is mixed at full untouched volume, so
+    voice clarity never depends on the duck. 2s outro fade, normalize=0.
     """
     fade_st = max(0.0, float(total) - 2.0)
     return (f"[2:a]volume={max(0.0, float(bed_volume)):.2f}[b];"
-            "[b][1:a]sidechaincompress=threshold=0.05:ratio=8:"
-            "attack=20:release=300[duck];"
+            "[b][1:a]sidechaincompress=threshold=0.15:ratio=3:"
+            "attack=20:release=180[duck];"
             "[1:a][duck]amix=inputs=2:duration=first:normalize=0,"
             f"afade=t=out:st={fade_st:.2f}:d=2[aout]")
 

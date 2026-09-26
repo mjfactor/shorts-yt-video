@@ -122,12 +122,16 @@ class StoryConfig(NicheConfig):
     narrator_gender_mode: str = "auto"
     # Optional BGM bed file (preview tools); empty = pool/drone path.
     bed_path: str = ""
-    # Repo-root-relative glob for the random per-video BGM pool.
+    # Filename pattern (not a path) for the random per-video BGM pool.
     bgm_glob: str = "bgm*.mp3"
+    # Folder holding the BGM pool (repo-root-relative). The pool moved
+    # from the repo root to background-musics/; _pick_bgm still falls
+    # back to the repo root when this folder is missing.
+    bgm_dir: str = "background-musics"
     # BGM bed level in the final render mix (linear pre-duck gain;
-    # 0.15 is ~+2dB over the old 0.12; narration stays forward via
-    # sidechain ducking, track pick stays random).
-    bgm_volume: float = 0.15
+    # 0.44 is ~+2dB over 0.34 and ~+11dB over the old 0.12; narration is
+    # mixed at full untouched volume, so voice clarity never degrades).
+    bgm_volume: float = 0.44
     story_genres: tuple[str, ...] = DEFAULT_GENRES
     # Word-timing model for the FINAL mix only.
     whisper_model: str = "base"
@@ -275,7 +279,9 @@ class StoryConfig(NicheConfig):
                                   or "auto"),
             bed_path=env_str("BED_PATH", "", "STORY_"),
             bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_") or "bgm*.mp3",
-            bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.15, "STORY_")),
+            bgm_dir=env_str("BGM_DIR", "background-musics",
+                            "STORY_") or "background-musics",
+            bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.44, "STORY_")),
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),
             whisper_model=env_str("WHISPER_MODEL", "base", "STORY_") or "base",
             history_wps=env_float("HISTORY_WPS", 2.9, "STORY_"),
