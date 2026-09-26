@@ -79,8 +79,8 @@ class StoryConfig(NicheConfig):
     # near-invisible at 1.15-1.5x, so the default runs 2.5-3.5x.
     seg_min: float = 2.5
     seg_max: float = 4.5
-    bg_speed_min: float = 2.5
-    bg_speed_max: float = 3.5
+    bg_speed_min: float = 3.2
+    bg_speed_max: float = 4.5
     # Captions: 1/true = uppercase word-pop.
     caption_upper: bool = False
     # Card floor: overlay shows max(card_seconds, card_line_end + pad).
@@ -113,6 +113,10 @@ class StoryConfig(NicheConfig):
     # Planner share of segments drawn from cleaning clips, laid as
     # consecutive runs (0.0-1.0; capped by the cleaning pool size).
     cleaning_share: float = 0.55
+    # Motion bias for Pexels search text (0.0-1.0; 0 = queries verbatim,
+    # >0 = static-leaning queries rewritten toward moving footage;
+    # cleaning-pool queries always pass through untouched).
+    motion_bias: float = 1.0
     # Optional BGM bed file (preview tools); empty = pool/drone path.
     bed_path: str = ""
     # Repo-root-relative glob for the random per-video BGM pool.
@@ -242,8 +246,8 @@ class StoryConfig(NicheConfig):
             edge_pitch=env_str("EDGE_PITCH", "+0Hz", "STORY_") or "+0Hz",
             seg_min=env_float("SEG_MIN", 2.5, "STORY_"),
             seg_max=env_float("SEG_MAX", 4.5, "STORY_"),
-            bg_speed_min=env_float("BG_SPEED_MIN", 2.5, "STORY_"),
-            bg_speed_max=env_float("BG_SPEED_MAX", 3.5, "STORY_"),
+            bg_speed_min=env_float("BG_SPEED_MIN", 3.2, "STORY_"),
+            bg_speed_max=env_float("BG_SPEED_MAX", 4.5, "STORY_"),
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
             ass_fontsize=env_int("ASS_FONTSIZE", 132, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),
@@ -261,6 +265,8 @@ class StoryConfig(NicheConfig):
                 "CLEANING_CLIPS_PER_QUERY", 3, "STORY_"),
             cleaning_share=min(1.0, max(0.0, env_float(
                 "CLEANING_SHARE", 0.55, "STORY_"))),
+            motion_bias=min(1.0, max(0.0, env_float(
+                "MOTION_BIAS", 1.0, "STORY_"))),
             bed_path=env_str("BED_PATH", "", "STORY_"),
             bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_") or "bgm*.mp3",
             bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.15, "STORY_")),

@@ -297,15 +297,53 @@ def _fetch_one(query: str, api_key: str, cache_dir: Path,
 _DownloadTask = tuple[str, Path, str, str, str]
 
 
+# Motion bias for Pexels search (Pexels has no motion filter, so motion
+# must come from query text). Explicit small remap for static-leaning
+# subjects first, then a generic motion-word fallback. Cleaning-pool
+# queries already read as motion and pass through untouched, as does any
+# query that already names movement. Gated by cfg.motion_bias (0 = off).
+_MOTION_REMAP = {
+    "stressed at desk": "stressed walking down office hallway",
+    "crying woman": "woman walking away city street",
+    "empty room": "person moving furniture room",
+    "sad man sitting": "man walking away night street",
+    "lonely girl bedroom": "girl walking city night",
+    "angry face closeup": "man arguing street crowd",
+}
+_MOTION_WORDS = ("walk", "run", "dance", "drive", "driv", "pour", "clean",
+                 "wash", "scrub", "mop", "sweep", "cook", "stir", "mix",
+                 "chop", "build", "play", "swim", "fly", "fall", "flow",
+                 "rain", "crowd", "traffic", "rush", "busy", "move", "mov")
+_MOTION_FALLBACK_WORD = "walking"
+
+
+def _motion_query(query: str) -> str:
+    """Motion-enriched Pexels query (cleaning/motion queries unchanged)."""
+    q = " ".join((query or "").split())
+    low = q.lower()
+    if not low:
+        return q
+    if low in _MOTION_REMAP:
+        return _MOTION_REMAP[low]
+    if low in (c.lower() for c in CLEANING_QUERIES):
+        return q
+    if any(w in low for w in _MOTION_WORDS):
+        return q
+    return f"{q} {_MOTION_FALLBACK_WORD}"
+
+
 def _search_query(query: str, api_key: str, cache_dir: Path,
                   used_snapshot: frozenset[str],
-                  limit: int = 2) -> tuple[str, list[_DownloadTask], list[tuple]]:
+                  limit: int = 2, motion_bias: float = 1.0) -> tuple[str, list[_DownloadTask], list[tuple]]:
     """Phase 1 (search only): call Pexels search API for one query.
 
     Returns (query, download_tasks, cache_hits) where:
     - download_tasks: clips not yet on disk — caller downloads them in Phase 2
     - cache_hits: [(dest, vid, credit), ...] for ids already cached locally
 
+    The API is searched with the motion-enriched query (unless motion_bias
+    is 0), but the ORIGINAL query string is returned so caller keying
+    (priority order, kinds, per-query limits, dedup) stays identical.
     Splitting search from download means 12 workers can fire all API
     requests concurrently (~300 ms each) without waiting for any download
     to complete (~5-30 s each).  Used-id dedup is done against a frozen
@@ -314,8 +352,11 @@ def _search_query(query: str, api_key: str, cache_dir: Path,
     """
     tasks: list[_DownloadTask] = []
     hits: list[tuple] = []
+    eff = _motion_query(query) if motion_bias > 0 else " ".join((query or "").split())
+    if eff != " ".join((query or "").split()):
+        log(f"Pexels motion bias: '{query}' -> '{eff}'.")
     try:
-        for v in _px.search_videos(query, api_key, per_page=30,
+        for v in _px.search_videos(eff, api_key, per_page=30,
                                    orientation="portrait", size="medium"):
             if len(tasks) + len(hits) >= max(1, limit):
                 break
@@ -360,7 +401,8 @@ def _execute_download(task: _DownloadTask,
 
 
 def _fetch_many(query: str, api_key: str, cache_dir: Path,
-                used: set[str], limit: int = 2) -> list[tuple]:
+                used: set[str], limit: int = 2,
+                motion_bias: float = 1.0) -> list[tuple]:
     """Fetch up to `limit` distinct clips for a query (search + download).
 
     Preserved for callers outside gather_clips (e.g. _fetch_one).
@@ -370,7 +412,7 @@ def _fetch_many(query: str, api_key: str, cache_dir: Path,
     out: list[tuple] = []
     try:
         _, tasks, hits = _search_query(query, api_key, cache_dir,
-                                       frozenset(used), limit)
+                                       frozenset(used), limit, motion_bias)
         # Cache hits come back immediately.
         for dest, vid, credit in hits:
             if vid not in used:
@@ -460,7 +502,9 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
         with ThreadPoolExecutor(max_workers=12) as search_pool:
             sfuts = {
                 search_pool.submit(_search_query, q, cfg.pexels_key,
-                                   cache_dir, used_snap, limits[q]): q
+                                   cache_dir, used_snap, limits[q],
+                                   float(getattr(cfg, "motion_bias", 1.0)
+                                         or 0.0)): q
                 for q in queries
             }
             for fut in as_completed(sfuts):
