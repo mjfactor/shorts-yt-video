@@ -619,13 +619,13 @@ def _concat(segs: list[Path], workdir: Path) -> Path:
     return out
 
 
-def _mix_filter(total: float) -> str:
+def _mix_filter(total: float, bed_volume: float = 0.12) -> str:
     """Voice-forward mix chain (inputs: 0=BG video, 1=narration, 2=bed).
 
     Ducked bed under untouched narration, 2s outro fade. Spec-exact.
     """
     fade_st = max(0.0, float(total) - 2.0)
-    return ("[2:a]volume=0.12[b];"
+    return (f"[2:a]volume={max(0.0, float(bed_volume)):.2f}[b];"
             "[b][1:a]sidechaincompress=threshold=0.05:ratio=8:"
             "attack=20:release=300[duck];"
             "[1:a][duck]amix=inputs=2:duration=first:normalize=0,"
@@ -867,7 +867,7 @@ def build_visuals(content: Content, narration: NarrationResult,
         pass  # still pass the path: missing dir scans nothing (≠ workdir)
     vf_args, cwd = ass_cwd_args(ass_path, fontsdir=_fonts_dir.resolve())
     subs = vf_args[1]  # "ass=<rel>:fontsdir=<dir>" for filter_complex use
-    mix_fc = _mix_filter(total)
+    mix_fc = _mix_filter(total, getattr(cfg, "bgm_volume", 0.12))
     out_mp4 = workdir / "short.mp4"
     # ffmpeg runs with cwd=workdir (for the cwd-relative ASS filter), so
     # every -i input and the output must be absolute; repo-relative
