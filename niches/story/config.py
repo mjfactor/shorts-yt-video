@@ -63,15 +63,16 @@ class StoryConfig(NicheConfig):
     tts_engine: str = "edge"
     # Provider order: edge first, gemini fallback when edge exhausts.
     tts_provider_order: str = "edge,gemini"
-    edge_voice: str = "en-US-AvaNeural"
+    edge_voice: str = "en-US-JennyNeural"
     # STORY_EDGE_VOICES (plural) wins over STORY_EDGE_VOICE (singular,
     # kept working as a one-voice fallback); unset means the default pool.
-    edge_voices: tuple[str, ...] = ("en-US-AndrewNeural", "en-US-AriaNeural")
-    edge_rate: str = "+28%"
-    # Female edge voices (Aria/Ava) run a slower natural cadence than the
+    edge_voices: tuple[str, ...] = ("en-US-AndrewNeural", "en-US-JennyNeural")
+    # Male/other-voice rate. Must match the from_env() default below (+20%)
+    # or a directly-constructed StoryConfig disagrees with production.
+    edge_rate: str = "+20%"
+    # Female edge voices (Jenny/Ava) run a slower natural cadence than the
     # male voices at the same relative SSML rate, so they get a hotter
-    # default (+28%) to land near Andrew's absolute pace. STORY_ prefix
-    # wins, bare EDGE_RATE_FEMALE falls back.
+    # default (+28%). STORY_ prefix wins, bare EDGE_RATE_FEMALE falls back.
     edge_rate_female: str = "+28%"
     edge_pitch: str = "+0Hz"
     # Captions: 1/true = uppercase word-pop.
@@ -155,11 +156,11 @@ class StoryConfig(NicheConfig):
                 return plural
             if ("STORY_EDGE_VOICE" in os.environ
                     or "EDGE_VOICE" in os.environ):
-                single = env_str("EDGE_VOICE", "en-US-AvaNeural",
+                single = env_str("EDGE_VOICE", "en-US-JennyNeural",
                                  "STORY_").strip()
                 if single:
                     return (single,)
-            return ("en-US-AndrewNeural", "en-US-AriaNeural")
+            return ("en-US-AndrewNeural", "en-US-JennyNeural")
 
         def _story_models() -> tuple[str, ...]:
             """Bare GEMINI_MODELS wins when set, else STORY_MODELS, else
@@ -221,7 +222,7 @@ class StoryConfig(NicheConfig):
             tts_engine=env_str("TTS_ENGINE", "edge", "STORY_").strip().lower() or "edge",
             tts_provider_order=env_str("TTS_PROVIDER_ORDER", "edge,gemini",
                                        "STORY_").strip().lower() or "edge,gemini",
-            edge_voice=env_str("EDGE_VOICE", "en-US-AvaNeural", "STORY_") or "en-US-AvaNeural",
+            edge_voice=env_str("EDGE_VOICE", "en-US-JennyNeural", "STORY_") or "en-US-JennyNeural",
             edge_voices=_edge_pool(),
             edge_rate=env_str("EDGE_RATE", "+20%", "STORY_") or "+20%",
             edge_rate_female=env_str("EDGE_RATE_FEMALE", "+28%", "STORY_") or "+28%",

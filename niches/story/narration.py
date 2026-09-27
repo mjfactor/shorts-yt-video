@@ -74,7 +74,7 @@ def _reject_stage_directions(text: str) -> None:
 # case-insensitively against the configured pool; unknown names never
 # match, so custom pools fall back to full-pool behavior).
 _EDGE_MALE_HINTS = ("andrew", "guy")
-_EDGE_FEMALE_HINTS = ("aria", "ava")
+_EDGE_FEMALE_HINTS = ("aria", "ava", "jenny")
 _GEMINI_MALE_HINTS = ("charon", "puck", "fenrir")
 _GEMINI_FEMALE_HINTS = ("kore", "aoede")
 
@@ -317,7 +317,7 @@ def _edge_voice_for(cfg: StoryConfig, seed_text: str = "",
     """One edge voice per video, kept for the whole video.
 
     When gender is "male"/"female", pick from the matching subset of
-    the configured pool (male: Andrew/Guy; female: Aria/Ava, matched
+    the configured pool (male: Andrew/Guy; female: Jenny/Ava, matched
     by voice-name substring). Missing gender or no matching voice
     falls back to the full-pool pick.
     """
@@ -325,7 +325,7 @@ def _edge_voice_for(cfg: StoryConfig, seed_text: str = "",
     pool = [v for v in (cfg.edge_voices or ()) if v]
     if not pool and (cfg.edge_voice or "").strip():
         pool = [cfg.edge_voice.strip()]
-    pool = pool or ["en-US-AvaNeural"]
+    pool = pool or ["en-US-JennyNeural"]
     subset = _filter_by_gender(pool, gender, _EDGE_MALE_HINTS,
                                _EDGE_FEMALE_HINTS)
     if subset:
@@ -342,7 +342,7 @@ def _edge_voice_for(cfg: StoryConfig, seed_text: str = "",
 def _edge_rate_for(cfg: StoryConfig, voice: str) -> str:
     """Effective edge SSML rate for a picked voice.
 
-    Female voices (Aria/Ava name match) run a slower natural cadence, so
+    Female voices (Jenny/Ava name match) run a slower natural cadence, so
     they get cfg.edge_rate_female (default +28%); every other voice keeps
     the global cfg.edge_rate (default +20%). Unknown/custom voices never
     match, so they stay on the global path. The word budget stays global
