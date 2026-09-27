@@ -274,8 +274,8 @@ SPEC_CARD_THEME = {
     "upvote_color": (255, 69, 0, 255),
     "comment_color": (16, 185, 129, 255),
     "bookmark_color": (245, 158, 11, 255),
-    "likes_text": "420+",
-    "shares_text": "420+",
+    "likes_text": "720+",
+    "shares_text": "413+",
     "engagement_color": (120, 125, 132, 255),
     "engagement_size": 32,
     "show_awards": True,
@@ -644,14 +644,14 @@ def render_spec_card(text: str, highlight_word: str, *, handle: str,
     - Highlight word rendered in bold red (#E00000)
 
     Bottom:
-    - Clean engagement row with neutral grey hollow heart + like count (e.g. 420+)
+    - Clean engagement row with neutral grey hollow heart + like count (e.g. 732+)
     - Modern share tray icon + share count (e.g. 420+)
     - Counts and visibility customizable via kwargs or theme
     """
     th = dict(SPEC_CARD_THEME)
     th.update(theme or {})
     likes_text = (str(likes) if likes is not None
-                  else str(th.get("likes_text", "420+")))
+                  else str(th.get("likes_text", "732+")))
     shares_text = (str(shares) if shares is not None
                    else str(th.get("shares_text", "420+")))
     awards = (show_awards if show_awards is not None
