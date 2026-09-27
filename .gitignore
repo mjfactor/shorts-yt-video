@@ -11,10 +11,16 @@ __pycache__/
 assets/pexels_cache/*
 assets/backgrounds/*
 assets/fonts/*
+assets/background-musics/*
 !assets/fonts/
 !assets/avatar.png
 !assets/pexels_cache/
 !assets/backgrounds/
+# BGM pool (bgm*.mp3) IS committed: the daily CI run needs real music.
+# The directory must be un-ignored before the file pattern re-includes it
+# (assets/* above excludes the whole directory).
+!assets/background-musics/
+!assets/background-musics/bgm*.mp3
 !assets/pexels_cache/.gitkeep
 !assets/backgrounds/.gitkeep
 !assets/fonts/.gitkeep

@@ -125,9 +125,9 @@ class StoryConfig(NicheConfig):
     # Filename pattern (not a path) for the random per-video BGM pool.
     bgm_glob: str = "bgm*.mp3"
     # Folder holding the BGM pool (repo-root-relative). The pool moved
-    # from the repo root to background-musics/; _pick_bgm still falls
-    # back to the repo root when this folder is missing.
-    bgm_dir: str = "background-musics"
+    # from the repo root to assets/background-musics/; _pick_bgm still
+    # falls back to the repo root when this folder is missing.
+    bgm_dir: str = "assets/background-musics"
     # BGM bed level in the final render mix (linear pre-duck gain;
     # 0.44 is ~+2dB over 0.34 and ~+11dB over the old 0.12; narration is
     # mixed at full untouched volume, so voice clarity never degrades).
@@ -279,8 +279,8 @@ class StoryConfig(NicheConfig):
                                   or "auto"),
             bed_path=env_str("BED_PATH", "", "STORY_"),
             bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_") or "bgm*.mp3",
-            bgm_dir=env_str("BGM_DIR", "background-musics",
-                            "STORY_") or "background-musics",
+            bgm_dir=env_str("BGM_DIR", "assets/background-musics",
+                            "STORY_") or "assets/background-musics",
             bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.44, "STORY_")),
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),
             whisper_model=env_str("WHISPER_MODEL", "base", "STORY_") or "base",
