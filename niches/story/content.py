@@ -10,6 +10,7 @@ import math
 import random
 import re
 import time
+from datetime import date, datetime, timezone
 
 from engine import gemini_client as _gc
 from engine.ffmpeg_utils import log, warn
@@ -57,31 +58,39 @@ def _pick_genre(history: list[dict], cfg: StoryConfig) -> str:
     return genre
 
 
+def _gender_bucket(now: datetime | None = None) -> int:
+    """UTC half-day bucket: (days since epoch) * 2 + (0 if hour < 12 else 1).
+
+    Advances on its own, so the 10:00 and 22:00 UTC scheduled runs can
+    never land in the same bucket. Pure clock math — no history, no I/O.
+    """
+    t = now or datetime.now(timezone.utc)
+    if t.tzinfo is not None:
+        t = t.astimezone(timezone.utc)
+    return (t.date().toordinal() - date(1970, 1, 1).toordinal()) * 2 \
+        + (0 if t.hour < 12 else 1)
+
+
 def _narrator_gender(history: list[dict], cfg: StoryConfig,
-                      model_choice: str = "") -> str:
+                      model_choice: str = "",
+                      now: datetime | None = None) -> str:
     """Resolve the narrator gender for this video.
 
-    auto (default): alternates by same-niche history parity — odd count
-    is male, even count is female — so consecutive videos flip instead of
-    looping on one voice. `model_choice` is only a tiebreak when parity
-    is unavailable (history missing/malformed), never the primary source.
-    Forced modes (male/female) win over parity. Never raises.
+    auto (default): decided purely by the UTC half-day bucket
+    (_gender_bucket) — even bucket female, odd bucket male. The clock
+    always decides here, so a frozen, empty, or malformed history can
+    never pin the voice (history used to gate this, and a failed CI
+    push-back froze it). `history` and `model_choice` stay accepted for
+    compatibility but are NOT used: deriving the gender from recorded
+    state would re-introduce the same freeze, in the opposite direction.
+    Forced modes (male/female) win outright. Never raises.
     """
     mode = str(getattr(cfg, "narrator_gender_mode", "auto") or "auto") \
         .strip().lower()
     if mode in ("male", "female"):
         return mode
-    try:
-        same = [h for h in (history or [])
-                if isinstance(h, dict) and h.get("niche", "") == MODE]
-    except TypeError:  # malformed history object
-        same = []
-    if not history and not same:
-        # No parity signal yet: fall back to the model's own choice when it
-        # named a valid gender, else default female (first video only).
-        pick = str(model_choice or "").strip().lower()
-        return pick if pick in ("male", "female") else "female"
-    return "male" if len(same) % 2 else "female"
+    _ = history, model_choice  # compatibility only; clock decides
+    return "female" if _gender_bucket(now) % 2 == 0 else "male"
 
 
 def format_history_line(h: dict) -> str:
@@ -489,7 +498,8 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         f"{lo}-{hi} words (card line included in the total). "
         f"genre must echo '{genre}'. "
         f"narrator_gender MUST be \"{gender}\" — this channel alternates "
-        f"male and female narrators, so use \"{gender}\" even when the story "
+        f"male and female narrators on a fixed UTC half-day schedule, so "
+        f"use \"{gender}\" even when the story "
         f"feels ambiguous (write the narration in that voice; it is the "
         f"narrator's own gender, never inferred from other characters). "
         "key_words: 4-8 lowercase content words (people, places, objects, "
@@ -857,9 +867,10 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                 ) from last_error
             window = [h for h in history[-cfg.dedup_window:]
                       if h.get("niche", "") == MODE]
-            # Narrator gender is decided by parity (not the model), so the
-            # alternating male/female voice never loops; slots already
-            # carry the same value, keeping prompt + extras + history in sync.
+            # Narrator gender is decided by the UTC half-day clock (not the
+            # model, not history), so the alternating male/female voice can
+            # never be frozen by a stale history; slots already carry the
+            # same value, keeping prompt + extras + history in sync.
             data["narrator_gender"] = slots.get(
                 "narrator_gender",
                 _narrator_gender(history, cfg,
