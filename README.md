@@ -177,9 +177,9 @@ secrets/vars do not flow into jobs automatically.
   (short sources loop to cover), cut to the exact video length — no per-beat
   cuts, no queries, no credits. An **empty folder is a hard failure**
   (`RuntimeError`); a clip that will not render is skipped with a
-  `::warning::` and the next one is tried. Clips here are committed
-  (`bg1.mp4` …), and CI has a "Fetch story background" step so the folder is
-  never empty on a runner.
+  `::warning::` and the next one is tried. Clips here are committed, and CI
+  relies on them directly: the workflow has no background-fetch step, so the
+  folder must never be empty on a runner.
 - `assets/background-musics/` — committed `bgm*.mp3` BGM pool, one random track
   per video; with no pool the story synth falls back to a drone bed.
 - `assets/pexels_cache/` — legacy stock-download cache dir (gitignored,
