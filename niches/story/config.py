@@ -107,12 +107,14 @@ class StoryConfig(NicheConfig):
     # portrait clips are smaller; the id cache skips re-downloads on
     # retry). Lower to 1 to restore one-clip-per-query behavior.
     clips_per_query: int = 2
-    # Cleaning queries fetch deeper (default 3 vs 2) so the satisfying
-    # pool outnumbers ambient stock before the planner partitions it.
-    cleaning_clips_per_query: int = 3
+    # Cleaning queries fetch the same depth as story queries, so cleaning no
+    # longer outnumbers ambient stock before the planner partitions it.
+    cleaning_clips_per_query: int = 1
     # Planner share of segments drawn from cleaning clips, laid as
     # consecutive runs (0.0-1.0; capped by the cleaning pool size).
-    cleaning_share: float = 0.55
+    # 0.55 read as "always cleaning": over half the runtime was cleaning,
+    # front-loaded in runs of 3-5. 0.2 keeps it as an accent.
+    cleaning_share: float = 0.2
     # Motion bias for Pexels search text (0.0-1.0; 0 = queries verbatim,
     # >0 = static-leaning queries rewritten toward moving footage;
     # cleaning-pool queries always pass through untouched).
@@ -269,9 +271,9 @@ class StoryConfig(NicheConfig):
             pexels_key=env_str("PEXELS_API_KEY", "", "STORY_"),
             clips_per_query=env_int("CLIPS_PER_QUERY", 2, "STORY_"),
             cleaning_clips_per_query=env_int(
-                "CLEANING_CLIPS_PER_QUERY", 3, "STORY_"),
+                "CLEANING_CLIPS_PER_QUERY", 1, "STORY_"),
             cleaning_share=min(1.0, max(0.0, env_float(
-                "CLEANING_SHARE", 0.55, "STORY_"))),
+                "CLEANING_SHARE", 0.2, "STORY_"))),
             motion_bias=min(1.0, max(0.0, env_float(
                 "MOTION_BIAS", 1.0, "STORY_"))),
             narrator_gender_mode=(env_str("NARRATOR_GENDER_MODE", "auto",
