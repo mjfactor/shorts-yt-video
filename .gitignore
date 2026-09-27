@@ -17,10 +17,16 @@ assets/background-musics/*
 !assets/pexels_cache/
 !assets/backgrounds/
 # BGM pool (bgm*.mp3) IS committed: the daily CI run needs real music.
-# The directory must be un-ignored before the file pattern re-includes it
-# (assets/* above excludes the whole directory).
+# Uploaded background clips (bg1.mp4 ...) ARE committed too: they are the
+# primary background source in single-clip mode. The directory must be
+# un-ignored before the file pattern re-includes it (assets/* above
+# excludes the whole directory).
 !assets/background-musics/
 !assets/background-musics/bgm*.mp3
+!assets/backgrounds/*.mp4
+!assets/backgrounds/*.mov
+!assets/backgrounds/*.webm
+!assets/backgrounds/*.mkv
 !assets/pexels_cache/.gitkeep
 !assets/backgrounds/.gitkeep
 !assets/fonts/.gitkeep

@@ -57,6 +57,7 @@ Run: `NICHE=story python pipeline.py` → Gemini script → TTS audio+timings �
 
 - Captions: burn with plain `subtitles='...'` / `ass_cwd_args` (cwd-relative, no drive-colon issues) and NO `force_style` (commas yield zero pixels on some builds); fallback to no-subs render with `::warning::`
 - Story planner is pure: `total = narration.duration + 0.4`, 25–40 segs, 12+ clips, no repeat within 4; card overlay `max(CARD_SECONDS, card_line_end + pad)` with 0.2s fade pop
+- Background source: `STORY_BG_DIR` (`assets/backgrounds`, default) is the PRIMARY source — uploaded `bg1.mp4 … bg10.mp4` (any `.mp4/.mov/.webm/.mkv`) are committed and one is picked at random per video, then played as ONE continuous take at `STORY_BG_SINGLE_SPEED` (1.8x) cut from a random start offset (short sources loop to cover), so the 25–40 segment plan, the 3.2–4.5x timelapse range and the min_clips warning are bypassed. Pexels (and the segment planner) is the fallback used only when that folder has no clips; `STORY_BG_SOURCE=pexels_first` restores the old order. Clip id dedup/credits apply to Pexels clips only.
 - edge-tts needs `--flag=value` form — values like `-10%` misparse as new flags as separate args
 - Shorts ceiling: verify current YouTube max before raising `TARGET_MAX`/`MAX_SECONDS` (don't assume ≤60s either — only `MIN/MAX_AUDIO_SEC` is enforced)
 - Stale-prose rule: when docs disagree, code + `daily.yml` win — then fix the docs (these files), never the reverse

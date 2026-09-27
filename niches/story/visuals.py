@@ -433,8 +433,21 @@ def _fetch_many(query: str, api_key: str, cache_dir: Path,
 def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
                  recent_ids: tuple = (),
                  video_number: int = 0,
+                 pexels_only: bool = False,
                  ) -> tuple[list[Path], list[str], list[str], list[str]]:
-    """BG clips: Pexels (two-phase parallel) → BG_DIR fallback.
+    """BG clips: local BG_DIR pool (default) → Pexels only when local is empty.
+
+    local_first (default): usable videos in cfg.bg_dir are returned as the
+    pool with kind "local" and the Pexels search is skipped entirely (no
+    API calls). pexels_first restores the legacy order: Pexels search first,
+    local clips appended after. Either way Pexels remains the fallback, so
+    a run with no uploaded files behaves exactly as before.
+
+    pexels_only=True forces the Pexels path and ignores local clips
+    entirely: the fallback used when every local clip failed to render, so
+    the already-broken files are not handed back to the planner. It reuses
+    this function's search, per-query limits, recent_ids dedup and credits
+    rather than duplicating them.
 
     Query priority (deduped): story/beat queries → genre evergreen →
     themed ambient pool (rotates by video_number) → CLEANING_QUERIES.
@@ -491,7 +504,28 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
                                    per_query) or per_query))
     limits = {q: (clean_per if kind_of[q] == "cleaning" else per_query)
               for q in queries}
-    if cfg.pexels_key:
+
+    # Local clips (assets/backgrounds) win by default: when the folder has
+    # usable videos the Pexels search is skipped entirely, so uploaded
+    # footage is the primary source and costs no API calls. pexels_first
+    # restores the old order (Pexels first, local appended).
+    bg_dir = Path(cfg.bg_dir)
+    local: list[Path] = []
+    if bg_dir.is_dir():
+        local = sorted(p for p in bg_dir.iterdir()
+                       if p.suffix.lower() in BG_EXTS and p.is_file())
+    local_first = str(getattr(cfg, "bg_source", "local_first") or
+                      "local_first").strip().lower() != "pexels_first"
+    if pexels_only:
+        # Explicit Pexels fallback: ignore local files (they already failed
+        # to render) and run the search even when local clips exist.
+        local, local_first = [], False
+    if local and local_first:
+        log(f"Story BG: local-first mode — {len(local)} clip(s) from "
+            f"{bg_dir.as_posix()} (skipping Pexels search).")
+        clips = list(local)
+        kinds = ["local"] * len(clips)
+    if not (local and local_first) and cfg.pexels_key:
         # ---- Phase 1: search (12 workers, ~300 ms per call) ----------------
         t0 = time.monotonic()
         # Snapshot `used` once so all search workers see the same baseline.
@@ -565,12 +599,9 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
         log(f"Story BG: {len(clips)} Pexels clips for {len(queries)} queries "
             f"(up to {per_query}/query, {clean_per}/cleaning query; "
             f"{sum(1 for k in kinds if k == 'cleaning')} cleaning).")
-    else:
+    elif not (local and local_first):
         log("Story BG: no PEXELS key, using BG_DIR only.")
-    bg_dir = Path(cfg.bg_dir)
-    if bg_dir.exists():
-        local = sorted(p for p in bg_dir.iterdir()
-                       if p.suffix.lower() in BG_EXTS and p.is_file())
+    if not (local and local_first) and bg_dir.is_dir():
         for p in local:
             if str(p) not in {str(c) for c in clips}:
                 clips.append(p)
@@ -582,7 +613,9 @@ def gather_clips(bg_queries: list[str], genre: str, cfg: StoryConfig,
             f"No background clips: Pexels returned nothing for {len(queries)} "
             f"queries and BG_DIR '{cfg.bg_dir}' is empty. Add API key or "
             "drop portrait mp4s into assets/backgrounds/.")
-    if len(clips) < cfg.min_clips:
+    if not (local and local_first) and len(clips) < cfg.min_clips:
+        # Single-clip mode has exactly one clip by design, so the
+        # min_clips target does not apply there.
         warn(f"Story BG: only {len(clips)} clips (<{cfg.min_clips} target); "
              "reuse spacing relaxed.")
     return clips, credits, used_ids, kinds
@@ -637,6 +670,43 @@ def _seg_filter(speed: float) -> str:
     return (f"scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=increase,"
             f"crop={CANVAS_W}:{CANVAS_H},"
             f"setpts=PTS/{sp:.3f},fps=30,format=yuv420p")
+
+
+def _build_single_clip_track(clip: Path, total: float, speed: float,
+                            workdir: Path) -> tuple[Path, float, float]:
+    """One continuous background take from a local clip.
+
+    Picks a random start offset so repeated use of the same file looks
+    different, cuts exactly `total` seconds of output, and covers the
+    whole span even when the source is shorter than needed (looped input
+    with -stream_loop -1, truncated to the exact length). Returns
+    (track_path, start_offset, speed).
+    """
+    sp = max(0.2, float(speed))
+    try:
+        src_dur = ffprobe_duration(clip)
+    except Exception:
+        src_dur = 0.0
+    need = total * sp  # source seconds required at this speed
+    if src_dur > need:
+        offset = random.uniform(0.0, max(0.0, src_dur - need))
+    else:
+        # Short source: loop it and keep playing from 0.
+        offset = 0.0
+    track = workdir / "bg_single.mp4"
+    args = ["ffmpeg", "-y"]
+    if src_dur <= need:
+        args += ["-stream_loop", "-1"]
+    args += ["-ss", f"{offset:.3f}", "-i", str(clip),
+             "-t", f"{total:.3f}", "-vf", _seg_filter(sp),
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+             "-an", str(track)]
+    run_ffmpeg(args, "bg-single-clip")
+    log(f"Story BG single-clip: {clip.name} @ {sp:.2f}x, start {offset:.1f}s, "
+        f"need {need:.1f}s of {src_dur:.1f}s source"
+        f"{' (looped to cover)' if src_dur <= need else ''} "
+        f"-> {total:.1f}s track.")
+    return track, offset, sp
 
 
 def _transcode_segments(clips: list[Path], segs: list[dict],
@@ -834,44 +904,82 @@ def build_visuals(content: Content, narration: NarrationResult,
     beat_queries = [str(b.get("query", "")).strip()
                     for b in (content.extras.get("beats") or [])
                     if isinstance(b, dict) and str(b.get("query", "")).strip()]
+    all_queries: list[str] = [str(q) for q in dict.fromkeys([
+        *(content.extras.get("bg_queries", []) or []),
+        *beat_queries,
+        *(narration.extras.get("bg_queries", []) or [])]) if str(q).strip()]
     clips, credits, used_ids, kinds = gather_clips(
-        list(dict.fromkeys([
-            *(content.extras.get("bg_queries", []) or []),
-            *beat_queries,
-            *(narration.extras.get("bg_queries", []) or [])])),
-        genre, cfg,
+        all_queries, genre, cfg,
         recent_ids=tuple(content.extras.get("recent_pexels_ids") or ()),
         video_number=int(content.extras.get("video_number") or 0),
     )
     log(f"Stage 1/6 clips: {len(clips)} BG sources, {len(used_ids)} Pexels ids "
         f"({sum(1 for k in kinds if k == 'cleaning')} cleaning).")
 
-    # Stage 2: plan + transcode (planner gets real clip durations for
-    # exact source-window math).
-    clip_infos = []
-    for i, c in enumerate(clips):
-        try:
-            c_dur = ffprobe_duration(c)
-        except Exception:
-            c_dur = 30.0
-        cid = used_ids[i] if i < len(used_ids) else Path(c).stem
-        clip_infos.append({"id": str(cid), "duration": c_dur,
-                           "kind": kinds[i] if i < len(kinds) else "local"})
-    segs = plan(total, seg_min=cfg.seg_min, seg_max=cfg.seg_max,
-                n_clips=len(clips), speed_min=cfg.bg_speed_min,
-                speed_max=cfg.bg_speed_max,
-                min_segments=cfg.min_segments, max_segments=cfg.max_segments,
-                clips=clip_infos,
-                cleaning_share=float(getattr(cfg, "cleaning_share", 0.55)
-                                     or 0.0))
-    log(f"Stage 2/6 plan: {len(segs)} segments "
-        f"({segs[0]['dur']:.2f}s avg, speeds {segs[0]['speed']}).")
-    seg_files = _transcode_segments(clips, segs, workdir)
-
-    # Stage 3: concat BG track.
-    bg_track = _concat(seg_files, workdir)
-    log(f"Stage 3/6 BG track: {bg_track.name} "
-        f"({ffprobe_duration(bg_track):.1f}s).")
+    # Stage 2: single continuous local take (default when uploaded clips
+    # exist) skips the segment plan, the per-segment timelapse range and
+    # the min_clips warning — there is exactly one clip. Each local clip is
+    # tried in random order; a broken one warns and the next is tried, and
+    # only when every local clip has failed does the run fall back to the
+    # Pexels path (re-using gather_clips so search, limits, dedup and
+    # credits stay in one place).
+    bg_track: Path | None = None
+    segs: list[dict] = []
+    if clips and all(k == "local" for k in kinds):
+        speed = float(getattr(cfg, "bg_single_speed", 1.8) or 1.8)
+        order = list(clips)
+        random.shuffle(order)
+        for cand in order:
+            try:
+                bg_track, _off, _sp = _build_single_clip_track(
+                    cand, total, speed, workdir)
+                log(f"Stage 2/6 single-clip mode: {bg_track.name} from "
+                    f"{cand.name} @ {speed:.2f}x.")
+                break
+            except Exception as e:
+                warn(f"Story BG: local clip {cand.name} failed "
+                     f"({type(e).__name__}: {e}); trying another local clip...")
+        if bg_track is None:
+            warn(f"Story BG: all {len(order)} local clips failed; "
+                 "falling back to the Pexels path.")
+            clips, credits, used_ids, kinds = gather_clips(
+                all_queries, genre, cfg,
+                recent_ids=tuple(content.extras.get("recent_pexels_ids")
+                                 or ()),
+                video_number=int(content.extras.get("video_number") or 0),
+                pexels_only=True)
+            log(f"Stage 1/6 fallback clips: {len(clips)} Pexels clips, "
+                f"{len(used_ids)} ids.")
+        if bg_track is not None:
+            log(f"Stage 3/6 BG track: {bg_track.name} "
+                f"({ffprobe_duration(bg_track):.1f}s continuous).")
+    if bg_track is None:
+        # Stage 2: plan + transcode (planner gets real clip durations for
+        # exact source-window math).
+        clip_infos = []
+        for i, c in enumerate(clips):
+            try:
+                c_dur = ffprobe_duration(c)
+            except Exception:
+                c_dur = 30.0
+            cid = used_ids[i] if i < len(used_ids) else Path(c).stem
+            clip_infos.append({"id": str(cid), "duration": c_dur,
+                               "kind": kinds[i] if i < len(kinds) else "local"})
+        segs = plan(total, seg_min=cfg.seg_min, seg_max=cfg.seg_max,
+                    n_clips=len(clips), speed_min=cfg.bg_speed_min,
+                    speed_max=cfg.bg_speed_max,
+                    min_segments=cfg.min_segments,
+                    max_segments=cfg.max_segments,
+                    clips=clip_infos,
+                    cleaning_share=float(getattr(cfg, "cleaning_share", 0.55)
+                                         or 0.0))
+        log(f"Stage 2/6 plan: {len(segs)} segments "
+            f"({segs[0]['dur']:.2f}s avg, speeds {segs[0]['speed']}).")
+        seg_files = _transcode_segments(clips, segs, workdir)
+        # Stage 3: concat BG track.
+        bg_track = _concat(seg_files, workdir)
+        log(f"Stage 3/6 BG track: {bg_track.name} "
+            f"({ffprobe_duration(bg_track):.1f}s).")
 
     # Stage 4: card + captions.
     card_end = float(narration.extras.get("card_end", cfg.card_seconds))
@@ -903,10 +1011,15 @@ def build_visuals(content: Content, narration: NarrationResult,
         f"(after {card_end:.1f}s) + SRT upload.")
 
     # Stage 5: BGM bed (explicit file → random bgm pool → drone → silent).
+    # Loop the bed at UNITY gain: loop_bed's own default (0.08) used to stack
+    # with cfg.bgm_volume in _mix_filter, so the effective bed gain was
+    # bgm_volume * 0.08 (~-58 dB under the voice, inaudible). _mix_filter is
+    # now the single place the bed level is set, and the drone fallback goes
+    # through the same unity loop so it is equally loud.
     try:
         picked = _pick_bgm(cfg)
         bed = loop_bed(picked or synth_drone(total, workdir / "bed_raw.mp3"),
-                       total, workdir / "bed.mp3")
+                       total, workdir / "bed.mp3", volume=1.0)
     except Exception as e:
         warn(f"Story bed failed ({e}); using silent bed.")
         silent = workdir / "bed_silent.mp3"
@@ -984,7 +1097,7 @@ def build_visuals(content: Content, narration: NarrationResult,
         f"preset {final_preset}).")
     if size_mb >= 100:
         warn(f"Story video {size_mb:.1f} MB >= 100 MB budget.")
-    extras = {"segments": len(segs), "card_dur": card_dur,
+    extras = {"segments": len(segs) if segs else 1, "card_dur": card_dur,
               "card_end": card_end, "genre": genre,
               "size_mb": round(size_mb, 1)}
     thumb = _composite_thumb(workdir / "card.png", clips[0] if clips else out_mp4,
