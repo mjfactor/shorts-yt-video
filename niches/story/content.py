@@ -699,7 +699,7 @@ def _to_content(meta: dict, slots: dict, wps: float,
     """Validated meta + slots → stage Content (all story fields in extras).
 
     history is used to populate one extra for build_visuals:
-      - video_number: len(same-niche history) → rotating BG theme selection
+      - video_number: len(same-niche history) → BG clip rotation
     """
     history = history or []
     same_niche = [h for h in history if h.get("niche", "") == MODE]

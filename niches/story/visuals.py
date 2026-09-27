@@ -9,6 +9,7 @@ failure, never a silent fallback.
 from __future__ import annotations
 
 import random
+import re
 import time
 from pathlib import Path
 
@@ -254,6 +255,38 @@ def _composite_thumb(card_png_path: Path, bg_clip_path: Path,
         return None
 
 
+def _bg_sort_key(p: Path) -> tuple[int, str]:
+    """Natural order for background filenames: bg2 before bg10.
+
+    Plain sorted() is lexicographic, so 'bg10.mp4' would sort before
+    'bg2.mp4' and break the rotation order as soon as the pool passes
+    nine clips. Trailing number wins; names without one fall back to
+    name order.
+    """
+    nums = re.findall(r"\d+", p.stem)
+    return (int(nums[-1]) if nums else 0, p.stem.lower())
+
+
+def _bg_order(clips: list[Path], video_number: int, mode: str) -> list[Path]:
+    """Clip preference order for this video.
+
+    rotate (default): deterministic round-robin keyed on video_number, so
+    consecutive uploads walk bg1 -> bg2 -> ... -> bgN -> bg1. Predictable
+    and easy to reason about ("this video is bg3"). Returns the whole pool
+    rotated, NOT just the head, so a broken preferred clip still falls
+    through to the next ones.
+    random: legacy shuffle, for when you want a surprise background.
+    """
+    if len(clips) < 2:
+        return list(clips)
+    if str(mode or "rotate").strip().lower() == "random":
+        order = list(clips)
+        random.shuffle(order)
+        return order
+    start = int(video_number or 0) % len(clips)
+    return list(clips[start:]) + list(clips[:start])
+
+
 def build_visuals(content: Content, narration: NarrationResult,
                   cfg: StoryConfig, workdir: Path,
                   no_card: bool = False) -> VisualsResult:
@@ -275,8 +308,9 @@ def build_visuals(content: Content, narration: NarrationResult,
         bg_dir = Path(cfg.bg_dir)
         found = []
         if bg_dir.is_dir():
-            found = sorted(p for p in bg_dir.iterdir()
-                           if p.suffix.lower() in BG_EXTS and p.is_file())
+            found = sorted((p for p in bg_dir.iterdir()
+                            if p.suffix.lower() in BG_EXTS and p.is_file()),
+                           key=_bg_sort_key)
         if not found:
             raise RuntimeError(
                 f"No background clips: '{cfg.bg_dir}' holds no "
@@ -289,12 +323,21 @@ def build_visuals(content: Content, narration: NarrationResult,
         f"{Path(cfg.bg_dir).as_posix()}.")
 
     # Stage 2: one continuous take from a single local clip (the whole
-    # video is one BG track, never a cut-up). Each clip is tried in random
-    # order; a broken one warns and the next is tried. When EVERY clip
-    # fails the run stops hard — there is no other background source.
+    # video is one BG track, never a cut-up). Selection rotates through the
+    # pool by video_number (STORY_BG_SELECT=rotate, default) so consecutive
+    # uploads use consecutive clips; set it to "random" to shuffle instead.
+    # The start offset INSIDE the chosen clip stays random either way, so
+    # the same clip never looks identical on its next turn. A broken clip
+    # warns and the next in the order is tried; when EVERY clip fails the
+    # run stops hard — there is no other background source.
     speed = float(getattr(cfg, "bg_single_speed", 1.8) or 1.8)
-    order = list(clips)
-    random.shuffle(order)
+    video_number = int(content.extras.get("video_number") or 0)
+    select = str(getattr(cfg, "bg_select", "rotate") or "rotate")
+    order = _bg_order(clips, video_number, select)
+    log(f"Stage 2/6 BG pick: video #{video_number} -> {order[0].name} "
+        f"({select} over {len(clips)} clips: "
+        f"{', '.join(c.name for c in order[:6])}"
+        f"{'...' if len(order) > 6 else ''}).")
     bg_track: Path | None = None
     for cand in order:
         try:

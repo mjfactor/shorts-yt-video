@@ -97,6 +97,11 @@ class StoryConfig(NicheConfig):
     # Playback speed for the single continuous local take (default 1.8x,
     # a mild nudge that keeps the footage moving without over-speding it).
     bg_single_speed: float = 1.8
+    # Which clip each video starts on: "rotate" (default) walks the pool in
+    # filename order keyed on video_number, so consecutive uploads use
+    # consecutive clips and wrap around; "random" shuffles instead. The
+    # start offset INSIDE the clip is random either way.
+    bg_select: str = "rotate"
     # Narrator gender: auto alternates male/female by same-niche history
     # parity (odd = male, even = female); male/female force one voice.
     narrator_gender_mode: str = "auto"
@@ -240,6 +245,8 @@ class StoryConfig(NicheConfig):
             bg_dir=env_str("BG_DIR", "assets/backgrounds", "STORY_") or "assets/backgrounds",
             bg_single_speed=max(0.2, env_float("BG_SINGLE_SPEED", 1.8,
                                                "STORY_")),
+            bg_select=(env_str("BG_SELECT", "rotate", "STORY_").strip().lower()
+                       or "rotate"),
             narrator_gender_mode=(env_str("NARRATOR_GENDER_MODE", "auto",
                                           "STORY_").strip().lower()
                                   or "auto"),
