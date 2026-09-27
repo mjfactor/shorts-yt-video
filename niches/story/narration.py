@@ -714,7 +714,6 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
                 "fit_action": fit_action,
                 "card_text": content.extras.get("card_text", ""),
                 "card_highlight_word": content.extras.get("card_highlight_word", ""),
-                "bg_queries": list(content.extras.get("bg_queries", [])),
                 "key_words": list(content.extras.get("key_words", [])),
                 "genre": genre, "title": content.title})
 
@@ -886,6 +885,5 @@ def narrate(content: Content, cfg: StoryConfig,
                 "wps_measured": round(wps_measured, 3), "fit": fit_note,
                 "card_text": content.extras.get("card_text", ""),
                 "card_highlight_word": content.extras.get("card_highlight_word", ""),
-                "bg_queries": list(content.extras.get("bg_queries", [])),
                 "key_words": list(content.extras.get("key_words", [])),
                 "genre": genre, "title": content.title})

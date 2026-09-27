@@ -1,8 +1,9 @@
 # youtube-story — $0 Automated YouTube Shorts
 
 Multi-niche faceless Shorts pipeline. Gemini writes the script, TTS narrates,
-Pexels (or offline fallbacks) supplies visuals, FFmpeg renders vertical video,
-GitHub Actions uploads to YouTube 2x/day. No server, no credit card.
+local background footage (or offline `testsrc` stand-ins in the demo) supplies
+visuals, FFmpeg renders vertical video, GitHub Actions uploads to YouTube 2x/day.
+No server, no credit card.
 
 ## Architecture
 
@@ -28,6 +29,10 @@ pipeline.py (thin entry: NICHE env -> niches.load_niche() -> core.run(niche))
 Imports flow one way: niche → engine, niche → niches.base. Core never
 imports a niche; engine never imports core or a niche.
 
+`engine/pexels.py` still ships in the toolbox, but its only callers are the
+**deprecated** niches in `deprecated_niches/` — the story niche embeds no
+stock footage and never reads `PEXELS_API_KEY`.
+
 ## Niche contract
 
 Every niche in `niches/*` implements `niches.base.Niche`:
@@ -36,29 +41,41 @@ Every niche in `niches/*` implements `niches.base.Niche`:
 |---|---|
 | `generate_content(history, cfg)` | history + config → `Content` (title, narration_text, description, tags, extras with beats/queries) |
 | `narrate(content, cfg, workdir)` | script → `NarrationResult` (audio path, duration, word count, timed words) |
-| `build_visuals(content, narration, cfg, workdir)` | script + audio → `VisualsResult` (mp4, srt, credits, used clip ids) |
+| `build_visuals(content, narration, cfg, workdir)` | script + audio → `VisualsResult` (mp4, srt, credits, used clip ids — story leaves the last two empty, no stock is embedded) |
 | `build_metadata(content, ...)` | → upload dict (title/description/tags; default impl passes content through) |
 | `sample_content()` | → offline `Content` for demos/tests (zero API keys) |
 
 `niches/__init__.py` auto-discovers subpackages (`available_niches()`,
 private `_`-prefixed packages like `_template` skipped) and loads the one
 named by `NICHE` (`load_niche()`, default `story`; unknown names raise an
-`ImportError` listing what's available).
+`ImportError` listing what's available). Today `story` is the only live
+niche, so `available_niches()` returns `['story']`.
 
 | Niche | Format | Signature |
 |---|---|---|
-| `story` | 80–85s Reddit-style micro-story (hook → escalation → twist → payoff), BG-driven 1080x1920 with story card + word-pop captions | re-hooks at 20–30s / 50–60s, word budget from `TARGET_*` × measured wps |
-| `explainer` | ~60–75s "how the world around you actually works" single-concept explainer | beats carry `visual_hint`s (diagram / process_flow / stock_footage / text_card) |
-| `ranking` | ~2-min Top-5 countdown (hook, #5–#1, closer) | 7 beats, leaderboard overlay, mystery #1 blur, ≥2-shared-items dedup |
+| `story` | 100–120s Reddit-style micro-story (hook → escalation → twist → payoff), 1080x1920 with story card + word-pop captions over ONE continuous local background take | re-hooks at 20–30s / 50–60s, word budget from `TARGET_MIN`/`TARGET_MAX` × measured wps |
+| `explainer` *(deprecated)* | ~60–75s "how the world around you actually works" single-concept explainer | beats carry `visual_hint`s (diagram / process_flow / stock_footage / text_card) |
+| `ranking` *(deprecated)* | ~2-min Top-5 countdown (hook, #5–#1, closer) | 7 beats, leaderboard overlay, mystery #1 blur, ≥2-shared-items dedup |
 
-## Run (per niche)
+> **Deprecated:** `explainer` and `ranking` are no longer loadable. They were
+> moved out of `niches/` into `deprecated_niches/`, so `NICHE=explainer` /
+> `NICHE=ranking` now raise `ImportError` from `load_niche()`. `daily.yml`
+> still exports a few `EXPLAINER_*`/`RANKING_*` env entries, but with `story`
+> as the only registered niche they are inert. The two packages are kept for
+> reference (and they are the only remaining users of `engine/pexels.py` and
+> `PEXELS_API_KEY`). The rows above describe what they still contain.
+
+## Run (story)
 
 ```bash
 pip install -r requirements.txt
-NICHE=story     python pipeline.py   # Reddit story (default)
-NICHE=explainer python pipeline.py   # how-it-works explainer
-NICHE=ranking   python pipeline.py   # Top-5 countdown
+python pipeline.py                  # story (the only live niche)
+NICHE=story python pipeline.py       # same thing, explicit
 ```
+
+`explainer` / `ranking` are deprecated — `NICHE=explainer python pipeline.py`
+and `NICHE=ranking python pipeline.py` now fail with `ImportError` (see the
+deprecation note above); their code is parked in `deprecated_niches/`.
 
 (Windows PowerShell: `$env:NICHE="story"; python pipeline.py`.)
 Needs `ffmpeg` + `ffprobe` on PATH. Output:
@@ -66,27 +83,33 @@ Needs `ffmpeg` + `ffprobe` on PATH. Output:
 
 ## Offline demo (zero API keys, never uploads)
 
+`demo.py` is **story-only** — there is no `--niche` flag (passing one errors).
+
 ```bash
-python demo.py                  # defaults to --niche story
-python demo.py --niche story
-python demo.py --niche explainer
-python demo.py --niche ranking
+python demo.py                      # story demo, --tts auto
+python demo.py --tts edge           # keyless edge preview voice
+python demo.py --tts gemini         # needs GEMINI_API_KEY
+python demo.py --words 120          # trim the sample narration for a quick preview
 python demo.py --help
 ```
 
-Each demo uses that niche's `sample_content()` plus offline stand-ins
-(story: ~80–85s sine-tone WAV via FFmpeg lavfi; explainer/ranking: tone MP3
-+ even SRT, the old fixture path) and local backgrounds (real files from
-`BG_DIR` when present, else generated `testsrc`/`rgbtestsrc`/`smptebars`
-color clips). Output: playable 1080x1920 `out/demo_<niche>.mp4`.
-Requires only ffmpeg + ffprobe.
+Real parser: `demo.py [-h] [--tts {auto,gemini,edge}] [--words WORDS]`.
+
+The demo uses the story niche's `sample_content()` plus offline stand-ins:
+narration from the real niche `narrate()` (tone WAV with proportional timings
+if edge-tts has no network), and backgrounds from real files in `BG_DIR` /
+`STORY_BG_DIR` when present, else generated `testsrc`/`rgbtestsrc`/`smptebars`
+color clips. Output: playable 1080x1920 `out/demo_story.mp4`. The bundled
+sample is shorter than the 100–120s target window, so the demo is a timing /
+plumbing check, not a full-length proof. Requires only ffmpeg + ffprobe.
 
 ## Setup (one time)
 
 1. Push this folder to a **private** GitHub repo.
 2. Add Secrets (Settings → Secrets and variables → Actions):
-   `GEMINI_API_KEY`, `PEXELS_API_KEY`,
-   `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN`
+   `GEMINI_API_KEY`, `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN`
+   (`PEXELS_API_KEY` is **not** needed for story — only the deprecated
+   niches read it, and the story workflow does not wire it through.)
 3. Get the YouTube refresh token (headless runners can't click OAuth):
    - Google Cloud Console → new project → enable **YouTube Data API v3**
    - Create **OAuth Desktop Client**, set `YT_CLIENT_ID` / `YT_CLIENT_SECRET`
@@ -102,22 +125,42 @@ Generic ( Secrets for keys, Variables for tuning; bare names are
 cross-niche fallbacks):
 
 - `GEMINI_API_KEY` (+ `GEMINI_API_KEY_2..10` failover; comma-separated keys in one var also work)
-- `PEXELS_API_KEY`, `YT_CLIENT_ID` / `YT_CLIENT_SECRET` / `YT_REFRESH_TOKEN`
+- `YT_CLIENT_ID` / `YT_CLIENT_SECRET` / `YT_REFRESH_TOKEN`
+- `PEXELS_API_KEY` — deprecated niches only; the story niche never reads it
 - `VISIBILITY` (default `private`), `TTS_RATE` / `TTS_PITCH` / `TTS_VOLUME`, `BGM_VOLUME`
-- `MIN_AUDIO_SEC=10` / `MAX_AUDIO_SEC=180` (duration guard, not a target)
 - `GEMINI_TIMEOUT` / `GEMINI_TTS_TIMEOUT` / `GEMINI_TRIES` / `GEMINI_BACKOFF`
 
-Per-niche (prefix wins over the bare fallback, per `niches/base.py env_*`):
+Per-niche (prefix wins over the bare fallback, per `niches/base.py env_*`).
+`STORY_*` is the authoritative list from `niches/story/config.py::from_env()`:
 
-- `STORY_*` — `TTS_MODEL`, `TTS_VOICES`, `NARRATION_SPEED`, `SEG_MIN/MAX`,
-  `BG_SPEED_MIN/MAX`, `CAPTION_UPPER`, `CARD_SECONDS`, `CHANNEL_HANDLE`,
-  `AVATAR_PATH`, `BG_DIR`, `MAX_SECONDS`, `TARGET_MIN/MAX` (80/85),
-  `STORY_GENRES`, `WHISPER_MODEL`, `PEXELS_API_KEY`
-- `EXPLAINER_*` — `VOICE`, `TTS_RATE/PITCH/VOLUME/ENGINE`,
-  `GEMINI_TTS_VOICES`, `STILLS_PER_BEAT`, `MIN/MAX_AUDIO_SEC`, `PEXELS_MIN_WIDTH`
-- `RANKING_*` — `VOICE/VOICES`, `TTS_RATE/PITCH/VOLUME/STYLE`, `TONE`,
-  `TARGET_WPM`, `STILLS_PER_BEAT`, `MIN/MAX_AUDIO_SEC`, `PEXELS_MIN_WIDTH`,
-  `PEXELS_CACHE_DIR`, `BGM_VOLUME`
+- `STORY_TARGET_MIN` / `STORY_TARGET_MAX` (100/120; `..._SECONDS` aliases win),
+  `STORY_MAX_SECONDS` (130, narration past it is trimmed at a sentence end),
+  `STORY_NARRATION_SPEED`, `STORY_TRIM_CHUNK_SILENCE`, `STORY_CHUNK_PAUSE_SEC`,
+  `STORY_LENGTH_OVERSHOOT`
+- `STORY_TTS_MODEL` / `STORY_TTS_MODELS`, `STORY_TTS_VOICES`, `STORY_TTS_ENGINE`,
+  `STORY_TTS_PROVIDER_ORDER`, `STORY_EDGE_VOICE` / `STORY_EDGE_VOICES`,
+  `STORY_EDGE_RATE`, `STORY_EDGE_RATE_FEMALE`, `STORY_EDGE_PITCH`,
+  `STORY_NARRATOR_GENDER_MODE`
+- `STORY_MODELS` (script models; bare `GEMINI_MODELS` overrides the whole pool)
+- `STORY_BG_DIR` (`assets/backgrounds` — the **only** background source) and
+  `STORY_BG_SINGLE_SPEED` (1.8, playback speed of the single continuous take)
+- Audio bed: `STORY_BGM_DIR` (`assets/background-musics`), `STORY_BGM_GLOB`
+  (`bgm*.mp3`), `STORY_BGM_VOLUME`, `STORY_BED_PATH`
+- Captions + card: `STORY_CAPTION_UPPER`, `STORY_ASS_FONTSIZE`,
+  `STORY_CARD_SECONDS`, `STORY_THUMB_OFFSET_SECONDS`, `STORY_CARD_LIKES`,
+  `STORY_CARD_SHARES`, `STORY_CARD_SHOW_REACTIONS`, `STORY_CHANNEL_HANDLE`,
+  `STORY_AVATAR_PATH`
+- Content + pacing: `STORY_GENRES`, `STORY_HISTORY_WPS`, `STORY_WHISPER_MODEL`
+- Retries/timeouts: `STORY_TIMEOUT`, `STORY_TTS_TIMEOUT`, `STORY_TRIES`,
+  `STORY_BACKOFF`, `STORY_LITE_RETRIES`
+
+Deprecated-niche knobs (still read inside `deprecated_niches/`; `daily.yml`
+still exports a few of them, but they are inert while `story` is the only
+registered niche): `EXPLAINER_*` — `VOICE`, `TTS_RATE/PITCH/VOLUME/ENGINE`,
+`GEMINI_TTS_VOICES`, `STILLS_PER_BEAT`, `MIN/MAX_AUDIO_SEC`, `PEXELS_MIN_WIDTH`;
+`RANKING_*` — `VOICE/VOICES`, `TTS_RATE/PITCH/VOLUME/STYLE`, `TONE`,
+`TARGET_WPM`, `STILLS_PER_BEAT`, `MIN/MAX_AUDIO_SEC`, `PEXELS_MIN_WIDTH`,
+`PEXELS_CACHE_DIR`, `BGM_VOLUME`.
 
 New vars must also be wired through `.github/workflows/daily.yml` `env:` —
 secrets/vars do not flow into jobs automatically.
@@ -128,11 +171,23 @@ secrets/vars do not flow into jobs automatically.
   falls back to a drawn-initials circle, so the render never breaks.
 - `assets/fonts/` — drop brand `.ttf`s here; the card/caption code prefers
   bundled fonts, then DejaVu (CI) / Arial (local), then the Pillow default.
-- `assets/backgrounds/` — drop looping portrait clips here for story BGs;
-  when empty, Pexels (with key) or generated testsrc color clips (demo) fill in.
-- `assets/pexels_cache/` — downloaded Pexels clips, kept between runs to
-  save re-downloads. Both dirs are gitignored (only `.gitkeep` placeholders
-  are tracked); `out/`, `assets/`, `.env` stay uncommitted.
+- `assets/backgrounds/` — the story niche's ONLY background source. One file
+  (`.mp4`/`.mov`/`.webm`/`.mkv`) is picked at random per video and played as a
+  single continuous take from a random start offset at `STORY_BG_SINGLE_SPEED`
+  (short sources loop to cover), cut to the exact video length — no per-beat
+  cuts, no queries, no credits. An **empty folder is a hard failure**
+  (`RuntimeError`); a clip that will not render is skipped with a
+  `::warning::` and the next one is tried. Clips here are committed
+  (`bg1.mp4` …), and CI has a "Fetch story background" step so the folder is
+  never empty on a runner.
+- `assets/background-musics/` — committed `bgm*.mp3` BGM pool, one random track
+  per video; with no pool the story synth falls back to a drone bed.
+- `assets/pexels_cache/` — legacy stock-download cache dir (gitignored,
+  `.gitkeep` tracked). Normal story runs never fill it: only the deprecated
+  niches download stock, into their own cache dir
+  (`RANKING_PEXELS_CACHE_DIR`, default `assets/`). `out/`, `assets/*` and
+  `.env` stay uncommitted, except the brand fonts/avatar, the BGM pool and the
+  background clips listed above.
 
 Card branding (`STORY_CHANNEL_HANDLE`, theme colors) is config, not code —
 edit env, not `visuals.py`.
@@ -171,22 +226,25 @@ TTS narration, and (in demos) tone-audio/testsrc stand-ins. When publishing:
 | Actions minutes | 2,000 min/mo | ~800–1,200 min/mo |
 | Artifact storage | 500 MB | ~120 MB rolling |
 | YouTube uploads | 100/day | 2/day |
-| Pexels API | 200 req/hour + 20k/mo | ~28/day |
 | Gemini Flash | free tier | a few calls/day |
+
+Story makes **zero** Pexels calls, so Pexels rate limits/quotas do not apply to
+the live run (only to the deprecated niches).
 
 ## Known limitations
 
 - **No local transcription models** (`engine/align.py`): word timing is
   estimated proportionally (never fatal), and story narration still ships.
-- **Pexels rate limits** (429): `engine/pexels.py` backs off and retries;
-  sustained limiting degrades to fewer/older cached clips, then Pillow cards.
+- **Pexels rate limits** (429): irrelevant for story (no Pexels calls). The
+  deprecated niches' `engine/pexels.py` backs off and retries; sustained
+  limiting degrades them to fewer/older cached clips, then Pillow cards.
 - **Gemini free-tier quotas**: key rotation + backoff + OpenRouter `:free`
   failover + offline fallback variants keep runs green, but quota exhaustion
   means the fallback script airs — check `topicSource` in `history.json`.
 - **Shorts ceiling — verify before raising targets**: Shorts accept ~3 min
   for vertical uploads, but confirm the *current* ceiling in YouTube docs
-  before raising `STORY_TARGET_MAX`/`MAX_SECONDS`. Never assume a ≤60s cap
-  anywhere either — the only enforced guard is `MIN/MAX_AUDIO_SEC`.
+  before raising `STORY_TARGET_MAX`/`STORY_MAX_SECONDS`. Never assume a ≤60s cap
+  anywhere either — `MAX_SECONDS` is only a trim ceiling, not a reject gate.
 
 ## Failure alerts (optional, free)
 
@@ -213,14 +271,16 @@ Missing creds = TikTok skipped with a warning, YouTube unaffected.
 
 ## Safety gates
 
-- **Duration guard:** narration audio outside `MIN_AUDIO_SEC`–`MAX_AUDIO_SEC`
-  aborts the run before rendering, so broken TTS can never become a video.
+- **Duration guard:** narration is fitted to `TARGET_MIN`–`TARGET_MAX` by the
+  duration-fit loop (re-synth/re-pace attempts, ±5s accepted with a warning),
+  and audio past `MAX_SECONDS` is trimmed at a sentence end — so broken or
+  runaway TTS can't become an over-long video.
 - **Dedup:** `history.json` (kept to 110) is quoted into prompts (advisory)
   plus hard gates per niche (same topic/title, shared ranked items,
   >35% story word-overlap). New entries record topic/source/genre/items
   after every successful render, even when upload is skipped.
 - **Intermediates cleanup:** working files are deleted after every run
-  (`finally` block); the Pexels clip cache is kept.
+  (`finally` block); the stock download cache is kept.
 
 ## Troubleshooting
 
@@ -228,4 +288,6 @@ Missing creds = TikTok skipped with a warning, YouTube unaffected.
 - Videos locked Private → normal for unverified OAuth apps; request YouTube audit or flip `VISIBILITY` later.
 - Cron runs late → normal on GitHub free (5–30 min delays).
 - Workflow disabled → GitHub auto-disables cron after 60 days of repo inactivity; re-enable under Actions.
-- Wrong niche in CI → check the `NICHE` repo Variable (default `story`); per-niche tuning needs the prefixed (`STORY_`/`EXPLAINER_`/`RANKING_`) Variable, since bare names are only fallbacks.
+- Wrong niche in CI → check the `NICHE` repo Variable (default `story`, the
+  only live niche); per-niche tuning needs the prefixed `STORY_` Variable,
+  since bare names are only fallbacks.

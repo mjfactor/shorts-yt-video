@@ -22,10 +22,6 @@ from .config import (DEFAULT_GENRES, DEFAULT_TEXT_MODELS, MODE,
 AVOID_INTRO = "Already-aired stories — do NOT reuse these titles or premises:\n"
 AVOID_OUTRO = "Your story must have a DIFFERENT premise from every entry above. "
 
-USE_BEAT_QUERY = True
-AMBIENT_QUERIES: tuple = ()
-USE_MOOD = False
-
 _TTS_BAD_RE = re.compile(r"[*#_`|~@^<>{}\[\]\\]")
 _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
 # Stage-direction leak guard: rehooks are metadata pointers, never spoken —
@@ -289,9 +285,6 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
         raise ValueError(f"'card_text' must be <=8 words "
                          f"(got {len(card_text.split())})")
     key_words = _str_list(data.get("key_words"))
-    bg_queries = _str_list(data.get("bg_queries"))[:8]
-    if len(bg_queries) < 5:
-        raise ValueError("'bg_queries' must hold 5-8 queries")
     ending = str(data.get("ending_type", "") or "").strip().lower()
     if ending not in ("payoff", "cliffhanger"):
         raise ValueError("'ending_type' must be 'payoff' or 'cliffhanger'")
@@ -339,7 +332,6 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
         "tags": _str_list(data.get("tags")),
         "items": key_words,
         "key_words": key_words,
-        "bg_queries": bg_queries,
         "genre": str(data.get("genre", "") or "").strip(),
         "card_text": str(data.get("card_text", "") or "").strip(),
         "card_highlight_word": str(data.get("card_highlight_word", "") or "").strip(),
@@ -350,8 +342,7 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
         "narrator_gender": gender,
         "pinned_comment": str(data.get("pinned_comment", "") or "").strip(),
         "rehooks": rehooks,
-        "beats": [{"text": str(b.get("text", "")).strip(),
-                   "query": str(b.get("query", "")).strip(), "label": ""}
+        "beats": [{"text": str(b.get("text", "")).strip(), "label": ""}
                   for b in beats if isinstance(b, dict)],
     }
     if isinstance(data.get("part_2_seed"), str) and data["part_2_seed"].strip():
@@ -469,7 +460,7 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         f"{history_block(history, cfg.history_prompt_n)}"
         "Return ONLY valid JSON with exactly these keys: title, card_text, "
         "card_highlight_word, hook, story_text, narration, genre, narrator_gender, key_words, "
-        "bg_queries, tags, description, ending_type, pinned_comment, beats, "
+        "tags, description, ending_type, pinned_comment, beats, "
         "rehooks, plus optional part_2_seed.\n\n"
         f"Story flow (natural human pacing, {lo}-{hi} words total, about {secs} seconds):\n"
         "Start with a hook that drops you into the tension ('My landlord kept my "
@@ -503,13 +494,7 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         f"feels ambiguous (write the narration in that voice; it is the "
         f"narrator's own gender, never inferred from other characters). "
         "key_words: 4-8 lowercase content words (people, places, objects, "
-        "moods) for dedup and visuals. bg_queries: 5-8 background-footage "
-        "search queries, 1-3 concrete filmable words each "
-        "(e.g. 'walking office hallway'). Every query must describe VISIBLE "
-        "MOTION — an action or movement verb (walking, pouring, driving, "
-        "cleaning) in a wide busy scene that reads as moving footage, not "
-        "a still. NEVER static-only framings: no portrait, closeup face, "
-        "sitting still, or blurred background.\n\n"
+        "moods) for dedup and visuals.\n\n"
         "rehooks: metadata ONLY, never spoken — exactly 3 objects "
         "{\"at\": \"20-30s\" | \"50-60s\" | "
         "\"80-90s\", \"line\": <exact story line>}. Each line must be a plain "
@@ -537,13 +522,11 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "strings, no emoji. pinned_comment: ONE engaging question or call to "
         "comment (<=150 chars, 1 emoji max).\n\n"
         "beats: array of 3-5 objects in spoken order. Each object must be "
-        "{\"text\": <exact story chunk>, \"query\": <1-3 word filmable stock "
-        "query>}. The beat texts joined with single spaces must equal "
-        "narration EXACTLY. Each query should match its moment.\n\n"
+        "{\"text\": <exact story chunk>}. The beat texts "
+        "joined with single spaces must equal narration EXACTLY.\n\n"
         f"Beat structure (divide story into 3-5 natural chunks, totalling {lo}-{hi} words):\n"
         "Split the story where visual scenes naturally change—not by formula, but by "
-        "what's actually happening. Each beat needs a filmable 1-3 word query (like "
-        "'office desk night', 'security footage', 'kitchen morning'). Aim for roughly "
+        "what's actually happening. Aim for roughly "
         f"{mid // 5} words per beat on average, but let the story breathe—some beats "
         "can be 70 words, others 100+. The final beat must deliver a real ending "
         "(60+ words minimum)—never rush it with 'and that was that' or 'follow for "
@@ -715,23 +698,12 @@ def _to_content(meta: dict, slots: dict, wps: float,
                 history: list[dict] | None = None) -> Content:
     """Validated meta + slots → stage Content (all story fields in extras).
 
-    history is used to populate two extras for build_visuals:
+    history is used to populate one extra for build_visuals:
       - video_number: len(same-niche history) → rotating BG theme selection
-      - recent_pexels_ids: Pexels clip IDs from last 5 videos → cross-video
-        dedup so consecutive videos never share background footage.
     """
     history = history or []
     same_niche = [h for h in history if h.get("niche", "") == MODE]
     video_number = len(same_niche)
-    # Collect Pexels IDs from the last 5 same-niche videos (flat, deduped).
-    recent_ids: list[str] = []
-    seen: set[str] = set()
-    for h in same_niche[-5:]:
-        for vid in (h.get("used_ids") or []):
-            s = str(vid).strip()
-            if s and s not in seen:
-                seen.add(s)
-                recent_ids.append(s)
     return Content(
         title=meta["title"],
         narration_text=meta["narration"],
@@ -740,7 +712,6 @@ def _to_content(meta: dict, slots: dict, wps: float,
         extras={"beats": list(meta.get("beats", [])),
                 "items": list(meta.get("items", meta.get("key_words", []))),
                 "key_words": list(meta.get("key_words", [])),
-                "bg_queries": list(meta.get("bg_queries", [])),
                 "genre": slots.get("genre", ""),
                 "topic": slots.get("topic", ""),
                 "topic_source": slots.get("topic_source", "genre-rotation"),
@@ -755,8 +726,7 @@ def _to_content(meta: dict, slots: dict, wps: float,
                 "rehooks": list(meta.get("rehooks", [])),
                 "wps": wps,
                 "slots": dict(slots),
-                "video_number": video_number,
-                "recent_pexels_ids": recent_ids})
+                "video_number": video_number})
 
 
 def _model_attempts(cfg: StoryConfig, model: str) -> int:
@@ -903,9 +873,6 @@ _FALLBACK_VARIANTS = (
         "genre": "workplace",
         "narrator_gender": "female",
         "key_words": ["boss", "overtime", "office", "meeting", "weekend"],
-        "bg_queries": ["office desk night", "empty office hallway",
-                       "work team meeting", "conference room silent",
-                       "city office windows", "desk clock overtime"],
         "tags": ["shorts", "storytime", "workplace", "revenge", "stories"],
         "description": ("She finally said no to weekend work, and the office "
                         "lost its mind. Would you have caved? "
@@ -923,20 +890,17 @@ _FALLBACK_VARIANTS = (
         "beats": [
             {"text": ("I said no, then they moved my desk. My boss asked me "
                       "to work Saturday for the third weekend in a row, so "
-                      "I finally said no."),
-             "query": "office desk night"},
+                      "I finally said no.")},
             {"text": ("On Monday, nobody would talk to me. My chair was moved "
                       "to the storage room, and my name was missing from the "
                       "team lunch order. Then I found out my boss told everyone "
-                      "I was putting the whole project at risk."),
-             "query": "empty office hallway"},
+                      "I was putting the whole project at risk.")},
             {"text": ("So I printed every late night email and every weekend "
                       "text, and I brought them to the big meeting. I laid them "
                       "on the table and said, if hard work matters here, the "
                       "records speak for themselves. The room went silent, and "
                       "my boss never asked me to work a weekend again. Comment "
-                      "if you would have done the same, and follow for the next story."),
-             "query": "conference room silent"},
+                      "if you would have done the same, and follow for the next story.")},
         ],
     },
     {
@@ -947,9 +911,6 @@ _FALLBACK_VARIANTS = (
         "genre": "revenge",
         "narrator_gender": "male",
         "key_words": ["neighbor", "drums", "blender", "apartment", "deal"],
-        "bg_queries": ["apartment building night", "man sleeping bed",
-                       "kitchen blender morning", "neighbors handshake",
-                       "drum kit room", "morning kitchen light"],
         "tags": ["shorts", "storytime", "revenge", "neighbors", "stories"],
         "description": ("Midnight drums met a seven AM blender. Petty? Maybe. "
                         "Effective? Completely. #shorts #storytime #revenge"),
@@ -966,11 +927,9 @@ _FALLBACK_VARIANTS = (
         "beats": [
             {"text": ("He drummed at midnight, I blended at seven. My "
                       "upstairs neighbor played drums every night at "
-                      "midnight, and politeness got me nowhere."),
-             "query": "apartment building night"},
+                      "midnight, and politeness got me nowhere.")},
             {"text": ("So I learned his schedule. He slept until noon after "
-                      "his night shifts, every single day."),
-             "query": "man sleeping bed"},
+                      "his night shifts, every single day.")},
             {"text": ("I bought the loudest blender I could find. "
                       "Every morning at seven, I made the thickest smoothie "
                       "of my life. "
@@ -978,8 +937,7 @@ _FALLBACK_VARIANTS = (
                       "begged for mercy. We made a deal that same morning. No "
                       "drums after ten, no blender before nine. We have been "
                       "perfect neighbors ever since. Comment your best petty "
-                      "revenge below, and follow for the next story."),
-             "query": "kitchen blender morning"},
+                      "revenge below, and follow for the next story.")},
         ],
     },
     {
@@ -991,9 +949,6 @@ _FALLBACK_VARIANTS = (
         "narrator_gender": "female",
         "key_words": ["gas station", "night shift", "phone call", "cameras",
                       "hallway"],
-        "bg_queries": ["gas station night", "old telephone ringing",
-                       "security camera monitor", "dark hallway shadows",
-                       "empty store night", "fluorescent lights flicker"],
         "tags": ["shorts", "storytime", "scary", "truestory", "stories"],
         "description": ("The phone rang at three AM with a warning: do not turn "
                         "around. Part two at ten thousand likes. "
@@ -1012,18 +967,15 @@ _FALLBACK_VARIANTS = (
         "beats": [
             {"text": ("Do not turn around. I work the night shift at a gas "
                       "station. Last Tuesday the phone rang at exactly "
-                      "three in the morning."),
-             "query": "gas station night"},
+                      "three in the morning.")},
             {"text": ("A small voice whispered, do not turn around, and then "
                       "the line went dead. My hands were shaking, but I checked "
-                      "the cameras, and the store was empty."),
-             "query": "security camera monitor"},
+                      "the cameras, and the store was empty.")},
             {"text": ("Then every screen froze on the same frame, the back "
                       "hallway, where something tall was standing. I grabbed my "
                       "keys and ran, and I never looked back. The next night, "
                       "the phone rang again at exactly three. Comment if you "
-                      "want part two, and follow for the next story."),
-             "query": "dark hallway shadows"},
+                      "want part two, and follow for the next story.")},
         ],
     },
 )
@@ -1043,14 +995,13 @@ def _build_fallback_meta(variant: dict) -> tuple[dict, dict]:
         "narration": story,
         "genre": variant["genre"],
         "key_words": list(variant["key_words"]),
-        "bg_queries": list(variant["bg_queries"]),
         "tags": list(variant["tags"]),
         "description": variant["description"],
         "ending_type": variant["ending_type"],
         "narrator_gender": variant.get("narrator_gender", ""),
         "pinned_comment": variant["pinned_comment"],
         "rehooks": [dict(r) for r in variant.get("rehooks", [])],
-        "beats": [{"text": b["text"], "query": b["query"], "label": ""}
+        "beats": [{"text": b["text"], "label": ""}
                   for b in variant["beats"]],
         "items": list(variant["key_words"]),
     }

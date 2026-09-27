@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> None:
             extras={"beats": [], "card_text": card_text,
                     "card_highlight_word": "",
                     "hook": hook if hook else text[:60],
-                    "bg_queries": [], "key_words": [],
+                    "key_words": [],
                     "genre": "preview", "topic": "preview"})
         narration = NarrationResult(
             audio=wav, duration=dur, words=len(text.split()),
@@ -152,9 +152,8 @@ def main(argv: list[str] | None = None) -> None:
                     "card_end": max(cfg.card_seconds,
                                     card_end_time(words, card_text, hook)
                                     + 0.15),
-                    "bg_queries": [], "key_words": [], "genre": "preview"})
+                    "key_words": [], "genre": "preview"})
         cfg.bg_dir = args.bg_dir
-        cfg.pexels_key = ""  # local clips only, never Pexels
         if args.bgm:
             cfg.bed_path = args.bgm
         _ensure_local_clips(cfg, dur + 0.4, workdir)

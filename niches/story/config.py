@@ -74,13 +74,6 @@ class StoryConfig(NicheConfig):
     # wins, bare EDGE_RATE_FEMALE falls back.
     edge_rate_female: str = "+28%"
     edge_pitch: str = "+0Hz"
-    # BG segment length bounds (seconds) + playback speed range.
-    # Satisfying-timelapse range: slow mopping/cleaning footage is
-    # near-invisible at 1.15-1.5x, so the default runs 2.5-3.5x.
-    seg_min: float = 2.5
-    seg_max: float = 4.5
-    bg_speed_min: float = 3.2
-    bg_speed_max: float = 4.5
     # Captions: 1/true = uppercase word-pop.
     caption_upper: bool = False
     # Card floor: overlay shows max(card_seconds, card_line_end + pad).
@@ -97,35 +90,12 @@ class StoryConfig(NicheConfig):
     card_likes: str = "420+"
     card_shares: str = "420+"
     card_show_reactions: bool = True
-    # Clip sources.
+    # Clip source: the only background footage source is this folder.
+    # An empty folder is a hard render failure, never a silent fallback.
     bg_dir: str = "assets/backgrounds"
-    # Which clip source wins when both are available: local_first (default)
-    # uses uploaded videos in bg_dir and skips the Pexels search entirely;
-    # pexels_first restores the legacy order (Pexels first, local appended).
-    bg_source: str = "local_first"
     # Playback speed for the single continuous local take (default 1.8x,
-    # a mild nudge — unlike the 3.2-4.5x Pexels segment timelapse).
+    # a mild nudge that keeps the footage moving without over-speding it).
     bg_single_speed: float = 1.8
-    pexels_key: str = ""
-    pexels_cache_dir: str = "assets/pexels_cache"
-    # Clips fetched per Pexels query (distinct videos). Cap math for a
-    # full run: ~17 story/ambient queries x K=2 + 6 cleaning queries x
-    # CLEANING_K=3 x ~10MB worst case ≈ ~500MB transient (typical
-    # portrait clips are smaller; the id cache skips re-downloads on
-    # retry). Lower to 1 to restore one-clip-per-query behavior.
-    clips_per_query: int = 2
-    # Cleaning queries fetch the same depth as story queries, so cleaning no
-    # longer outnumbers ambient stock before the planner partitions it.
-    cleaning_clips_per_query: int = 1
-    # Planner share of segments drawn from cleaning clips, laid as
-    # consecutive runs (0.0-1.0; capped by the cleaning pool size).
-    # 0.55 read as "always cleaning": over half the runtime was cleaning,
-    # front-loaded in runs of 3-5. 0.2 keeps it as an accent.
-    cleaning_share: float = 0.2
-    # Motion bias for Pexels search text (0.0-1.0; 0 = queries verbatim,
-    # >0 = static-leaning queries rewritten toward moving footage;
-    # cleaning-pool queries always pass through untouched).
-    motion_bias: float = 1.0
     # Narrator gender: auto alternates male/female by same-niche history
     # parity (odd = male, even = female); male/female force one voice.
     narrator_gender_mode: str = "auto"
@@ -150,10 +120,6 @@ class StoryConfig(NicheConfig):
     # TTS path runs faster than history wps implies, so aim above the bare
     # seconds*wps floor (default 1.08 targets mid-range, not the floor).
     length_overshoot: float = 1.12
-    # Planner floors.
-    min_clips: int = 12
-    min_segments: int = 25
-    max_segments: int = 40
     # Caption style (burned word-pop on 1080x1920; 132 = +10% net after
     # 144 read slightly big; STORY_ASS_FONTSIZE overrides).
     ass_fontsize: int = 132
@@ -260,10 +226,6 @@ class StoryConfig(NicheConfig):
             edge_rate=env_str("EDGE_RATE", "+20%", "STORY_") or "+20%",
             edge_rate_female=env_str("EDGE_RATE_FEMALE", "+28%", "STORY_") or "+28%",
             edge_pitch=env_str("EDGE_PITCH", "+0Hz", "STORY_") or "+0Hz",
-            seg_min=env_float("SEG_MIN", 2.5, "STORY_"),
-            seg_max=env_float("SEG_MAX", 4.5, "STORY_"),
-            bg_speed_min=env_float("BG_SPEED_MIN", 3.2, "STORY_"),
-            bg_speed_max=env_float("BG_SPEED_MAX", 4.5, "STORY_"),
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
             ass_fontsize=env_int("ASS_FONTSIZE", 132, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),
@@ -275,18 +237,8 @@ class StoryConfig(NicheConfig):
             card_shares=env_str("CARD_SHARES", "420+", "STORY_") or "420+",
             card_show_reactions=env_bool("CARD_SHOW_REACTIONS", True, "STORY_"),
             bg_dir=env_str("BG_DIR", "assets/backgrounds", "STORY_") or "assets/backgrounds",
-            bg_source=env_str("BG_SOURCE", "local_first", "STORY_").strip().lower()
-            or "local_first",
             bg_single_speed=max(0.2, env_float("BG_SINGLE_SPEED", 1.8,
                                                "STORY_")),
-            pexels_key=env_str("PEXELS_API_KEY", "", "STORY_"),
-            clips_per_query=env_int("CLIPS_PER_QUERY", 2, "STORY_"),
-            cleaning_clips_per_query=env_int(
-                "CLEANING_CLIPS_PER_QUERY", 1, "STORY_"),
-            cleaning_share=min(1.0, max(0.0, env_float(
-                "CLEANING_SHARE", 0.2, "STORY_"))),
-            motion_bias=min(1.0, max(0.0, env_float(
-                "MOTION_BIAS", 1.0, "STORY_"))),
             narrator_gender_mode=(env_str("NARRATOR_GENDER_MODE", "auto",
                                           "STORY_").strip().lower()
                                   or "auto"),
