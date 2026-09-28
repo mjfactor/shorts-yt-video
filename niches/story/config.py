@@ -80,9 +80,12 @@ class StoryConfig(NicheConfig):
     # Card floor: overlay shows max(card_seconds, card_line_end + pad).
     card_seconds: float = 3.0
     card_pad: float = 0.4
-    # Thumbnail frame offset (seconds into the final mp4). The opening
-    # card is visible 0-card_dur, so the default 1.0s lands on the card;
-    # clamped inside card_dur at render time (warn-only on failure).
+    # Thumbnail frame offset in seconds. Applied to BOTH thumbnail paths
+    # (composite + fallback extractor) and clamped into the card window
+    # at render time. The composite's frame comes from the rendered BG
+    # track, so this is seconds into the video's background layer, not
+    # into the raw clip. The opening card is visible 0-card_dur, so the
+    # default 1.0s lands on the card (warn-only on failure).
     thumb_offset_seconds: float = 1.0
     # Card branding.
     channel_handle: str = "@UnhingedStories"

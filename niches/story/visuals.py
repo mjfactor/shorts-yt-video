@@ -27,6 +27,10 @@ from .config import StoryConfig
 
 CANVAS_W, CANVAS_H = 1080, 1920
 CARD_Y_OFFSET = -280
+# Card top as a fraction of the canvas height. Single source for the y
+# used by BOTH the video overlay (_card_filter) and the composite
+# thumbnail, so the two can never drift apart.
+CARD_Y_FRAC = 0.30
 BG_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
 
 STORY_CARD_THEME = {
@@ -74,18 +78,26 @@ def _pick_bgm(cfg: StoryConfig) -> Path | None:
     return None
 
 
-def _seg_filter(speed: float) -> str:
-    """Scale-to-cover + center-crop, then speed, fps, pixfmt.
+def _cover_filter() -> str:
+    """Scale-to-cover + center-crop onto the 1080x1920 canvas.
+
+    Full-bleed, NO letterbox bars. Shared by the video BG track
+    (_seg_filter) and the composite thumbnail, so the thumbnail frame is
+    geometrically identical to the video's background layer.
 
     NOTE: scale's 3rd positional arg is sws FLAGS, not the aspect-ratio
     mode — `scale=1080:1920:increase` fails on real FFmpeg ("Unable to
     parse sws_flags"). The named force_original_aspect_ratio form is
     required.
     """
-    sp = max(0.2, float(speed))
     return (f"scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=increase,"
-            f"crop={CANVAS_W}:{CANVAS_H},"
-            f"setpts=PTS/{sp:.3f},fps=30,format=yuv420p")
+            f"crop={CANVAS_W}:{CANVAS_H}")
+
+
+def _seg_filter(speed: float) -> str:
+    """Cover-crop (see _cover_filter), then speed, fps, pixfmt."""
+    sp = max(0.2, float(speed))
+    return f"{_cover_filter()},setpts=PTS/{sp:.3f},fps=30,format=yuv420p"
 
 
 def _build_single_clip_track(clip: Path, total: float, speed: float,
@@ -160,24 +172,38 @@ def _card_filter(card_dur: float) -> str:
         f"[card]format=rgba,"
         f"fade=t=in:st=0:d=0.2:alpha=1,"
         f"fade=t=out:st={out:.2f}:d=0.25:alpha=1[c];"
-        f"[base][c]overlay=x=(W-w)/2:y=H*0.30:"
+        f"[base][c]overlay=x=(W-w)/2:y=H*{CARD_Y_FRAC}:"
         f"enable='between(t,0,{dur:.2f})'[v1]"
     )
 
 
+def _thumb_offset(cfg: StoryConfig, card_dur: float) -> float:
+    """STORY_THUMB_OFFSET_SECONDS clamped into the card window.
+
+    Single source for the offset used by BOTH thumbnail paths, so the
+    primary composite and the fallback extractor always agree. The card
+    is visible 0-card_dur, so the default 1.0s lands on the card.
+    An explicit 0.0 is honored (not treated as "unset", which a
+    `or 1.0` fallback would do).
+    """
+    raw = getattr(cfg, "thumb_offset_seconds", 1.0)
+    raw = 1.0 if raw is None else float(raw)
+    hi = max(0.1, float(card_dur) - 0.1)
+    return min(max(0.0, raw), hi)
+
+
 def _extract_thumb(mp4: Path, card_dur: float, cfg: StoryConfig,
                    workdir: Path) -> Path | None:
-    """Grab one 1080x1920 JPG frame for the YouTube thumbnail (warn-only).
+    """Grab one 1080x1920 JPG frame from the FINAL mp4 (warn-only).
 
-    Offset defaults to ~1.0s (inside the card-visible 0-card_dur window)
-    via STORY_THUMB_OFFSET_SECONDS, clamped inside card_dur. Quality is
-    tuned (-q:v 4, fallback 10) to stay under YouTube's 2MB thumbnail
-    limit. Never raises: returns None on any failure.
+    FALLBACK path only: _composite_thumb (card over a real BG frame) is
+    the primary thumbnail. Offset comes from STORY_THUMB_OFFSET_SECONDS
+    via _thumb_offset (clamped inside card_dur). Quality is tuned
+    (-q:v 4, fallback 10) to stay under YouTube's 2MB thumbnail limit.
+    Never raises: returns None on any failure.
     """
     try:
-        raw = float(getattr(cfg, "thumb_offset_seconds", 1.0) or 1.0)
-        hi = max(0.1, float(card_dur) - 0.1)
-        offset = min(max(0.0, raw), hi)
+        offset = _thumb_offset(cfg, card_dur)
         thumb = Path(workdir) / "thumb.jpg"
         run_ffmpeg(["ffmpeg", "-y", "-ss", f"{offset:.2f}",
                     "-i", str(Path(mp4).resolve()),
@@ -203,20 +229,34 @@ def _extract_thumb(mp4: Path, card_dur: float, cfg: StoryConfig,
         return None
 
 
-def _composite_thumb(card_png_path: Path, bg_clip_path: Path,
-                     output_thumb_path: Path) -> Path | None:
-    """Generate a thumbnail by compositing the card PNG onto the first frame
-    of the first BG clip at the same y=H*0.30 position used in the video.
+def _composite_thumb(card_png_path: Path, bg_track: Path,
+                     output_thumb_path: Path, offset: float) -> Path | None:
+    """Thumbnail = the real BG frame + the card, at the video's card y.
 
-    Extracts frame 0 from bg_clip_path via FFmpeg, then uses Pillow to
-    composite the RGBA card PNG centered horizontally at y = H * 0.30.
-    Exports as JPEG quality=92 at 1080x1920. Returns output path or None.
+    `bg_track` is the ALREADY-RENDERED background take (the winning clip
+    from the pool, already cut from its random start offset and already
+    speed-adjusted), NOT the raw source clip. Sourcing the frame from it
+    is what makes the thumbnail match the video: same clip, same offset,
+    same speed, and the same full-bleed cover crop via _cover_filter()
+    (which _seg_filter also uses for the video path). Reading the raw
+    clip here would show second 0 at 1x on the naturally-first pool
+    entry — a background the video does not use, and, after a broken-clip
+    fallback, the clip that FAILED.
+
+    `offset` (STORY_THUMB_OFFSET_SECONDS, clamped by _thumb_offset) is
+    seconds into the BG track, which is exactly seconds into the video's
+    background layer since the track starts where the video does.
+
+    Pillow composites the RGBA card PNG centered horizontally at
+    y = H * CARD_Y_FRAC — the same y the video overlay uses. Exports JPEG
+    quality=92 at 1080x1920. Warn-only: never raises, returns None on any
+    failure (caller falls back to _extract_thumb).
     """
     try:
         frame_path = output_thumb_path.with_suffix(".frame.png")
-        run_ffmpeg(["ffmpeg", "-y", "-i", str(Path(bg_clip_path).resolve()),
-                    "-vframes", "1", "-vf", f"scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=decrease,"
-                    f"pad={CANVAS_W}:{CANVAS_H}:(ow-iw)/2:(oh-ih)/2",
+        run_ffmpeg(["ffmpeg", "-y", "-ss", f"{max(0.0, float(offset)):.2f}",
+                    "-i", str(Path(bg_track).resolve()),
+                    "-vframes", "1", "-vf", _cover_filter(),
                     str(frame_path)], "thumb-frame-extract")
         if not frame_path.exists():
             warn("Story thumb composite: frame extraction produced no file.")
@@ -224,11 +264,11 @@ def _composite_thumb(card_png_path: Path, bg_clip_path: Path,
 
         bg = Image.open(frame_path).convert("RGBA")
         if bg.size != (CANVAS_W, CANVAS_H):
-            bg = bg.resize((CANVAS_W, CANVAS_H), Image.LANCZOS)
+            bg = bg.resize((CANVAS_W, CANVAS_H), Image.Resampling.LANCZOS)
 
         card = Image.open(card_png_path).convert("RGBA")
         card_x = (CANVAS_W - card.width) // 2
-        card_y = int(CANVAS_H * 0.30)
+        card_y = int(CANVAS_H * CARD_Y_FRAC)
         bg.paste(card, (card_x, card_y), card)
 
         result = bg.convert("RGB")
@@ -248,7 +288,8 @@ def _composite_thumb(card_png_path: Path, bg_clip_path: Path,
                  "upload will skip it.")
         else:
             log(f"Story thumb composite: {output_thumb_path.name} "
-                f"({size_kb:.0f} KB, card at y={int(CANVAS_H * 0.30)}).")
+                f"({size_kb:.0f} KB, {bg_track.name} @ "
+                f"{offset:.2f}s, card at y={int(CANVAS_H * CARD_Y_FRAC)}).")
         return output_thumb_path
     except Exception as e:
         warn(f"Story thumb composite skipped ({e}).")
@@ -339,10 +380,12 @@ def build_visuals(content: Content, narration: NarrationResult,
         f"{', '.join(c.name for c in order[:6])}"
         f"{'...' if len(order) > 6 else ''}).")
     bg_track: Path | None = None
+    bg_source: Path | None = None
     for cand in order:
         try:
             bg_track, _off, _sp = _build_single_clip_track(
                 cand, total, speed, workdir)
+            bg_source = cand  # the clip the video ACTUALLY uses
             log(f"Stage 2/6 single-clip mode: {bg_track.name} from "
                 f"{cand.name} @ {speed:.2f}x.")
             break
@@ -479,10 +522,18 @@ def build_visuals(content: Content, narration: NarrationResult,
     extras = {"segments": 1, "card_dur": card_dur,
               "card_end": card_end, "genre": genre,
               "size_mb": round(size_mb, 1)}
-    thumb = _composite_thumb(workdir / "card.png", clips[0] if clips else out_mp4,
-                              workdir / "thumb.jpg")
+    # Thumbnail: card over a frame of the SAME rendered BG track the video
+    # uses (same clip, random start offset, speed and cover crop already
+    # baked in), so the composite matches the video's background. Falls
+    # back to a frame of the final mp4. Both paths are warn-only.
+    log(f"Stage 6/6 thumb source: bg_track {bg_track.name} from "
+        f"{bg_source.name if bg_source else bg_track.name}.")
+    thumb = _composite_thumb(workdir / "card.png", bg_track,
+                             workdir / "thumb.jpg",
+                             _thumb_offset(cfg, card_dur))
     if thumb is None:
-        warn("Story thumb composite failed; falling back to frame extraction.")
+        log("Story thumb composite unavailable; falling back to frame "
+            "extraction from the final render.")
         thumb = _extract_thumb(out_mp4, card_dur, cfg, workdir)
     if thumb is not None:
         extras["thumb"] = str(thumb)
