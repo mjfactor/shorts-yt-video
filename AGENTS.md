@@ -12,7 +12,7 @@ Run: `NICHE=story python pipeline.py` → Gemini script → TTS audio+timings �
 - Syntax check (Python `3.11` per CI): `python -m py_compile pipeline.py core.py demo.py get_refresh_token.py` (+ any `niches/<name>/*.py`, `engine/*.py` you touch)
 - Deps: `pip install -r requirements.txt` (must include `edge-tts`, `Pillow`, `requests`; no local transcription models)
 - OAuth helper, local-only with browser, never CI: `python get_refresh_token.py` (needs `YT_CLIENT_ID`/`YT_CLIENT_SECRET`)
-- Standalone Shorts-thumbnail API diagnostic, NOT part of the pipeline (never uploads/edits a video, never writes `history.json`; it DOES overwrite one Short's thumbnail with a magenta test card): `python tools/thumb_probe.py` → `out/thumb_probe.{json,jpg}`
+- Standalone Shorts-thumbnail API diagnostic, NOT part of the pipeline (never uploads/edits a video, never writes `history.json`; the default mode DOES overwrite one thumbnail with a magenta test card): `python tools/thumb_probe.py` → `out/thumb_probe.{json,jpg}`; `--readback` (read-only cache-busted `?cb=` fetch of what i.ytimg.com serves now, classifies the pixels) and `--verify-only` (read-only `hasCustomThumbnail` re-read) upload nothing
 
 ## New-niche guide (zero core edits)
 

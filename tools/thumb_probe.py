@@ -9,16 +9,40 @@ one thumbnails().set call under test, against a real uploaded Short.
 Question answered: does the Data API v3 thumbnails().set endpoint actually
 change the thumbnail of a Short, or does it return 200 and get discarded?
 
+Three mutually exclusive modes:
+
+  (default)     set       -- uploads the test card and verifies (the only
+                             mode that mutates anything)
+  --readback            -- READ-ONLY. Cache-busted fetch of the images
+                             i.ytimg.com serves RIGHT NOW plus a Pillow
+                             pixel classification (magenta card vs video
+                             frame). Uploads nothing, mutates nothing.
+  --verify-only         -- READ-ONLY. Re-reads hasCustomThumbnail + the
+                             thumbnail URL set and nothing else. No upload, no
+                             image fetch. Compares against a prior report at
+                             --json when one exists for the same video;
+                             with no prior report it prints current state only
+                             and says so (comparison is then manual).
+
+Why --readback exists: i.ytimg.com serves `Cache-Control: public,
+max-age=7200` (~2h edge cache, same URL, no invalidation), so a normal
+thumbnail fetch can keep showing the OLD image long after a successful
+set(). Appending a unique `?cb=<random>` token forces a fresh origin fetch,
+which turns "has it settled?" from a waiting game into a read-only check.
+
 Usage:
     python tools/thumb_probe.py                    # newest story upload, generated card
     python tools/thumb_probe.py --video-id ABC123  # explicit video
     python tools/thumb_probe.py --image out/x.jpg  # use your own JPEG/PNG
     python tools/thumb_probe.py --wait-sec 180     # longer CDN-cache window
+    python tools/thumb_probe.py --readback         # read-only, no upload
+    python tools/thumb_probe.py --verify-only      # read-only, no upload
 
-SAFETY: this OVERWRITES the thumbnail of the chosen video with a magenta
-"API THUMB TEST" card. That is the point of the test, but it is a real
-mutation of a real Short. Restore it from YouTube Studio (desktop) with
-"Select from video" afterwards.
+SAFETY: the default (set) mode OVERWRITES the thumbnail of the chosen video
+with a magenta "API THUMB TEST" card. That is the point of the test, but it
+is a real mutation of a real Short. Restore it from YouTube Studio (desktop)
+with "Select from video" afterwards. --readback and --verify-only mutate
+nothing.
 
 SECRETS: YT_CLIENT_ID / YT_CLIENT_SECRET / YT_REFRESH_TOKEN are read from the
 environment and NEVER printed, logged, or written to any report. Only the key
@@ -32,10 +56,13 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -49,6 +76,23 @@ YT_ENV = ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN")
 # thumbnails().set only accepts these; the API rejects anything else (400
 # invalidImage), which is why the test card is generated as JPEG.
 MIMETYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+
+# ---------- readback (no upload, no mutation) ----------
+# i.ytimg.com serves `Cache-Control: public, max-age=7200` (~2h edge cache,
+# same URL, no invalidation), so a plain GET returns the OLD thumbnail long
+# after a successful set(). Appending a unique ?cb= token forces a fresh
+# origin fetch and shows what YouTube serves RIGHT NOW.
+READBACK_SIZES = ("hqdefault", "maxresdefault", "sddefault")
+READBACK_PRIMARY = "hqdefault"  # the one size that always exists
+READBACK_UA = "thumb-probe/1.0 (read-only diagnostic)"
+READBACK_TIMEOUT = 20.0
+
+# Pixel-classification bands for the served thumbnail (see _analyze_image).
+# A blend of card + frame usually lands between NEGLIGIBLE and PRESENT.
+MAGENTA_PRESENT_MIN = 0.25       # >= this share of magenta-ish pixels
+MAGENTA_NEGLIGIBLE_MAX = 0.05    # <= this share means the card is NOT served
+VIDEO_FRAME_MIN_DISTINCT = 5     # of 8 quantize() buckets = "photo-like"
+SAMPLE_MAX_EDGE = 512            # downscale cap for per-pixel sampling
 
 
 # ---------- logging (mirrors core.log/warn/err, no core import) ----------
@@ -273,6 +317,285 @@ def _do_set(yt, video_id: str, image: Path) -> dict:
     return res
 
 
+# ---------- readback: cache-busted i.ytimg.com fetch (no upload) ----------
+
+def _cb_url(video_id: str, size: str) -> str:
+    """Thumbnail URL with a unique ?cb= token to defeat the 2h edge cache."""
+    return (f"https://i.ytimg.com/vi/{video_id}/{size}.jpg"
+            f"?cb={os.urandom(6).hex()}")
+
+
+def _fetch_cached_busted(url: str) -> tuple[dict, bytes | None]:
+    """GET url. Returns (record, data). Never raises."""
+    res = {"url": url, "ok": False, "http_status": None, "bytes": 0,
+           "sha256_first12": None, "content_type": None, "path": None,
+           "error": None}
+    req = urllib.request.Request(
+        url, headers={"User-Agent": READBACK_UA, "Cache-Control": "no-cache",
+                      "Pragma": "no-cache"})
+    try:
+        with urllib.request.urlopen(req, timeout=READBACK_TIMEOUT) as resp:
+            data = resp.read()
+            res["http_status"] = getattr(resp, "status", 200)
+            res["content_type"] = resp.headers.get("Content-Type")
+    except urllib.error.HTTPError as e:
+        # maxresdefault legitimately 404s on low-res source videos.
+        res["http_status"] = e.code
+        res["error"] = f"HTTPError {e.code}: {e.reason}"
+        if e.code == 404:
+            # Expected for maxresdefault on low-res source, and for any size
+            # when the id is wrong or the video is private.
+            log(f"readback {size_label(url)}: HTTP 404 — no thumbnail at this "
+                f"size for that id (low-res source, or a wrong/private id); "
+                f"continuing.")
+        else:
+            warn(f"readback fetch failed ({e.code}: {e.reason}) for {url}")
+        return res, None
+    except Exception as e:
+        res["error"] = f"{type(e).__name__}: {e}"
+        warn(f"readback fetch failed ({type(e).__name__}: {e}) for {url}")
+        return res, None
+    res.update(ok=True, bytes=len(data),
+               sha256_first12=hashlib.sha256(data).hexdigest()[:12])
+    return res, data
+
+
+def size_label(url: str) -> str:
+    """Extract the size token (hqdefault/...) from a thumbnail URL."""
+    tail = url.split("/")[-1].split("?")[0]
+    return tail.rsplit(".", 1)[0] or "?"
+
+
+# ---------- image analysis: is the served thumb our card or a video frame? ----------
+
+def _analyze_image(path: Path) -> dict:
+    """Classify the SERVED thumbnail. Never raises; UNREADABLE on any failure.
+
+    Per-pixel sampling runs on a downscaled copy (SAMPLE_MAX_EDGE) for speed;
+    the distinct-colour count uses the full RGB image quantized to 8 buckets.
+    """
+    res = {"ok": False, "path": str(path), "width": None, "height": None,
+           "magenta_fraction": None, "black_fraction": None,
+           "mean_luminance": None, "distinct_colors": None,
+           "verdict": "UNREADABLE", "sentence": "Could not fetch or decode "
+           "the served thumbnail, so no pixel verdict is possible."}
+    try:
+        from PIL import Image
+    except ImportError as e:  # pragma: no cover - Pillow is in requirements
+        res["error"] = f"Pillow unavailable: {e}"
+        return res
+    try:
+        with Image.open(path) as im:
+            im.load()
+            rgb = im.convert("RGB")
+            res["width"], res["height"] = rgb.size
+            small = rgb.copy()
+            # Pillow>=10.0 is pinned in requirements.txt, so Image.Resampling
+            # (added in 9.1) is always present.
+            small.thumbnail((SAMPLE_MAX_EDGE, SAMPLE_MAX_EDGE), Image.Resampling.BILINEAR)
+            # Iterate raw RGB bytes: faster than getdata() and stub-safe.
+            raw = small.tobytes()
+            magenta = black = 0
+            lum_total = 0.0
+            total = len(raw) // 3
+            for i in range(0, total * 3, 3):
+                r, g, b = raw[i], raw[i + 1], raw[i + 2]
+                if r > 120 and b > 120 and g < 90:  # magenta-ish
+                    magenta += 1
+                if r < 60 and g < 60 and b < 60:    # near-black
+                    black += 1
+                lum_total += 0.299 * r + 0.587 * g + 0.114 * b
+            total = max(1, total)
+            buckets = rgb.quantize(colors=8).getcolors() or []
+    except Exception as e:
+        res["error"] = f"{type(e).__name__}: {e}"
+        warn(f"image analysis failed for {path} ({type(e).__name__}: {e}).")
+        return res
+
+    mag_frac = magenta / total
+    res.update(ok=True, magenta_fraction=round(mag_frac, 4),
+               black_fraction=round(black / total, 4),
+               mean_luminance=round(lum_total / total, 1),
+               distinct_colors=len(buckets))
+
+    if mag_frac >= MAGENTA_PRESENT_MIN:
+        verdict = "MAGENTA_CARD_PRESENT"
+        sentence = ("YouTube IS serving the custom thumbnail — at least "
+                    f"{mag_frac:.0%} of the served pixels are the magenta test "
+                    "card.")
+        if mag_frac < 0.55:
+            sentence += (" Note the share is not near-100%, so this is a "
+                         "composite/blend rather than the clean card; open the "
+                         "saved image to see it.")
+    elif mag_frac <= MAGENTA_NEGLIGIBLE_MAX:
+        if len(buckets) >= VIDEO_FRAME_MIN_DISTINCT:
+            verdict = "VIDEO_FRAME_PRESENT"
+            sentence = ("YouTube is serving a VIDEO FRAME, not the custom "
+                        f"thumbnail (magenta {mag_frac:.1%}, "
+                        f"{len(buckets)}/8 dominant colours).")
+        else:
+            verdict = "AMBIGUOUS_BLEND"
+            sentence = (f"The test card is not being served (magenta only "
+                        f"{mag_frac:.1%}), but the frame is too uniform "
+                        f"({len(buckets)}/8 colours) to call it a video frame.")
+    else:
+        verdict = "AMBIGUOUS_BLEND"
+        sentence = ("Partially updated / blended — inconclusive, re-run later "
+                    f"(magenta {mag_frac:.1%}, black {black / total:.1%}, "
+                    f"mean luminance {lum_total / total:.0f}, "
+                    f"{len(buckets)}/8 dominant colours).")
+
+    res.update(verdict=verdict, sentence=sentence)
+    return res
+
+
+# ---------- mode runners: readback / verify-only (never upload) ----------
+
+def _run_readback(yt, video_id: str, report_path: Path) -> tuple[int, dict]:
+    """Cache-busted readback. NO upload, NO mutation of any kind."""
+    log(f"READBACK MODE for {video_id} — no upload will be attempted.")
+    snap = _snapshot(yt, video_id, "readback")
+    report = {"mode": "readback", "video_id": video_id,
+              "snapshot": snap, "fetches": {}, "analysis": None,
+              "started_utc": datetime.datetime.now(
+                  datetime.timezone.utc).isoformat(timespec="seconds")}
+    if snap["readable"] and snap["found"]:
+        log(f"api state: privacyStatus={snap['privacyStatus']!r} "
+            f"hasCustomThumbnail={snap['hasCustomThumbnail']!r} "
+            f"snippet thumbnails={json.dumps(snap['thumbnails'])}")
+    elif not snap["readable"]:
+        warn("videos().list unreadable (token likely lacks READ scope); the "
+             "image readback below still works — it needs no API scope.")
+    else:
+        warn("videos().list returned no items (private/unlisted video or the "
+             "token does not own it). The image readback below still works.")
+
+    # Cache-busted i.ytimg.com GETs: what is served RIGHT NOW.
+    OUT.mkdir(parents=True, exist_ok=True)
+    for size in READBACK_SIZES:
+        res, data = _fetch_cached_busted(_cb_url(video_id, size))
+        if data:
+            dest = OUT / f"thumb_readback_{size}.jpg"
+            dest.write_bytes(data)
+            res["path"] = str(dest)
+        report["fetches"][size] = res
+        log(f"readback {size}: HTTP {res['http_status']} bytes={res['bytes']} "
+            f"sha256[:12]={res['sha256_first12'] or '-'} "
+            f"-> {res['path'] or '(not saved)'}")
+
+    primary = report["fetches"].get(READBACK_PRIMARY) or {}
+    if primary.get("ok") and primary.get("path"):
+        analysis = _analyze_image(Path(primary["path"]))
+        report["analysis"] = analysis
+        log("IMAGE_ANALYSIS: " + json.dumps(
+            {k: analysis[k] for k in ("magenta_fraction", "black_fraction",
+                                      "mean_luminance", "distinct_colors",
+                                      "width", "height")}))
+        log(f"IMAGE_ANALYSIS: {analysis['verdict']} — {analysis['sentence']}")
+        verdict = f"READBACK_{analysis['verdict']}"
+        explanation = (f"Cache-busted readback of {video_id}: "
+                       f"{analysis['verdict']}. {analysis['sentence']} "
+                       f"The ?cb= token defeats the ~2h i.ytimg.com edge cache, "
+                       f"so this reflects current serving, not a stale CDN copy.")
+    else:
+        verdict = "READBACK_UNREADABLE"
+        explanation = (f"Could not fetch {READBACK_PRIMARY}.jpg for {video_id} "
+                       f"(HTTP {primary.get('http_status')}); the served image "
+                       f"could not be inspected.")
+        err(f"readback: no usable {READBACK_PRIMARY} image to analyse.")
+
+    report["verdict"] = verdict
+    report["explanation"] = explanation
+    log("=" * 68)
+    log(f"READBACK: {verdict}")
+    log(explanation)
+    log("=" * 68)
+    _write_json(report_path, report)
+    _append_step_summary_mode(report, verdict, explanation)
+    return 0, report
+
+
+def _run_verify_only(yt, video_id: str, report_path: Path) -> tuple[int, dict]:
+    """Re-read hasCustomThumbnail + URL set. NO upload, NO image fetch.
+
+    Compares against a prior report at report_path when one exists, so it can
+    say whether the state settled since the last run; with no prior report (or
+    a prior one for a different video) it just prints current state and says
+    so — comparison is then manual.
+    """
+    log(f"VERIFY-ONLY MODE for {video_id} — no upload, no image fetch.")
+    snap = _snapshot(yt, video_id, "verify-only")
+    report = {"mode": "verify-only", "video_id": video_id, "snapshot": snap,
+              "comparison": None,
+              "checked_utc": datetime.datetime.now(
+                  datetime.timezone.utc).isoformat(timespec="seconds")}
+    if not snap["readable"]:
+        err("verify-only: videos().list unreadable (HTTP "
+            f"{snap['http_status']}); current state unknown.")
+        verdict, explanation = "VERIFY_UNREADABLE", (
+            "videos().list was blocked, most likely an upload-only token "
+            "missing READ scope. Re-run get_refresh_token.py with the full "
+            "youtube scope, or use --readback (which needs no API scope).")
+    elif not snap["found"]:
+        err(f"verify-only: video {video_id} not found / not visible.")
+        verdict, explanation = "VERIFY_VIDEO_NOT_FOUND", (
+            "videos().list returned no items for this id.")
+    else:
+        log(f"current: privacyStatus={snap['privacyStatus']!r} "
+            f"hasCustomThumbnail={snap['hasCustomThumbnail']!r} "
+            f"thumbnails={json.dumps(snap['thumbnails'])}")
+
+        prior, prior_hct, before_urls = None, None, {}
+        if report_path.exists():
+            try:
+                prior = json.loads(report_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                warn(f"prior report at {report_path} unreadable "
+                     f"({type(e).__name__}: {e}); comparison skipped.")
+        if isinstance(prior, dict) and prior.get("video_id") == video_id:
+            base = (prior.get("before") if prior.get("mode") == "set"
+                    else prior.get("snapshot")) or {}
+            prior_hct = base.get("hasCustomThumbnail")
+            before_urls = base.get("thumbnails") or {}
+        now_urls = snap["thumbnails"] or {}
+        if prior_hct is not None or before_urls:
+            changed = [s for s in set(before_urls) | set(now_urls)
+                       if before_urls.get(s) != now_urls.get(s)]
+            settled = not changed and prior_hct == snap["hasCustomThumbnail"]
+            report["comparison"] = {
+                "prior_report": str(report_path),
+                "prior_hasCustomThumbnail": prior_hct,
+                "current_hasCustomThumbnail": snap["hasCustomThumbnail"],
+                "changed_sizes": sorted(changed), "settled": settled}
+            verdict = "VERIFY_SETTLED" if settled else "VERIFY_CHANGED"
+            explanation = (
+                f"Compared with {report_path.name}: hasCustomThumbnail "
+                f"{prior_hct!r} -> {snap['hasCustomThumbnail']!r}; changed sizes: "
+                f"{sorted(changed) or 'none'}. "
+                + ("State looks settled." if settled else
+                   "State changed since the prior report — re-check later."))
+        else:
+            report["comparison"] = {
+                "prior_report": None,
+                "note": "no comparable prior report; comparison is manual"}
+            verdict = "VERIFY_CURRENT_STATE"
+            explanation = ("No comparable prior report found, so this is a "
+                           "point-in-time reading only and comparison is "
+                           "manual. Run --readback for a pixel-level answer, or "
+                           "re-run --verify-only later to see if it moved.")
+        log(f"comparison: {json.dumps(report['comparison'])}")
+
+    report["verdict"] = verdict
+    report["explanation"] = explanation
+    log("=" * 68)
+    log(f"VERIFY: {verdict}")
+    log(explanation)
+    log("=" * 68)
+    _write_json(report_path, report)
+    _append_step_summary_mode(report, verdict, explanation)
+    return 0, report
+
+
 # ---------- step 5: verdict ----------
 
 def _verdict(set_res: dict, pre: dict, imm: dict, delayed: dict) -> tuple[str, str]:
@@ -404,6 +727,77 @@ def _append_step_summary(report: dict, verdict: str, explanation: str) -> None:
         warn(f"could not write GITHUB_STEP_SUMMARY ({type(e).__name__}: {e}).")
 
 
+def _append_step_summary_mode(report: dict, verdict: str, explanation: str) -> None:
+    """Step-summary block for --readback / --verify-only (no upload involved)."""
+    target = os.environ.get("GITHUB_STEP_SUMMARY", "")
+    if not target:
+        return
+    snap = report.get("snapshot") or {}
+    mode = report.get("mode", "?")
+    lines = [
+        f"## Shorts thumbnail probe — {mode}",
+        "",
+        f"**Verdict: `{verdict}`**",
+        "",
+        explanation,
+        "",
+        f"- Video ID: `{report.get('video_id')}`",
+        f"- privacyStatus: {json.dumps(snap.get('privacyStatus'))}",
+        f"- hasCustomThumbnail: {json.dumps(snap.get('hasCustomThumbnail'))}",
+        f"- API read ok: {snap.get('readable')}",
+    ]
+    if mode == "readback":
+        analysis = report.get("analysis") or {}
+        lines.append("")
+        lines.append("### Served image analysis (cache-busted `?cb=`)")
+        lines.append("")
+        lines.append("| size | HTTP | bytes | sha256[:12] | file |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for size, res in (report.get("fetches") or {}).items():
+            lines.append(
+                f"| {size} | {res.get('http_status')} | {res.get('bytes')} | "
+                f"{res.get('sha256_first12') or '-'} | "
+                f"{Path(res['path']).name if res.get('path') else '(none)'} |")
+        lines += [
+            "",
+            f"- `IMAGE_ANALYSIS`: **{analysis.get('verdict')}**",
+            f"- magenta-ish fraction: "
+            f"{json.dumps(analysis.get('magenta_fraction'))} "
+            f"(card present >= {MAGENTA_PRESENT_MIN})",
+            f"- near-black fraction: {json.dumps(analysis.get('black_fraction'))}",
+            f"- mean luminance: {json.dumps(analysis.get('mean_luminance'))}",
+            f"- distinct colours: {json.dumps(analysis.get('distinct_colors'))}/8",
+            f"- pixels analysed: {analysis.get('width')}x{analysis.get('height')}",
+            "",
+            "Note: `i.ytimg.com` caches for ~2h, so the `?cb=` token is what "
+            "makes this a current reading rather than a stale CDN copy.",
+        ]
+    else:
+        comp = report.get("comparison") or {}
+        lines += [
+            "",
+            "### Comparison vs prior report",
+            "",
+            f"- prior report: {comp.get('prior_report') or '(none)'}",
+            f"- hasCustomThumbnail: "
+            f"{json.dumps(comp.get('prior_hasCustomThumbnail'))} -> "
+            f"{json.dumps(comp.get('current_hasCustomThumbnail'))}",
+            f"- changed sizes: {json.dumps(comp.get('changed_sizes'))}",
+            f"- settled: {json.dumps(comp.get('settled'))}",
+            f"- note: {comp.get('note', '')}",
+        ]
+    lines += [
+        "",
+        "This mode uploaded nothing and changed no thumbnail.",
+        "",
+    ]
+    try:
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception as e:
+        warn(f"could not write GITHUB_STEP_SUMMARY ({type(e).__name__}: {e}).")
+
+
 # ---------- main ----------
 
 def main(argv: list[str] | None = None) -> int:
@@ -420,14 +814,40 @@ def main(argv: list[str] | None = None) -> int:
                          "(YouTube/CDN caches thumbnail URLs). Default 60.")
     ap.add_argument("--json", default=DEFAULT_REPORT,
                     help=f"Report path. Default {DEFAULT_REPORT}.")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--readback", action="store_true",
+                      help="Read-only cache-busted mode: fetches the thumbnails "
+                           "YouTube is serving RIGHT NOW (i.ytimg.com is cached "
+                           "~2h, so a unique ?cb= token is appended), saves them "
+                           "to out/thumb_readback_*.jpg and classifies the pixels. "
+                           "Uploads nothing.")
+    mode.add_argument("--verify-only", action="store_true",
+                      help="Re-read hasCustomThumbnail + the thumbnail URL set "
+                           "only. Uploads nothing and fetches no images. "
+                           "Compares against a prior report at --json when one "
+                           "exists, otherwise prints current state only.")
     args = ap.parse_args(argv)
 
     wait = max(0, args.wait_sec)
+    report_path = (Path(args.json) if Path(args.json).is_absolute()
+                   else REPO_ROOT / args.json)
+    run_mode = ("readback" if args.readback else
+                "verify-only" if args.verify_only else "set")
+    if run_mode != "set":
+        if args.image:
+            warn(f"--image is ignored in {run_mode} mode (nothing is uploaded).")
+        if args.image or wait != 60:
+            warn(f"--wait-sec is ignored in {run_mode} mode (no upload, no "
+                 f"delayed re-check).")
 
     log("=" * 68)
-    log("SAFETY: this probe OVERWRITES the thumbnail of the chosen video with a "
-        "magenta 'API THUMB TEST' card. Restore it in YouTube Studio (desktop) "
-        "via 'Select from video' when done.")
+    if run_mode == "set":
+        log("SAFETY: this probe OVERWRITES the thumbnail of the chosen video "
+            "with a magenta 'API THUMB TEST' card. Restore it in YouTube Studio "
+            "(desktop) via 'Select from video' when done.")
+    else:
+        log(f"SAFETY: {run_mode} mode is strictly READ-ONLY — it uploads "
+            f"nothing, calls thumbnails().set never, and changes no thumbnail.")
     log("SAFETY: no secret values are ever printed — only YT_* key names and "
         "present/missing booleans.")
     log("=" * 68)
@@ -472,6 +892,12 @@ def main(argv: list[str] | None = None) -> int:
             log("VERDICT: CANNOT_RUN — pass --video-id ID.")
             return 2
 
+    # read-only modes bail out here — nothing below uploads anything
+    if run_mode == "readback":
+        return _run_readback(yt, video_id, report_path)[0]
+    if run_mode == "verify-only":
+        return _run_verify_only(yt, video_id, report_path)[0]
+
     # 0a. image source
     if args.image:
         image = Path(args.image)
@@ -491,7 +917,8 @@ def main(argv: list[str] | None = None) -> int:
         log(f"generated magenta test card -> {image} "
             f"({image.stat().st_size} bytes, 1080x1920)")
 
-    report = {"video_id": video_id, "image": str(image), "wait_sec": wait,
+    report = {"mode": "set", "video_id": video_id, "image": str(image),
+              "wait_sec": wait,
               "started_utc": datetime.datetime.now(
                   datetime.timezone.utc).isoformat(timespec="seconds")}
 
@@ -508,8 +935,7 @@ def main(argv: list[str] | None = None) -> int:
                           "error": "video not visible", "error_reasons": []},
                       verdict="VIDEO_NOT_FOUND",
                       explanation="videos().list returned no items for this id.")
-        _write_json(Path(args.json) if Path(args.json).is_absolute()
-                    else REPO_ROOT / args.json, report)
+        _write_json(report_path, report)
         log("VERDICT: VIDEO_NOT_FOUND — check the id, its privacy status, and "
             "that the token belongs to the owning channel.")
         return 2
@@ -557,8 +983,7 @@ def main(argv: list[str] | None = None) -> int:
     log(explanation)
     log("=" * 68)
 
-    _write_json(Path(args.json) if Path(args.json).is_absolute()
-                else REPO_ROOT / args.json, report)
+    _write_json(report_path, report)
     _append_step_summary(report, verdict, explanation)
     return 0
 
