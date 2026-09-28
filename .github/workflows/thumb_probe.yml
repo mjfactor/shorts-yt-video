@@ -1,0 +1,75 @@
+name: thumbnail-probe
+
+# MANUAL DIAGNOSTIC ONLY — never fires automatically.
+# Answers one question: does thumbnails().set actually apply a custom
+# thumbnail to a Short, or does it return 200 and get discarded?
+# It overwrites ONE Short's thumbnail with a magenta test card and commits
+# nothing (permissions: contents: read, no history.json writes).
+on:
+  workflow_dispatch:
+    inputs:
+      video_id:
+        description: "Shorts video ID to test. Leave blank to auto-pick the newest story upload from history.json."
+        required: false
+        type: string
+        default: ""
+      image_path:
+        description: "Optional repo-relative path to a JPEG/PNG to upload. Leave blank to generate a magenta test card."
+        required: false
+        type: string
+        default: ""
+      wait_sec:
+        description: "Seconds between the two verify checks (YouTube caches thumbnail URLs)."
+        required: false
+        type: string
+        default: "90"
+
+# Own group on purpose: must NOT queue behind or block the daily pipeline
+# (shorts-single).
+concurrency:
+  group: thumb-probe-single
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read  # read only: this workflow never commits or pushes
+    env:
+      YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+      YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+      YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Run thumbnail probe
+        env:
+          IN_VIDEO_ID: ${{ inputs.video_id }}
+          IN_IMAGE_PATH: ${{ inputs.image_path }}
+          IN_WAIT_SEC: ${{ inputs.wait_sec }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          if [ -n "${IN_VIDEO_ID}" ]; then ARGS+=(--video-id "$IN_VIDEO_ID"); fi
+          if [ -n "${IN_IMAGE_PATH}" ]; then ARGS+=(--image "$IN_IMAGE_PATH"); fi
+          if [ -n "${IN_WAIT_SEC}" ]; then ARGS+=(--wait-sec "$IN_WAIT_SEC"); fi
+          echo "probe args: ${ARGS[*]:-<defaults>}"
+          # bash 4.4+ expands an empty array to zero args under `set -u`.
+          python tools/thumb_probe.py "${ARGS[@]}"
+      - name: Keep probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: thumb-probe
+          path: |
+            out/thumb_probe.json
+            out/thumb_probe_src.jpg
+          retention-days: 7
+          if-no-files-found: warn

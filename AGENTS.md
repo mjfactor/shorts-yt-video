@@ -12,6 +12,7 @@ Run: `NICHE=story python pipeline.py` → Gemini script → TTS audio+timings �
 - Syntax check (Python `3.11` per CI): `python -m py_compile pipeline.py core.py demo.py get_refresh_token.py` (+ any `niches/<name>/*.py`, `engine/*.py` you touch)
 - Deps: `pip install -r requirements.txt` (must include `edge-tts`, `Pillow`, `requests`; no local transcription models)
 - OAuth helper, local-only with browser, never CI: `python get_refresh_token.py` (needs `YT_CLIENT_ID`/`YT_CLIENT_SECRET`)
+- Standalone Shorts-thumbnail API diagnostic, NOT part of the pipeline (never uploads/edits a video, never writes `history.json`; it DOES overwrite one Short's thumbnail with a magenta test card): `python tools/thumb_probe.py` → `out/thumb_probe.{json,jpg}`
 
 ## New-niche guide (zero core edits)
 
@@ -28,6 +29,7 @@ Run: `NICHE=story python pipeline.py` → Gemini script → TTS audio+timings �
 - `NICHE: ${{ vars.NICHE || 'story' }}` selects the niche (single-niche default; fan out with a `strategy.matrix.niche` + `NICHE: ${{ matrix.niche }}` for multi-niche); per-niche tuning via `STORY_*` / `EXPLAINER_*` / `RANKING_*` vars in the same `env:` block
 - Commit-back: `git add history.json` + `chore: record short history [skip ci]` + push (no-op when unchanged). Schedule/dispatch triggers only, so the push never loops
 - Artifacts: `out/*.json` on `always()` 90d; `out/*.mp4`+`*.mp3`+`*.srt` on `failure()` only 3d (YouTube is permanent storage)
+- `.github/workflows/thumb_probe.yml` is a separate MANUAL probe (`workflow_dispatch` only, no schedule/push, `permissions: contents: read`, own `concurrency.group: thumb-probe-single`, no ffmpeg, commits nothing) — it must never queue behind or block `shorts-single`
 - New env vars must be wired through workflow `env:` — secrets/vars do not flow automatically. Prefixed per-niche vars need explicit entries too (bare fallbacks alone won't pick up a repo Variable set under the prefixed name)
 
 ## Config (all env, see `.env.example`; never hardcode/commit)
