@@ -15,10 +15,16 @@ from niches.base import (NicheConfig, env_bool, env_float, env_int,
 
 MODE = "story"
 
+# Rotation pool. "scary" is deliberately absent: pure-supernatural hooks
+# ("my shadow started moving on its own") read as corny and land off-voice.
+# "never-again" stays — it usually resolves to a human doing something, which
+# is the channel's register — and "family-drama" adds the interpersonal lane
+# that reads best (someone did something to someone, absurd stakes).
 DEFAULT_GENRES = (
-    "AITA", "revenge", "workplace", "relationship", "scary", "never-again",
-    "family", "money", "friendship", "cheating", "entitled", "neighbor",
-    "wedding", "roommate", "inheritance", "social-media", "petty-revenge",
+    "AITA", "revenge", "workplace", "relationship", "never-again",
+    "family", "family-drama", "money", "friendship", "cheating", "entitled",
+    "neighbor", "wedding", "roommate", "inheritance", "social-media",
+    "petty-revenge",
 )
 
 DEFAULT_TEXT_MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
