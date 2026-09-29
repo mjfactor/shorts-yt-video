@@ -33,6 +33,16 @@ _COPY_RE = re.compile(r"\br/\w+|reddit\.com|u/\w+|AITA\?|TIFU|ELI5", re.IGNORECA
 _UNSAFE_RE = re.compile(
     r"\b(nude|naked|porn|molest|rape\b|lynch|kill (him|her|them)|"
     r"suicide|self-?harm|gore\b|torture)\b", re.IGNORECASE)
+# Stacked discourse markers ("I mean, honestly, I stared at my phone").
+# "I mean" is a self-repair marker that promises a rephrase of what was just
+# said; "honestly" hedges the clause that follows it. Stacked, each expectation
+# goes unmet and the sentence reads as a subtitle error. The first marker must
+# open a sentence (or follow a comma) so legitimate prose like "he did well,
+# actually it worked" is not caught.
+_MARKER = (r"(?:i mean|so yeah|well|honestly|basically|anyway|actually)")
+_STACKED_MARKER_RE = re.compile(
+    r"(?:^|(?<=[.!?…])\s|(?<=,)\s)" + _MARKER + r"\s*,?\s*" + _MARKER + r"\b",
+    re.IGNORECASE)
 
 MAX_SENTENCE_WORDS = 30
 
@@ -274,6 +284,11 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
     long_sent = _check_sentences(story)
     if long_sent:
         raise ValueError(long_sent)
+    stacked = _STACKED_MARKER_RE.search(story)
+    if stacked:
+        raise ValueError(
+            f"stacked discourse marker {stacked.group().strip()!r} in story — "
+            "one marker per sentence; 'I mean' must rephrase, not prefix")
     hook = str(data.get("hook", "") or "").strip()
     if hook and not story.startswith(hook[:20]):
         raise ValueError("'hook' must be the opening line of 'story_text'")
@@ -440,7 +455,11 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "TONE & VOICE (NATURAL STORYTELLING):\n"
         "Tell this story the way a real person would tell it to a friend over coffee—"
         "natural, unfiltered, emotional. Use everyday language with the occasional "
-        "filler word or natural pause ('I mean...', 'Honestly...', 'So yeah...'). "
+        "filler word ('um', 'honestly', 'so yeah', 'basically'), but at most ONE "
+        "per sentence and never two in a row — 'I mean, honestly' is wrong and "
+        "reads as a subtitle error. 'I mean' must actually restart or rephrase "
+        "what you just said, never sit as a bare prefix; 'honestly' may open a "
+        "sentence on its own. "
         "Vary your sentence rhythm: mix short punchy lines with longer flowing ones. "
         "Show real human reactions: confusion, anger, disbelief, satisfaction. Name "
         "key people simply ('my boss Dave', 'this guy Carl') but let minor characters "
