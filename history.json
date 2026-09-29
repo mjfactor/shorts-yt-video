@@ -751,6 +751,25 @@
       "topic": "money",
       "topic_source": "genre-rotation",
       "narratorGender": "male"
+    },
+    {
+      "date": "2026-09-29_220634",
+      "title": "My best friend deleted my entire life work 📂😡 #shorts",
+      "niche": "story",
+      "tags": [
+        "friendship",
+        "betrayal",
+        "revenge",
+        "justice",
+        "story"
+      ],
+      "narration": "My best friend deleted my entire life work. I spent four years building a massive custom software architecture for my freelance portfolio. It was my ticket out of my dead end job. I trusted Mark with my server access during my week away. He told me he was just doing some routine cleaning for me. Apparently he decided my code was bloated and unnecessary. He wiped the primary repository and then formatted the backup drive for good measure. I came home to a blank screen and a smug grin. Honestly, he really thought he was doing me a huge favor by decluttering. I felt like the air left my lungs instantly. I sat there in silence while my hands started shaking. I needed to see if the cloud logs had any trace of the deletion. I logged into my admin panel with trembling fingers. I found the activity logs showing the exact time of the purge. Mark had used his own credentials to wipe the data manually. I kept my cool and asked him to explain the process again. He bragged about how much faster the computer felt now. He even laughed about how much space he saved on my drive. I realized then that he was actually jealous of my success. He wanted to bring me back down to his level. I pulled out my phone and recorded his entire confession. He had no idea I was documenting every single word he said. I acted like I was just frustrated about the lost time. Later that night I went to the police station with my logs. Since we had a formal contract for the development work, it was considered property theft. I filed a report and handed over the audio files. The detective looked shocked by the level of malice involved. He visited Mark the next morning with a warrant. I watched from my window as they took his laptop away. He lost his own job when his employer heard about the investigation. I managed to recover some of my work from an offsite server. Justice is slow but it feels pretty good right now.",
+      "videoId": "ZjuCTGUwWw4",
+      "tiktokBufferPostId": "6abc3827f3db08ac9269dd6d",
+      "used_ids": [],
+      "topic": "friendship",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male"
     }
   ]
 }
