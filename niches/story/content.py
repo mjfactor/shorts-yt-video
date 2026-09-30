@@ -43,6 +43,23 @@ _MARKER = (r"(?:i mean|so yeah|well|honestly|basically|anyway|actually)")
 _STACKED_MARKER_RE = re.compile(
     r"(?:^|(?<=[.!?…])\s|(?<=,)\s)" + _MARKER + r"\s*,?\s*" + _MARKER + r"\b",
     re.IGNORECASE)
+# Cinematic reaction lines. These are the recurring stock phrases that show up
+# in aired stories and make the narration read as a film scene instead of a
+# real memory — viewers call them out as fabricated. The REALISM section of
+# the Gemini prompt steers the model away from them; this gate enforces it.
+_CLICHE_RE = re.compile(
+    r"worth every (single )?(penny|cent|dollar)"
+    r"|(my )?blood (went|ran|raced|turned) (cold|ice)"
+    r"|looked (me|him|her|them|us) dead in the eye"
+    r"|like nothing had happened"
+    r"|(it was|that was) priceless"
+    r"|(my )?world (turned|shattered) upside down"
+    r"|(a )?chill (ran down|down) (my|his|her|their) spine"
+    # order-tolerant: "time froze for a second", "in that moment time stopped",
+    # and the inverted "for a moment, time froze" all read as film, not memory.
+    r"|time (froze|stopped)( for (a|one|that) (moment|second|beat))?"
+    r"|for (a|one) moment,? time (froze|stopped)",
+    re.IGNORECASE)
 
 MAX_SENTENCE_WORDS = 30
 
@@ -281,6 +298,10 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
     unsafe = _UNSAFE_RE.search(story)
     if unsafe:
         raise ValueError(f"safety refusal trigger {unsafe.group()!r} in story")
+    cliche = _CLICHE_RE.search(story)
+    if cliche:
+        raise ValueError(f"cliche reaction line {cliche.group()!r} in story "
+                         "— use concrete behavior instead")
     long_sent = _check_sentences(story)
     if long_sent:
         raise ValueError(long_sent)
@@ -468,6 +489,35 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "'under the false guise', or 'panic swept the room'. Real people say 'I had "
         "no idea', 'total disaster', 'they lied', 'everyone freaked out'. Keep it "
         "concrete and physical—real objects, real actions, real consequences.\n\n"
+        "GROUNDED & BELIEVABLE (audiences are skeptical):\n"
+        "These stories are told in first person like real memories, so every "
+        "detail must survive a skeptical viewer. Write like someone recounting "
+        "something that actually happened to them, not like a film scene.\n"
+        "- Imperfect outcomes: real life rarely delivers clean justice. The "
+        "payoff can be partial, costly, or unsatisfying. Let the narrator pay a "
+        "price, lose something, or end up unsure. Do NOT always deliver a perfect "
+        "takedown, a total confession, or a flawless win.\n"
+        "- No cinematic reaction lines. Never write 'worth every penny', 'looked "
+        "me dead in the eye', 'my blood went cold', 'like nothing had happened', "
+        "'priceless', 'chill down my spine', 'the world tilted', or anything "
+        "close — the validator rejects these. Show the reaction through what "
+        "people DO (someone stops talking, puts a cup down, changes the "
+        "subject) instead of narrated interior drama.\n"
+        "- Keep the mechanism plausible: the narrator is an ordinary person "
+        "with ordinary resources. Tech, legal, medical or financial moves must "
+        "be things a real person could actually discover and do. No secret "
+        "router backdoors, no fake notarizations that magically hold, no "
+        "instant database access, no conveniently retained video evidence "
+        "nobody thought to check.\n"
+        "- Leave one loose thread: real memories skip, hedge, and trail off. "
+        "Let one detail stay unresolved or slightly uncertain. Do not wrap up "
+        "every thread neatly.\n"
+        "- Concrete over cinematic: real numbers ('forty-two dollars', 'two "
+        "years'), real objects, real time stamps, real small annoyances — not "
+        "weather, lighting, or camera language.\n"
+        "- Keep it in the past tense with the narrator's own limited knowledge: "
+        "they only know what they personally saw, heard, or were told. They may "
+        "be wrong about the cause.\n\n"
         f"LENGTH MATH — HARD REQUIREMENT (validator REJECTS short scripts):\n"
         f"TOTAL {lo}-{hi} words, aim {mid} words (never the floor). "
         f"At ~{eff:.1f} wps, {lo} words ~= {lo_secs}s and {hi} words ~= "
@@ -968,7 +1018,7 @@ _FALLBACK_VARIANTS = (
         "narrator_gender": "female",
         "key_words": ["gas station", "night shift", "phone call", "cameras",
                       "hallway"],
-        "tags": ["shorts", "storytime", "scary", "truestory", "stories"],
+        "tags": ["shorts", "storytime", "scary", "creepystory", "stories"],
         "description": ("The phone rang at three AM with a warning: do not turn "
                         "around. Part two at ten thousand likes. "
                         "#shorts #scarystory #storytime"),
