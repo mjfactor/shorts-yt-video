@@ -115,6 +115,33 @@ def retry(name: str, func, tries: int = 3, backoff: int = 5,
 # migrated on load without loss. load/save never fail the run.
 HISTORY_PATH = Path("history.json")
 HISTORY_KEEP = 110  # entries kept on disk across all niches
+# Fallback premise length when a niche exposes no history_dedup_payload
+# hook. Story scripts run ~400 words, so storing them whole made the
+# committed history file grow without bound; this caps the default write.
+HISTORY_NARRATION_CHARS = 200
+
+
+def history_dedup_fields(niche, content) -> dict:
+    """Premise payload for a history entry: narration/premise excerpt plus
+    whatever dedup extras the niche provides (key_words, skeleton).
+
+    Uses the niche's own `history_dedup_payload` when it has one (optional
+    hook, same pattern as build_metadata/sample_content) so core stays
+    niche-agnostic and never imports a concrete niche; otherwise falls back
+    to a generic excerpt trim. Never raises — a dedup payload is not worth
+    failing a finished upload over.
+    """
+    text = getattr(content, "narration_text", "") or ""
+    builder = getattr(niche, "history_dedup_payload", None)
+    if callable(builder):
+        try:
+            out = builder(content)
+            if isinstance(out, dict) and out.get("narration"):
+                return out
+        except Exception as e:  # niche hook is best-effort
+            warn(f"history_dedup_payload failed ({e}); using excerpt trim.")
+    excerpt = " ".join(str(text).split())[:HISTORY_NARRATION_CHARS]
+    return {"narration": excerpt, "premise": excerpt}
 
 
 def load_history(path: Path = HISTORY_PATH) -> list[dict]:
@@ -880,10 +907,15 @@ def run(niche) -> dict:
 
         entry = {"date": stamp, "title": content.title, "niche": name,
                  "tags": list(content.tags)[:10],
-                 "narration": content.narration_text,
                  "videoId": video_id,
                  "tiktokBufferPostId": tiktok_post_id,
                  "used_ids": list((visuals.used_ids or []))}
+        # Dedup payload (premise excerpt, key_words, skeleton) replaces the
+        # full ~400-word script that used to be stored here — it kept the
+        # committed file growing without bound and nothing read past the
+        # premise. Old full-narration entries stay on disk untouched and keep
+        # deduping; the file shrinks as HISTORY_KEEP rolls them out.
+        entry.update(history_dedup_fields(niche, content))
         slots = (content.extras or {}).get("slots") or {}
         for key in ("topic", "topic_source", "topicSource", "category"):
             if slots.get(key):

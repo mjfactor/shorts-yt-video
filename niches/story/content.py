@@ -63,6 +63,44 @@ _CLICHE_RE = re.compile(
 
 MAX_SENTENCE_WORDS = 30
 
+# ---- consecutive-repeat guards (hardcoded; not config knobs) ----------------
+# How much of an aired story the model gets to see in the dedup block. 60
+# chars only exposed the hook, so the model could see "My boss billed me ..."
+# four times over without ever seeing that the PAYOFF was identical too.
+HISTORY_PREMISE_CHARS = 200
+# What history.json actually stores per entry. Story scripts run ~400 words;
+# keeping them whole in the committed file made it grow without bound, so
+# only this excerpt of the premise is persisted (plus key_words + skeleton,
+# which is all the dedup guards read).
+HISTORY_EXCERPT_CHARS = 200
+# key_words echoed after the premise (visuals/dedup signal).
+HISTORY_KEYWORD_MAX = 8
+# Overlap (Jaccard over significant words) allowed against a story. 0.35 is
+# the general window; the newest entries get a much tighter bar because the
+# same 400-word skeleton restated with one object swapped stayed under 0.35.
+OVERLAP_MAX = 0.35
+RECENT_OVERLAP_MAX = 0.22
+# Only the most recent N same-niche entries get skeleton / tight-overlap
+# treatment; older ones stay on the looser general rules.
+RECENT_GUARD_N = 3
+# Premise skeleton reads the title plus the opening of the story.
+SKELETON_HEAD_CHARS = 150
+# The recurring "invoice/charge" family: an authority figure billing the
+# narrator for something, then an office/HR/payroll payoff. Same skeleton,
+# different object -> must not air twice running.
+SKELETON_ACTORS = (
+    "boss", "manager", "supervisor", "coworker", "coworker", "co-worker",
+    "colleague", "neighbor", "neighbour", "roommate", "flatmate", "landlord",
+    "barber", "contractor", "plumber", "mechanic", "dentist", "accountant",
+    "tailor", "groomer", "nanny", "babysitter", "sitter", "client", "customer",
+    "teacher", "professor", "coach", "trainer", "therapist", "banker", "agent",
+)
+# Money-grievance tokens, all folded into one class so "billed", "charged",
+# "invoice" and "fee" phrasings of the same story share a skeleton key.
+SKELETON_MONEY_RE = re.compile(
+    r"\b(bill(?:ed|ing|s)?|charg(?:e|ed|es|ing)|invoice|invoices|fee|fees|"
+    r"rent|deduct(?:ed|ion)|dock(?:ed)?|overcharg(?:e|ed))\b")
+
 
 def _genres(cfg: StoryConfig) -> tuple[str, ...]:
     """Genre pool from config (STORY_GENRES) else defaults."""
@@ -116,11 +154,70 @@ def _narrator_gender(history: list[dict], cfg: StoryConfig,
     return "female" if _gender_bucket(now) % 2 == 0 else "male"
 
 
+def _premise_excerpt(text: str) -> str:
+    """Single-line excerpt of a script: what history.json stores instead.
+
+    Collapses all whitespace and cuts to HISTORY_EXCERPT_CHARS. Kept shared
+    by the writer (history_dedup_payload) and every reader so both sides
+    agree on the exact bytes, which is what lets old full-narration entries
+    and new excerpted ones be compared against each other.
+    """
+    return " ".join(str(text or "").split())[:HISTORY_EXCERPT_CHARS]
+
+
+def _entry_premise(h: dict) -> str:
+    """Dedup premise text of a history entry, for ANY on-disk shape.
+
+    New entries store the trimmed excerpt under `premise` (and mirror it in
+    `narration` for backward compat); entries written before the trim still
+    carry the whole script under `narration`. Prefer `premise`, fall back to
+    `narration`. Never rewrites existing entries.
+    """
+    return str(h.get("premise") or h.get("narration") or "").strip()
+
+
 def format_history_line(h: dict) -> str:
-    """One-line history entry for the dedup prompt block."""
-    premise = str(h.get("narration", "")).strip().replace("\n", " ")[:60]
-    return (f"- \"{h.get('title', '?')}\" "
+    """One-line history entry for the dedup prompt block.
+
+    Shows the premise excerpt, the key_words, and the billed/fee skeleton
+    when the entry has one. The skeleton is worth a slot in the prompt: it
+    names the story SHAPE directly ("boss|money"), which is exactly what the
+    model kept missing when four near-identical invoice stories aired in a
+    row behind titles that merely swapped the object. Still one line.
+    """
+    premise = _premise_excerpt(_entry_premise(h))[:HISTORY_PREMISE_CHARS]
+    kw = h.get("key_words") or h.get("items") or []
+    if isinstance(kw, str):
+        kw = [kw]
+    kw_str = ",".join(str(k).strip()
+                      for k in list(kw)[:HISTORY_KEYWORD_MAX]
+                      if str(k).strip())
+    line = (f"- \"{h.get('title', '?')}\" "
             f"(genre={h.get('genre', '?')}) premise: {premise}...")
+    if kw_str:
+        line = f"{line} keywords: {kw_str}"
+    skel = _entry_skeleton(h)
+    return f"{line} skeleton: {skel}" if skel else line
+
+
+def history_dedup_payload(title: str, narration: str,
+                          key_words: list | None = None) -> dict:
+    """Trimmed dedup payload for one history.json entry (story lane).
+
+    Replaces the full ~400-word script, which made the committed history file
+    grow without bound. Everything the dedup guards actually read survives:
+    the premise excerpt, the key_words, and the billed/fee skeleton. The
+    `narration` key is kept (holding the excerpt, not the script) so anything
+    still reading it keeps working.
+
+    Existing entries are NEVER rewritten — the file shrinks on its own as
+    HISTORY_KEEP rolls old full-narration entries out of the flat cap.
+    """
+    excerpt = _premise_excerpt(narration)
+    kw = [str(k).strip() for k in (key_words or []) if str(k).strip()]
+    return {"narration": excerpt, "premise": excerpt,
+            "key_words": kw[:HISTORY_KEYWORD_MAX],
+            "skeleton": _skeleton_key(title, excerpt) or ""}
 
 
 def history_block(history: list[dict], prompt_n: int) -> str:
@@ -413,26 +510,93 @@ def _sig(text: str) -> set[str]:
             if len(w) > 3} - stop
 
 
+def _skeleton_key(title: str, narration: str) -> str | None:
+    """Setup-level fingerprint of a story, independent of the object in it.
+
+    Two stories that bill/charge the narrator for different things share the
+    same skeleton ("boss|money"), which Jaccard over full 400-word texts
+    misses because every concrete noun differs. Only the title plus the first
+    SKELETON_HEAD_CHARS of narration are read, and the actor is matched on
+    word boundaries: a plain substring search picks up incidental prose
+    ("I called the customer service line") and invents an actor the story
+    never had. Returns None when the story has no recognizable skeleton (no
+    bill/fee/invoice grievance), so the general overlap rules still apply.
+    """
+    head = f"{title} {str(narration)[:SKELETON_HEAD_CHARS]}".casefold()
+    if not SKELETON_MONEY_RE.search(head):
+        return None
+    actor = next((a for a in SKELETON_ACTORS
+                  if re.search(rf"\b{re.escape(a)}\b", head)), "")
+    return f"{actor or 'unknown'}|money"
+
+
+def _entry_skeleton(h: dict) -> str | None:
+    """Skeleton of a history entry, for ANY on-disk shape.
+
+    Prefers the `skeleton` value stored at write time, else derives it from
+    the entry's premise. Deriving from the excerpt is equivalent to deriving
+    from the full script because _skeleton_key only reads the first
+    SKELETON_HEAD_CHARS chars, which the excerpt preserves verbatim — so old
+    full-narration entries and new trimmed ones classify identically.
+    """
+    stored = str(h.get("skeleton") or "").strip()
+    if stored:
+        return stored
+    return _skeleton_key(str(h.get("title", "")), _entry_premise(h))
+
+
 def similarity_reason(data: dict, slots: dict, recent: list[dict],
                       item_recent: list[dict] | None = None) -> str | None:
-    """Repeat reason for title/premise dupes or >35% overlap, else None."""
+    """Repeat reason for title/premise dupes, skeleton repeats, or overlap.
+
+    Reads history entries of either shape: pre-trim entries carrying the
+    full script under `narration`, and trimmed entries carrying a premise
+    excerpt plus `key_words` and `skeleton`. Exact premise matching compares
+    excerpts on BOTH sides, so a repeat is caught against old and new entries
+    alike instead of silently failing once the file is trimmed. Overlap
+    against the general window still uses >0.35; the newest RECENT_GUARD_N
+    entries use the tighter RECENT_OVERLAP_MAX (0.22). Consecutive entries are
+    additionally checked for an identical billed/fee skeleton.
+    """
     title = str(data.get("title", "")).strip().casefold()
     for h in recent:
         if str(h.get("title", "")).strip().casefold() == title:
             return "title already used"
-    premise = str(data.get("story_text") or data.get("narration", "")).strip().casefold()
-    for h in recent:
-        if str(h.get("narration", "")).strip().casefold() == premise:
-            return "premise already used"
+    story = data.get("story_text") or data.get("narration", "")
+    # Excerpt both sides: full-vs-full, full-vs-excerpt and excerpt-vs-excerpt
+    # all collapse to the same comparison.
+    premise = _premise_excerpt(story).casefold()
+    if premise:
+        for h in recent:
+            if _premise_excerpt(_entry_premise(h)).casefold() == premise:
+                return "premise already used"
+
+    # Consecutive skeleton guard: same actor + same money grievance as any of
+    # the last RECENT_GUARD_N aired entries means the same story shape.
+    new_skel = _skeleton_key(str(data.get("title", "")), str(story))
+    if new_skel:
+        for h in list(recent)[-RECENT_GUARD_N:]:
+            if _entry_skeleton(h) == new_skel:
+                return (f"consecutive premise repeats '{h.get('title', '?')}' "
+                        "(same billed/fee skeleton)")
+
     window = item_recent if item_recent is not None else recent[-30:]
-    new_sig = _sig(f"{data.get('title', '')} "
-                   f"{data.get('story_text') or data.get('narration', '')}")
+    new_sig = _sig(f"{data.get('title', '')} {story}")
+    tail = {id(h) for h in window[-RECENT_GUARD_N:]}
     for h in window[-30:]:
-        old_sig = _sig(f"{h.get('title', '')} {h.get('narration', '')}")
+        old_sig = _sig(f"{h.get('title', '')} {_entry_premise(h)}")
         if not old_sig or not new_sig:
             continue
-        if len(new_sig & old_sig) / len(new_sig | old_sig) > 0.35:
-            return f"story overlaps '{h.get('title', '?')}' (word overlap >35%)"
+        # Recency-weighted threshold: same bar for the general window, tighter
+        # for the entries that just aired. Identity (not equality) decides
+        # recency so an identical-content duplicate can't flip the bar.
+        limit = (RECENT_OVERLAP_MAX if id(h) in tail else OVERLAP_MAX)
+        if len(new_sig & old_sig) / len(new_sig | old_sig) > limit:
+            if limit == RECENT_OVERLAP_MAX:
+                return (f"story overlaps recent '{h.get('title', '?')}' "
+                        f"(recent overlap >{RECENT_OVERLAP_MAX:.0%})")
+            return (f"story overlaps '{h.get('title', '?')}' "
+                    f"(word overlap >{OVERLAP_MAX:.0%})")
     return None
 
 

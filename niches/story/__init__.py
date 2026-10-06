@@ -52,6 +52,21 @@ class StoryNiche(Niche):
         """Offline sample for demos/tests."""
         return _content.sample_content()
 
+    def history_dedup_payload(self, content: Content) -> dict:
+        """What core.py stores in history.json instead of the full script.
+
+        Optional hook (core getattr()s it, falling back to a generic trim).
+        Story scripts run ~400 words; keeping them whole in the committed
+        file made it grow without bound. A premise excerpt plus key_words and
+        the billed/fee skeleton is everything the dedup guards read. Existing
+        entries are never rewritten — the file shrinks on its own as
+        HISTORY_KEEP rolls old full-narration entries out.
+        """
+        extras = content.extras or {}
+        kw = extras.get("key_words") or extras.get("items") or []
+        return _content.history_dedup_payload(
+            content.title, content.narration_text, list(kw))
+
 
 niche = StoryNiche()
 

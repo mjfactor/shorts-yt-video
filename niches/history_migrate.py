@@ -1,7 +1,9 @@
 """Pure history migration: flat list <-> per-niche groups.
 
-Not wired into core yet (Phase 1 lane A only). All functions are
-pure (no file IO) and lossless.
+Used by core.load_history / save_history (migrate-on-load is best-effort).
+All functions are pure (no file IO) and lossless: entries are copied with
+dict(h) and never filtered, so any new per-entry key (e.g. premise,
+key_words, skeleton) survives a migrate/flatten round-trip untouched.
 """
 
 __all__ = ["migrate_history", "flatten_history", "duplicate_reason"]
