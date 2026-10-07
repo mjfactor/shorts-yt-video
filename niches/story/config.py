@@ -111,8 +111,9 @@ class StoryConfig(NicheConfig):
     # consecutive clips and wrap around; "random" shuffles instead. The
     # start offset INSIDE the clip is random either way.
     bg_select: str = "rotate"
-    # Narrator gender: auto alternates male/female by same-niche history
-    # parity (odd = male, even = female); male/female force one voice.
+    # Narrator gender: auto infers clear first-person cues, then falls back
+    # to the UTC half-day rotation (female before 12:00 UTC, male after);
+    # male/female force one voice.
     narrator_gender_mode: str = "auto"
     # Optional BGM bed file (preview tools); empty = pool/drone path.
     bed_path: str = ""

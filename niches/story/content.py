@@ -132,25 +132,59 @@ def _gender_bucket(now: datetime | None = None) -> int:
         + (0 if t.hour < 12 else 1)
 
 
+_FEMALE_NARRATOR_CUES = (
+    re.compile(r"\bmy husband\b", re.IGNORECASE),
+    re.compile(r"\bmy boyfriend\b", re.IGNORECASE),
+    re.compile(r"\b(?:as|i am|i'm) a woman\b", re.IGNORECASE),
+    re.compile(r"\b(?:as|i am|i'm) (?:a )?wife\b", re.IGNORECASE),
+    re.compile(r"\b(?:i was|i'm|i am) pregnant\b", re.IGNORECASE),
+    re.compile(r"\bmy pregnancy\b", re.IGNORECASE),
+    re.compile(r"\bmy period\b", re.IGNORECASE),
+)
+_MALE_NARRATOR_CUES = (
+    re.compile(r"\bmy wife\b", re.IGNORECASE),
+    re.compile(r"\bmy girlfriend\b", re.IGNORECASE),
+    re.compile(r"\b(?:as|i am|i'm) a man\b", re.IGNORECASE),
+    re.compile(r"\b(?:as|i am|i'm) (?:a )?husband\b", re.IGNORECASE),
+    re.compile(r"\bmy beard\b", re.IGNORECASE),
+)
+
+
+def _infer_narrator_gender(story_text: str) -> str | None:
+    """Infer gender only when the first-person story has a clear signal."""
+    text = str(story_text or "")
+    female = sum(bool(pattern.search(text))
+                 for pattern in _FEMALE_NARRATOR_CUES)
+    male = sum(bool(pattern.search(text))
+               for pattern in _MALE_NARRATOR_CUES)
+    if female > male:
+        return "female"
+    if male > female:
+        return "male"
+    return None
+
+
 def _narrator_gender(history: list[dict], cfg: StoryConfig,
                       model_choice: str = "",
-                      now: datetime | None = None) -> str:
+                      now: datetime | None = None,
+                      story_text: str = "") -> str:
     """Resolve the narrator gender for this video.
 
-    auto (default): decided purely by the UTC half-day bucket
-    (_gender_bucket) — even bucket female, odd bucket male. The clock
-    always decides here, so a frozen, empty, or malformed history can
-    never pin the voice (history used to gate this, and a failed CI
-    push-back froze it). `history` and `model_choice` stay accepted for
-    compatibility but are NOT used: deriving the gender from recorded
-    state would re-introduce the same freeze, in the opposite direction.
-    Forced modes (male/female) win outright. Never raises.
+    auto (default): infer from clear first-person story cues, then fall back
+    to the UTC half-day bucket (even bucket female, odd bucket male). The
+    clock fallback is pure and independent of history, so a frozen, empty,
+    or malformed history can never pin the voice. Forced modes (male/female)
+    win outright. `history` and `model_choice` stay accepted for compatibility.
+    Never raises.
     """
     mode = str(getattr(cfg, "narrator_gender_mode", "auto") or "auto") \
         .strip().lower()
     if mode in ("male", "female"):
         return mode
-    _ = history, model_choice  # compatibility only; clock decides
+    inferred = _infer_narrator_gender(story_text)
+    if inferred is not None:
+        return inferred
+    _ = history, model_choice  # compatibility only; clock is the fallback
     return "female" if _gender_bucket(now) % 2 == 0 else "male"
 
 
@@ -721,11 +755,14 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "story_text and narration must be IDENTICAL: the full spoken story, "
         f"{lo}-{hi} words (card line included in the total). "
         f"genre must echo '{genre}'. "
-        f"narrator_gender MUST be \"{gender}\" — this channel alternates "
-        f"male and female narrators on a fixed UTC half-day schedule, so "
-        f"use \"{gender}\" even when the story "
-        f"feels ambiguous (write the narration in that voice; it is the "
-        f"narrator's own gender, never inferred from other characters). "
+        f"narrator_gender MUST be \"{gender}\" when the narrator's gender "
+        f"is ambiguous. First inspect the narrator's own first-person context: "
+        f"clear cues such as 'my husband', 'my wife', 'I was pregnant', "
+        f"'as a woman', or 'as a man' determine the matching narrator gender. "
+        f"When no clear cue exists, use the scheduled UTC fallback \"{gender}\". "
+        f"Do not make up a cue just to choose a gender, and do not infer from "
+        f"a side character's gender alone. Write the narration consistently "
+        f"with the resulting narrator gender. "
         "key_words: 4-8 lowercase content words (people, places, objects, "
         "moods) for dedup and visuals.\n\n"
         "rehooks: metadata ONLY, never spoken — exactly 3 objects "
@@ -1070,14 +1107,18 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                 ) from last_error
             window = [h for h in history[-cfg.dedup_window:]
                       if h.get("niche", "") == MODE]
-            # Narrator gender is decided by the UTC half-day clock (not the
-            # model, not history), so the alternating male/female voice can
-            # never be frozen by a stale history; slots already carry the
-            # same value, keeping prompt + extras + history in sync.
-            data["narrator_gender"] = slots.get(
-                "narrator_gender",
-                _narrator_gender(history, cfg,
-                                 str(data.get("narrator_gender", ""))))
+            # Resolve from the generated first-person story when possible;
+            # the UTC bucket remains the deterministic ambiguous-case fallback.
+            data["narrator_gender"] = _narrator_gender(
+                history, cfg, str(data.get("narrator_gender", "")),
+                story_text=" ".join(
+                    str(value or "").strip()
+                    for value in (
+                        data.get("title", ""),
+                        data.get("narration") or data.get("story_text") or "",
+                    )
+                    if str(value or "").strip()))
+            slots["narrator_gender"] = data["narrator_gender"]
             reason = similarity_reason(data, slots, window, window[-30:])
             if reason is None:
                 data["title"] = sanitize_title(data.get("title", ""), slots)
@@ -1093,7 +1134,15 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
     warn("No Gemini keys: using standalone fallback story.")
     meta, slots = fallback_script(history)
     meta["narrator_gender"] = _narrator_gender(
-        history, cfg, str(meta.get("narrator_gender", "")))
+        history, cfg, str(meta.get("narrator_gender", "")),
+        story_text=" ".join(
+            str(value or "").strip()
+            for value in (
+                meta.get("title", ""),
+                meta.get("narration") or meta.get("story_text") or "",
+            )
+            if str(value or "").strip()))
+    slots["narrator_gender"] = meta["narrator_gender"]
     return _to_content(meta, slots, wps, history)
 
 
