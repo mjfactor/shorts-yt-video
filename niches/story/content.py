@@ -132,9 +132,14 @@ def _gender_bucket(now: datetime | None = None) -> int:
         + (0 if t.hour < 12 else 1)
 
 
+# First-person narrator cues ONLY — never side characters ("my sister",
+# "my mother") and never bare props ("engagement ring"). The model decides
+# everything probabilistic; these regexes are the hard override.
 _FEMALE_NARRATOR_CUES = (
     re.compile(r"\bmy husband\b", re.IGNORECASE),
+    re.compile(r"\bmy husband-to-be\b", re.IGNORECASE),
     re.compile(r"\bmy boyfriend\b", re.IGNORECASE),
+    re.compile(r"\bmy fianc(?:e|ee|\u00e9e)\b", re.IGNORECASE),
     re.compile(r"\b(?:as|i am|i'm) a woman\b", re.IGNORECASE),
     re.compile(r"\b(?:as|i am|i'm) (?:a )?wife\b", re.IGNORECASE),
     re.compile(r"\b(?:i was|i'm|i am) pregnant\b", re.IGNORECASE),
@@ -143,7 +148,9 @@ _FEMALE_NARRATOR_CUES = (
 )
 _MALE_NARRATOR_CUES = (
     re.compile(r"\bmy wife\b", re.IGNORECASE),
+    re.compile(r"\bmy wife-to-be\b", re.IGNORECASE),
     re.compile(r"\bmy girlfriend\b", re.IGNORECASE),
+    re.compile(r"\bmy fianc\u00e9\b", re.IGNORECASE),
     re.compile(r"\b(?:as|i am|i'm) a man\b", re.IGNORECASE),
     re.compile(r"\b(?:as|i am|i'm) (?:a )?husband\b", re.IGNORECASE),
     re.compile(r"\bmy beard\b", re.IGNORECASE),
@@ -170,12 +177,15 @@ def _narrator_gender(history: list[dict], cfg: StoryConfig,
                       story_text: str = "") -> str:
     """Resolve the narrator gender for this video.
 
-    auto (default): infer from clear first-person story cues, then fall back
-    to the UTC half-day bucket (even bucket female, odd bucket male). The
-    clock fallback is pure and independent of history, so a frozen, empty,
-    or malformed history can never pin the voice. Forced modes (male/female)
-    win outright. `history` and `model_choice` stay accepted for compatibility.
-    Never raises.
+    auto (default), in priority order:
+      1. a clear first-person cue in `story_text` (hard regex override),
+      2. the model's own `narrator_gender` choice ("male"/"female"),
+      3. the UTC half-day bucket (even bucket female, odd bucket male).
+
+    The clock fallback is pure and independent of history, so a frozen,
+    empty, or malformed history can never pin the voice. Forced modes
+    (male/female) win outright. `history` stays accepted for compatibility
+    and is deliberately unused. Never raises.
     """
     mode = str(getattr(cfg, "narrator_gender_mode", "auto") or "auto") \
         .strip().lower()
@@ -184,7 +194,9 @@ def _narrator_gender(history: list[dict], cfg: StoryConfig,
     inferred = _infer_narrator_gender(story_text)
     if inferred is not None:
         return inferred
-    _ = history, model_choice  # compatibility only; clock is the fallback
+    choice = str(model_choice or "").strip().lower()
+    if choice in ("male", "female"):
+        return choice
     return "female" if _gender_bucket(now) % 2 == 0 else "male"
 
 
@@ -755,14 +767,16 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "story_text and narration must be IDENTICAL: the full spoken story, "
         f"{lo}-{hi} words (card line included in the total). "
         f"genre must echo '{genre}'. "
-        f"narrator_gender MUST be \"{gender}\" when the narrator's gender "
-        f"is ambiguous. First inspect the narrator's own first-person context: "
-        f"clear cues such as 'my husband', 'my wife', 'I was pregnant', "
-        f"'as a woman', or 'as a man' determine the matching narrator gender. "
-        f"When no clear cue exists, use the scheduled UTC fallback \"{gender}\". "
-        f"Do not make up a cue just to choose a gender, and do not infer from "
-        f"a side character's gender alone. Write the narration consistently "
-        f"with the resulting narrator gender. "
+        f"narrator_gender is whatever the narrator of THIS story is: decide "
+        f"it from the story's own first-person context and write the narration "
+        f"to match. First inspect the narrator's own cues — 'my husband', 'my "
+        f"wife', 'my fiancee', 'I was pregnant', 'as a woman', 'as a man' — and "
+        f"set narrator_gender to the one the narrator IS. Pick the gender the "
+        f"story fits best when the cues are softer, and never let a side "
+        f"character's gender decide it ('my sister', 'my boss') and never "
+        f"invent a cue just to justify a gender. Only when the story is truly "
+        f"gender-neutral with no first-person signal at all, fall back to the "
+        f"scheduled UTC default \"{gender}\". "
         "key_words: 4-8 lowercase content words (people, places, objects, "
         "moods) for dedup and visuals.\n\n"
         "rehooks: metadata ONLY, never spoken — exactly 3 objects "
