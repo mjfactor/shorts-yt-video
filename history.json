@@ -1112,6 +1112,92 @@
       "topic": "money",
       "topic_source": "genre-rotation",
       "narratorGender": "male"
+    },
+    {
+      "date": "2026-10-08_131043",
+      "title": "My best friend auctioned my rare collection 🖼️😲 #shorts",
+      "niche": "story",
+      "tags": [
+        "friendship",
+        "betrayal",
+        "storytime",
+        "drama",
+        "confession"
+      ],
+      "videoId": "ERsWpMI4Wqg",
+      "tiktokBufferPostId": "6ac798d1e63932e2c5a2be56",
+      "used_ids": [],
+      "narration": "My best friend auctioned my rare collection. I honestly thought he was just helping me move into my new apartment while I was away for a long weekend. I left my vintage movie poster collection in his ",
+      "premise": "My best friend auctioned my rare collection. I honestly thought he was just helping me move into my new apartment while I was away for a long weekend. I left my vintage movie poster collection in his ",
+      "key_words": [
+        "collection",
+        "friendship",
+        "betrayal",
+        "posters",
+        "auction"
+      ],
+      "skeleton": "",
+      "topic": "friendship",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male"
+    },
+    {
+      "date": "2026-10-08_231213",
+      "title": "My husband left his fitness tracker on 🏃‍♂️📱 #shorts",
+      "niche": "story",
+      "tags": [
+        "cheating",
+        "betrayal",
+        "relationships",
+        "confession",
+        "drama"
+      ],
+      "videoId": "1eULyrUZ0G8",
+      "tiktokBufferPostId": "6ac824ca7d9f9f33011a9283",
+      "used_ids": [],
+      "narration": "My husband left his fitness tracker on. He usually took it off before bed but that night he forgot it on the nightstand. I was just trying to find my own phone when I noticed his screen glowing with a",
+      "premise": "My husband left his fitness tracker on. He usually took it off before bed but that night he forgot it on the nightstand. I was just trying to find my own phone when I noticed his screen glowing with a",
+      "key_words": [
+        "husband",
+        "tracker",
+        "hotel",
+        "betrayal",
+        "marriage",
+        "truth"
+      ],
+      "skeleton": "",
+      "topic": "cheating",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female"
+    },
+    {
+      "date": "2026-10-09_125738",
+      "title": "My trainer billed me for his lunch 🥗💸 #shorts",
+      "niche": "story",
+      "tags": [
+        "entitled",
+        "gymlife",
+        "scam",
+        "trainer",
+        "storytime"
+      ],
+      "videoId": "mvOJ1L2UVFo",
+      "tiktokBufferPostId": "6ac8e636c22cbf9dd502de0b",
+      "used_ids": [],
+      "narration": "My personal trainer billed me for his lunch. I have been working with this guy, Dave, for about six months now. He is usually pretty intense but honestly, he gets results. Last week, we finished a ses",
+      "premise": "My personal trainer billed me for his lunch. I have been working with this guy, Dave, for about six months now. He is usually pretty intense but honestly, he gets results. Last week, we finished a ses",
+      "key_words": [
+        "trainer",
+        "gym",
+        "invoice",
+        "lunch",
+        "scam",
+        "money"
+      ],
+      "skeleton": "trainer|money",
+      "topic": "entitled",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male"
     }
   ]
 }
