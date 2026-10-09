@@ -123,8 +123,12 @@ WORDPOP_FONTNAME = "Montserrat ExtraBold"
 # Outline 9 / shadow 3 keep the stroke proportionate; 60px side margins +
 # <=14-char groups stay in safe area.
 WORDPOP_FONTSIZE = 132
-WORDPOP_POP = (r"{\an5\fscx70\fscy70\t(0,90,\fscx112\fscy112)"
+WORDPOP_POP = (r"{\an5\pos(540,840)\fscx70\fscy70\t(0,90,\fscx112\fscy112)"
                r"\t(90,160,\fscx100\fscy100)}")
+# Caption anchor: \an5 centered on (540,840) — 120px above canvas center
+# (960) so word-pop sits high of faces/action instead of dead-center.
+# \pos is used over MarginV because MarginV is ignored for middle (\an5)
+# alignment in libass; \pos is deterministic. Header stays byte-exact.
 WORDPOP_YELLOW = r"{\c&H0000FFFF&}"
 WORDPOP_RESET = r"{\r}"
 
