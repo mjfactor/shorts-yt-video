@@ -1169,6 +1169,35 @@
       "topic": "cheating",
       "topic_source": "genre-rotation",
       "narratorGender": "female"
+    },
+    {
+      "date": "2026-10-09_125738",
+      "title": "My trainer billed me for his lunch 🥗💸 #shorts",
+      "niche": "story",
+      "tags": [
+        "entitled",
+        "gymlife",
+        "scam",
+        "trainer",
+        "storytime"
+      ],
+      "videoId": "mvOJ1L2UVFo",
+      "tiktokBufferPostId": "6ac8e636c22cbf9dd502de0b",
+      "used_ids": [],
+      "narration": "My personal trainer billed me for his lunch. I have been working with this guy, Dave, for about six months now. He is usually pretty intense but honestly, he gets results. Last week, we finished a ses",
+      "premise": "My personal trainer billed me for his lunch. I have been working with this guy, Dave, for about six months now. He is usually pretty intense but honestly, he gets results. Last week, we finished a ses",
+      "key_words": [
+        "trainer",
+        "gym",
+        "invoice",
+        "lunch",
+        "scam",
+        "money"
+      ],
+      "skeleton": "trainer|money",
+      "topic": "entitled",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male"
     }
   ]
 }
