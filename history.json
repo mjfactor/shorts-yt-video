@@ -1256,6 +1256,35 @@
       "topic": "wedding",
       "topic_source": "genre-rotation",
       "narratorGender": "female"
+    },
+    {
+      "date": "2026-10-10_052500",
+      "title": "My Roommate Rented Out My Closet 🚪💸 #shorts",
+      "niche": "story",
+      "tags": [
+        "roommate",
+        "drama",
+        "story",
+        "lease",
+        "conflict"
+      ],
+      "videoId": "bVBPY1mW7sY",
+      "tiktokBufferPostId": null,
+      "used_ids": [],
+      "narration": "My roommate rented out my closet space. I had been away for a month visiting family in another state. When I returned home, I expected to find my bedroom exactly as I left it. Instead, I found the fro",
+      "premise": "My roommate rented out my closet space. I had been away for a month visiting family in another state. When I returned home, I expected to find my bedroom exactly as I left it. Instead, I found the fro",
+      "key_words": [
+        "roommate",
+        "closet",
+        "lease",
+        "landlord",
+        "eviction",
+        "stranger"
+      ],
+      "skeleton": "",
+      "topic": "roommate",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male"
     }
   ]
 }
