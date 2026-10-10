@@ -180,7 +180,7 @@ def _render_story_captioned(bg_clips: list[Path], audio_path: Path,
     ass_path = write_ass(
         caption_words, workdir / "demo_captions.ass",
         style={"fontname": "Montserrat ExtraBold",
-               "fontsize": 132,
+               "fontsize": 168,
                "primary_colour": "&H00FFFFFF",
                "outline": 9, "shadow": 3, "alignment": 5, "margin_v": 200,
                "play_res_x": 1080, "play_res_y": 1920},

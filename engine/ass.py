@@ -11,12 +11,9 @@ from .overlay_card import find_bundled_font
 from .srt import group_words
 
 # Caption vertical anchor (PlayRes space, 1080x1920). \an5 is middle-center,
-# and libass IGNORES MarginV for middle alignment, so the height nudge must be
-# an explicit \pos(). Canvas center is y=960; smaller = higher on screen.
-# Single source of truth for BOTH writers: write_ass (demo) and
-# write_wordpop_ass (production story). They used to carry independent
-# style constants, so a demo render could not validate a production change.
-CAPTION_POS_Y = 840
+# and libass IGNORES MarginV for middle alignment, so height is an explicit
+# \pos(). 960 = exact canvas center (visually identical to no \pos at all).
+CAPTION_POS_Y = 960
 CAPTION_POS_X = 540
 
 
@@ -36,13 +33,42 @@ def _env_pos_y() -> int:
     return CAPTION_POS_Y
 
 
+def _env_fontsize() -> int:
+    """Caption font size from env (STORY_ASS_FONTSIZE wins over bare).
+
+    Shares the story config's var name so one repo Variable tunes both the
+    demo and production. Falls back to WORDPOP_FONTSIZE.
+    """
+    for name in ("STORY_ASS_FONTSIZE", "ASS_FONTSIZE"):
+        raw = os.getenv(name, "").strip()
+        if raw:
+            try:
+                return int(float(raw))
+            except ValueError:
+                continue
+    return WORDPOP_FONTSIZE
+
+
+def _max_chars_for(size: int, base_size: int = 132,
+                   base_chars: int = 14) -> int:
+    """Group char cap scaled to font size so captions stay in the safe area.
+
+    14 chars fits the 60px side margins at 132pt. Bigger type needs fewer
+    chars per cue or lines run off the 1080-wide canvas.
+    """
+    if size <= 0:
+        return base_chars
+    return max(6, int(round(base_chars * base_size / float(size))))
+
+
 def pop_tag(pos_y: int = CAPTION_POS_Y) -> str:
     """Word-pop override prefix, anchored at (CAPTION_POS_X, pos_y).
 
     Order matters: \\an5 before \\pos so the anchor is middle-center when the
-    position is applied. pos_y defaults to CAPTION_POS_Y, overridable at
-    runtime with CAPTION_POS_Y / STORY_CAPTION_POS_Y so the height can be
-    tuned in CI without a code deploy.
+    position is applied. Single source of truth for BOTH writers (write_ass
+    for the demo, write_wordpop_ass for production story) so a demo render can
+    validate a production caption change. pos_y defaults to CAPTION_POS_Y,
+    overridable at runtime via CAPTION_POS_Y / STORY_CAPTION_POS_Y.
     """
     y = _env_pos_y() if pos_y == CAPTION_POS_Y else int(pos_y)
     return (rf"{{\an5\pos({CAPTION_POS_X},{y})\fscx70\fscy70"
@@ -166,7 +192,7 @@ WORDPOP_FONTNAME = "Montserrat ExtraBold"
 # user frame showed small word-pop ("speak") at 120, slightly big at 144.
 # Outline 9 / shadow 3 keep the stroke proportionate; 60px side margins +
 # <=14-char groups stay in safe area.
-WORDPOP_FONTSIZE = 132
+WORDPOP_FONTSIZE = 168
 # Import-time snapshot of pop_tag() (env as of import). Kept for callers that
 # reference the constant; the writers themselves call pop_tag() at write time.
 WORDPOP_POP = pop_tag()
@@ -307,7 +333,8 @@ def _wordpop_colorize(word: str, display: str, key_words: set[str]) -> str:
 
 
 def _wordpop_events(words: list[dict], *, key_words: set[str],
-                    upper: bool, start_after: float) -> list[tuple]:
+                    upper: bool, start_after: float,
+                    max_chars: int = 14) -> list[tuple]:
     """Filter/shift to start_after, group, then cap each event.
 
     Each event holds at most 0.15s past its word end (gaps stay gaps
@@ -329,7 +356,7 @@ def _wordpop_events(words: list[dict], *, key_words: set[str],
         shifted.append({"word": str(w.get("word", "")), "start": s,
                         "end": e})
     events: list[tuple] = []
-    groups = _wordpop_groups(shifted)
+    groups = _wordpop_groups(shifted, max_chars=max_chars)
     for gi, g in enumerate(groups):
         start = float(g[0].get("start", 0.0))
         word_end = float(g[-1].get("end", start + 0.4))
@@ -392,12 +419,14 @@ def write_wordpop_ass(words: list[dict], out_ass: str | Path, *,
     out.parent.mkdir(parents=True, exist_ok=True)
     _stage_bundled_font(out, fontname)
     keys = {_wordpop_core(str(k)) for k in (key_words or []) if str(k).strip()}
-    size = int(fontsize) if fontsize else WORDPOP_FONTSIZE
+    # Explicit arg > env > built-in default.
+    size = int(fontsize) if fontsize else _env_fontsize()
     header = _WORDPOP_HEADER.replace(
         f"Style: Pop,{WORDPOP_FONTNAME},{WORDPOP_FONTSIZE},",
         f"Style: Pop,{fontname},{size},", 1)
     events = _wordpop_events(words, key_words=keys, upper=upper,
-                             start_after=max(0.0, float(start_after)))
+                             start_after=max(0.0, float(start_after)),
+                             max_chars=_max_chars_for(size))
     lines = [f"Dialogue: 0,{wordpop_ts(s)},{wordpop_ts(e)},Pop,,0,0,0,,"
              f"{pop_tag()}{t}" for s, e, t in events]
     out.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
