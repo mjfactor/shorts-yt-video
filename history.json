@@ -1342,6 +1342,35 @@
       "topic": "social-media",
       "topic_source": "genre-rotation",
       "narratorGender": "female"
+    },
+    {
+      "date": "2026-10-10_212635",
+      "title": "My coworker stole my chair every single day 💺😡 #shorts",
+      "niche": "story",
+      "tags": [
+        "revenge",
+        "office",
+        "work",
+        "petty",
+        "drama"
+      ],
+      "videoId": "mlxJWayZP2g",
+      "tiktokBufferPostId": "6acaaf4ed9cab260a7d9f297",
+      "used_ids": [],
+      "narration": "My coworker stole my chair every single day. I work in an office where we have those ergonomic desk chairs with adjustable lumbar support. Honestly, they are the only thing keeping my back from aching",
+      "premise": "My coworker stole my chair every single day. I work in an office where we have those ergonomic desk chairs with adjustable lumbar support. Honestly, they are the only thing keeping my back from aching",
+      "key_words": [
+        "coworker",
+        "chair",
+        "office",
+        "revenge",
+        "desk",
+        "clerk"
+      ],
+      "skeleton": "",
+      "topic": "petty-revenge",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male"
     }
   ]
 }
