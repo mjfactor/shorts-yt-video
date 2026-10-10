@@ -2,12 +2,53 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from pathlib import Path
 
 from .ffmpeg_utils import warn
 from .overlay_card import find_bundled_font
 from .srt import group_words
+
+# Caption vertical anchor (PlayRes space, 1080x1920). \an5 is middle-center,
+# and libass IGNORES MarginV for middle alignment, so the height nudge must be
+# an explicit \pos(). Canvas center is y=960; smaller = higher on screen.
+# Single source of truth for BOTH writers: write_ass (demo) and
+# write_wordpop_ass (production story). They used to carry independent
+# style constants, so a demo render could not validate a production change.
+CAPTION_POS_Y = 840
+CAPTION_POS_X = 540
+
+
+def _env_pos_y() -> int:
+    """Caption anchor Y from env (STORY_CAPTION_POS_Y wins over bare).
+
+    Read per call, not at import, so a run that exports the var after import
+    still lands. Non-numeric/empty falls back to CAPTION_POS_Y.
+    """
+    for name in ("STORY_CAPTION_POS_Y", "CAPTION_POS_Y"):
+        raw = os.getenv(name, "").strip()
+        if raw:
+            try:
+                return int(float(raw))
+            except ValueError:
+                continue
+    return CAPTION_POS_Y
+
+
+def pop_tag(pos_y: int = CAPTION_POS_Y) -> str:
+    """Word-pop override prefix, anchored at (CAPTION_POS_X, pos_y).
+
+    Order matters: \\an5 before \\pos so the anchor is middle-center when the
+    position is applied. pos_y defaults to CAPTION_POS_Y, overridable at
+    runtime with CAPTION_POS_Y / STORY_CAPTION_POS_Y so the height can be
+    tuned in CI without a code deploy.
+    """
+    y = _env_pos_y() if pos_y == CAPTION_POS_Y else int(pos_y)
+    return (rf"{{\an5\pos({CAPTION_POS_X},{y})\fscx70\fscy70"
+            r"\t(0,90,\fscx112\fscy112)"
+            r"\t(90,160,\fscx100\fscy100)}")
+
 
 DEFAULT_STYLE = {
     "fontname": "Montserrat ExtraBold",
@@ -27,7 +68,7 @@ DEFAULT_STYLE = {
     "play_res_y": 1920,
     "num_color": "{\\c&H0000FF&}",   # digits pop red
     "key_color": "{\\c&H00E5FF&}",   # key words pop gold
-    "pop_in": r"{\an5\fscx70\fscy70\t(0,90,\fscx112\fscy112)\t(90,160,\fscx100\fscy100)}",
+    "pop_in": pop_tag(),
 }
 
 
@@ -62,6 +103,9 @@ def write_ass(words: list[dict], out_ass: str | Path, *,
     """Write word-pop ASS; gapless sets each cue end=next.start."""
     st = dict(DEFAULT_STYLE)
     st.update(style or {})
+    # Re-resolve at call time (not import time) so CAPTION_POS_Y env tuning
+    # applies to a long-lived process. A caller-supplied pop_in wins.
+    st["pop_in"] = (style or {}).get("pop_in") or pop_tag()
     keys = {str(k).lower() for k in (key_words or [])}
     groups = group_words([dict(w) for w in (words or [])])
 
@@ -123,8 +167,9 @@ WORDPOP_FONTNAME = "Montserrat ExtraBold"
 # Outline 9 / shadow 3 keep the stroke proportionate; 60px side margins +
 # <=14-char groups stay in safe area.
 WORDPOP_FONTSIZE = 132
-WORDPOP_POP = (r"{\an5\fscx70\fscy70\t(0,90,\fscx112\fscy112)"
-               r"\t(90,160,\fscx100\fscy100)}")
+# Import-time snapshot of pop_tag() (env as of import). Kept for callers that
+# reference the constant; the writers themselves call pop_tag() at write time.
+WORDPOP_POP = pop_tag()
 WORDPOP_YELLOW = r"{\c&H0000FFFF&}"
 WORDPOP_RESET = r"{\r}"
 
@@ -354,6 +399,6 @@ def write_wordpop_ass(words: list[dict], out_ass: str | Path, *,
     events = _wordpop_events(words, key_words=keys, upper=upper,
                              start_after=max(0.0, float(start_after)))
     lines = [f"Dialogue: 0,{wordpop_ts(s)},{wordpop_ts(e)},Pop,,0,0,0,,"
-             f"{WORDPOP_POP}{t}" for s, e, t in events]
+             f"{pop_tag()}{t}" for s, e, t in events]
     out.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
     return out

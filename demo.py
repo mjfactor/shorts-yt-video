@@ -173,6 +173,10 @@ def _render_story_captioned(bg_clips: list[Path], audio_path: Path,
     # serves as the on-screen visual for the opening narration.
     caption_words = [w for w in words
                      if float(w.get("start", 0)) >= card_dur]
+    # Style here must mirror the production word-pop (engine.ass
+    # write_wordpop_ass) or a demo render cannot validate a caption change.
+    # Do NOT hand-set an anchor: the \pos height comes from engine.ass
+    # pop_tag() / CAPTION_POS_Y, shared by both writers.
     ass_path = write_ass(
         caption_words, workdir / "demo_captions.ass",
         style={"fontname": "Montserrat ExtraBold",
