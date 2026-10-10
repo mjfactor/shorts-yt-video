@@ -1314,6 +1314,34 @@
       "topic": "inheritance",
       "topic_source": "genre-rotation",
       "narratorGender": "female"
+    },
+    {
+      "date": "2026-10-10_121529",
+      "title": "My babysitter charged me overtime while sleeping 🍼😡 #shorts",
+      "niche": "story",
+      "tags": [
+        "babysitter",
+        "storytime",
+        "drama",
+        "parents",
+        "invoice"
+      ],
+      "videoId": "SYOWk1cfYZ0",
+      "tiktokBufferPostId": "6aca2e39d9cab260a7c36b0b",
+      "used_ids": [],
+      "narration": "My babysitter charged me overtime while sleeping. I honestly thought it was some kind of bad joke when the payment request popped up on my phone at midnight. We had hired a college student named Chloe",
+      "premise": "My babysitter charged me overtime while sleeping. I honestly thought it was some kind of bad joke when the payment request popped up on my phone at midnight. We had hired a college student named Chloe",
+      "key_words": [
+        "babysitter",
+        "invoice",
+        "camera",
+        "overtime",
+        "couch"
+      ],
+      "skeleton": "babysitter|money",
+      "topic": "social-media",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female"
     }
   ]
 }
