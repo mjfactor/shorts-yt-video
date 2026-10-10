@@ -1227,6 +1227,35 @@
       "topic": "neighbor",
       "topic_source": "genre-rotation",
       "narratorGender": "male"
+    },
+    {
+      "date": "2026-10-09_223015",
+      "title": "My makeup artist skipped my wedding morning 💄👰 #shorts",
+      "niche": "story",
+      "tags": [
+        "wedding",
+        "drama",
+        "scam",
+        "makeup",
+        "storytime"
+      ],
+      "videoId": "bKyMakSJxxE",
+      "tiktokBufferPostId": "6ac96c42b07d37ac97532833",
+      "used_ids": [],
+      "narration": "My makeup artist skipped my wedding morning. I sat in my robe staring at the empty chair in my hotel suite while the clock ticked past nine. We had a contract signed six months in advance. She was sup",
+      "premise": "My makeup artist skipped my wedding morning. I sat in my robe staring at the empty chair in my hotel suite while the clock ticked past nine. We had a contract signed six months in advance. She was sup",
+      "key_words": [
+        "makeup",
+        "wedding",
+        "deposit",
+        "betrayal",
+        "contract",
+        "bank"
+      ],
+      "skeleton": "",
+      "topic": "wedding",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female"
     }
   ]
 }
