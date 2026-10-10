@@ -1285,6 +1285,35 @@
       "topic": "roommate",
       "topic_source": "genre-rotation",
       "narratorGender": "male"
+    },
+    {
+      "date": "2026-10-10_060717",
+      "title": "My uncle hid my inheritance in a guitar 🎸 #shorts",
+      "niche": "story",
+      "tags": [
+        "inheritance",
+        "family",
+        "secrets",
+        "money",
+        "revenge"
+      ],
+      "videoId": "JA88purNf1I",
+      "tiktokBufferPostId": null,
+      "used_ids": [],
+      "narration": "My uncle hid my inheritance in a guitar. He passed away last November and left me his old beat up Gibson acoustic. I brought it home and honestly just shoved it into the back of my bedroom closet. Thr",
+      "premise": "My uncle hid my inheritance in a guitar. He passed away last November and left me his old beat up Gibson acoustic. I brought it home and honestly just shoved it into the back of my bedroom closet. Thr",
+      "key_words": [
+        "uncle",
+        "inheritance",
+        "guitar",
+        "checks",
+        "cousin",
+        "bank"
+      ],
+      "skeleton": "",
+      "topic": "inheritance",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female"
     }
   ]
 }
