@@ -192,7 +192,7 @@ WORDPOP_FONTNAME = "Montserrat ExtraBold"
 # user frame showed small word-pop ("speak") at 120, slightly big at 144.
 # Outline 9 / shadow 3 keep the stroke proportionate; 60px side margins +
 # <=14-char groups stay in safe area.
-WORDPOP_FONTSIZE = 168
+WORDPOP_FONTSIZE = 158
 # Import-time snapshot of pop_tag() (env as of import). Kept for callers that
 # reference the constant; the writers themselves call pop_tag() at write time.
 WORDPOP_POP = pop_tag()
