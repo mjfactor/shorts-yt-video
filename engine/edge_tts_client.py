@@ -27,6 +27,56 @@ except ImportError:  # pragma: no cover - aiohttp ships with edge-tts
     _NET_ERRS = (OSError, TimeoutError, ValueError)
 
 
+# --- endpoint compat shim -------------------------------------------------
+# edge-tts 7.2.8 (still the newest release) hardcodes the retired synthesis
+# host speech.platform.bing.com. Microsoft moved Edge Read Aloud to
+# api.msedgeservices.com; the old host 403s at the WebSocket upgrade while its
+# REST voice list keeps answering 200, so --list-voices still looks healthy.
+# We point the library at the current host and keep the retired one as a
+# fallback for regions the new host has not reached yet.
+#
+# BOTH module-level copies must be set: communicate.py does
+# `from .constants import WSS_URL`, so patching constants alone is a silent
+# no-op. Commits nothing; remove once a release ships the migration (rany2/
+# edge-tts#490, fixed by the still-unmerged PR #491).
+_TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
+_WSS_URLS = (
+    "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1"
+    f"?Ocp-Apim-Subscription-Key={_TRUSTED_CLIENT_TOKEN}",
+    "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
+    f"?TrustedClientToken={_TRUSTED_CLIENT_TOKEN}",
+)
+_ENDPOINTS: tuple[str, ...] = _WSS_URLS
+_SHIM_READY = False
+
+
+def _install_endpoint_shim() -> None:
+    """Aim edge_tts at the current synthesis host; no-op on a fixed release.
+
+    Runs once, lazily, on first synth — edge_tts is imported here rather than at
+    module import so an offline demo still imports this module cleanly.
+    """
+    global _ENDPOINTS, _SHIM_READY
+    if _SHIM_READY:
+        return
+    _SHIM_READY = True
+    try:
+        import edge_tts.constants as _const
+        import edge_tts.communicate as _comm
+    except ImportError:  # pragma: no cover - diagnosed by the caller instead
+        return
+    installed = getattr(_comm, "WSS_URL", "")
+    if "msedgeservices.com" in installed:
+        # Upstream shipped the migration; trust it and stop carrying the legacy
+        # host rather than pinning them to our copy of the URL.
+        _ENDPOINTS = (installed,)
+        return
+    for mod in (_const, _comm):
+        if getattr(mod, "WSS_URL", None):
+            setattr(mod, "WSS_URL", _WSS_URLS[0])
+    _ENDPOINTS = _WSS_URLS
+
+
 def edge_tts_version() -> str:
     """Installed edge-tts version (the caller logs it at synth start)."""
     import edge_tts
@@ -43,16 +93,17 @@ def _edge_retryable() -> tuple:
         return ()
 
 
-async def synth(text: str, voice: str, rate: str,
-                out_mp3: str | Path, pitch: str = '+0Hz') -> list[dict]:
-    """One library synth: mp3 bytes to out_mp3 + [{word, start, end}].
+async def _stream_once(text: str, voice: str, rate: str, pitch: str,
+                       url: str) -> tuple[bytes, list[dict]]:
+    """One Communicate().stream() against a specific endpoint URL.
 
-    Raises ValueError on empty audio (retried by synth_sync); raises
-    TypeError/KeyError fast on programming errors (never retried).
+    Communicate resolves WSS_URL at stream time, so the module global is set
+    per attempt to allow cycling endpoints.
     """
     import edge_tts
+    import edge_tts.communicate as _comm
 
-    log(f"edge-tts v{edge_tts_version()}: voice={voice} rate={rate}")
+    setattr(_comm, "WSS_URL", url)
     comm = edge_tts.Communicate(text, voice, rate=rate,
                                 pitch=pitch,
                                 boundary="WordBoundary")
@@ -68,11 +119,46 @@ async def synth(text: str, voice: str, rate: str,
                    + float(chunk.get("duration", 0))) / TICKS_PER_SECOND
             words.append({"word": str(chunk.get("text", "")),
                           "start": round(start, 3), "end": round(end, 3)})
-    if not bytes(audio):
-        raise ValueError("edge-tts returned no audio bytes (empty audio)")
+    return bytes(audio), words
+
+
+async def synth(text: str, voice: str, rate: str,
+                out_mp3: str | Path, pitch: str = '+0Hz') -> list[dict]:
+    """One library synth: mp3 bytes to out_mp3 + [{word, start, end}].
+
+    Tries each known endpoint in turn (see the shim above) so a host that is
+    live from this network is found even if the preferred one is not.
+
+    Raises ValueError on empty audio (retried by synth_sync); raises
+    TypeError/KeyError fast on programming errors (never retried).
+    """
+    _install_endpoint_shim()
+    log(f"edge-tts v{edge_tts_version()}: voice={voice} rate={rate}")
+
+    audio = b""
+    words: list[dict] = []
+    last: Exception | None = None
+    for url in _ENDPOINTS:
+        try:
+            audio, words = await _stream_once(text, voice, rate, pitch, url)
+        except (TypeError, KeyError):
+            raise
+        except Exception as e:  # noqa: BLE001 - try the next endpoint
+            last = e
+            warn(f"edge-tts endpoint {url.split('/')[2]} failed ({e}); "
+                 f"trying next endpoint...")
+            continue
+        if audio:
+            break
+        last = ValueError("edge-tts returned no audio bytes (empty audio)")
+
+    if not audio:
+        assert last is not None
+        raise last
+
     out = Path(out_mp3)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(bytes(audio))
+    out.write_bytes(audio)
     expect = len(text.split())
     if len(words) != expect:
         warn(f"edge-tts boundary events ({len(words)}) != narration words "
