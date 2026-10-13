@@ -301,46 +301,44 @@ class GeminiClient:
                       generation_config: dict | None = None) -> dict:
         """JSON-mode completion: forces application/json, strips fences, parses.
 
-        Invalid/truncated JSON is retried across all keys (up to `tries` each)
-        before giving up — the model may return cut-off JSON on an overloaded
-        shard but succeed on the next key's shard.
+        Transport failures (5xx/timeout/429) are NOT retried here: post() already
+        rotates every key with backoff and raises only once they are all
+        exhausted, so re-entering it would only replay the same exhausted
+        rotation — that nesting used to cost tries x keys POSTs per draft
+        attempt and burned the whole run budget on one model.
+
+        An unparseable 200 body DOES earn another round: it never trips post()'s
+        rotation, so it retries once per key, advancing the rotation start so
+        each round leads with a different key's shard.
         """
         cfg = dict(generation_config or {})
         cfg.setdefault("responseMimeType", "application/json")
         n = len(self.keys)
         last_err: Exception | None = None
         for k in range(n):
-            idx = (self._key_idx + k) % n
-            for attempt in range(1, self.tries + 1):
-                try:
-                    text = self.generate_text(model, prompt, generation_config=cfg)
-                except Exception as e:
-                    last_err = e
-                    # generate_text already handles retries/rotation internally;
-                    # if it raised, this model+key combo is done — break inner
-                    # loop and let the outer key loop continue.
-                    break
-                clean = text.strip()
-                m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", clean, re.S)
-                if m:
-                    clean = m.group(1)
-                try:
-                    parsed = json.loads(clean)
-                except json.JSONDecodeError as e:
-                    last_err = ValueError(
-                        f"Model {model} returned invalid JSON (key {idx+1}/{n}, "
-                        f"attempt {attempt}): {e}")
-                    log(f"Gemini key {idx+1}/{n} invalid JSON ({e}), "
-                        f"retrying with next key...")
-                    # Force key rotation by advancing key index.
-                    self._key_idx = (idx + 1) % n
-                    break  # try next key
-                if not isinstance(parsed, dict):
-                    last_err = ValueError(
-                        f"Model {model} returned non-object JSON")
-                    break
-                self._key_idx = idx
-                return parsed
+            # Raises only once post() has exhausted every key/trie; propagate so
+            # the caller moves on to the next model instead of replaying.
+            text = self.generate_text(model, prompt, generation_config=cfg)
+            clean = text.strip()
+            m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", clean, re.S)
+            if m:
+                clean = m.group(1)
+            try:
+                parsed = json.loads(clean)
+            except json.JSONDecodeError as e:
+                last_err = ValueError(
+                    f"Model {model} returned invalid JSON (key {k+1}/{n}): {e}")
+                log(f"Gemini key {k+1}/{n} invalid JSON ({e}), "
+                    f"retrying with next key...")
+                # Force key rotation by advancing key index.
+                self._key_idx = (self._key_idx + 1) % n
+                continue
+            if not isinstance(parsed, dict):
+                last_err = ValueError(
+                    f"Model {model} returned non-object JSON")
+                continue
+            # post() already parked _key_idx on the key that answered.
+            return parsed
         assert last_err is not None
         raise last_err
 
