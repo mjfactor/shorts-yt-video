@@ -1573,6 +1573,35 @@
       "topic": "family-drama",
       "topic_source": "genre-rotation",
       "narratorGender": "female"
+    },
+    {
+      "date": "2026-10-14_032609",
+      "title": "My bank charged me for having no money 🏦💸 #shorts",
+      "niche": "story",
+      "tags": [
+        "banking",
+        "fees",
+        "finance",
+        "storytime",
+        "money"
+      ],
+      "videoId": "iLV99EVfwOY",
+      "tiktokBufferPostId": null,
+      "used_ids": [],
+      "narration": "My bank charged me for having no money. I checked my balance at an automated teller machine on a rainy Tuesday morning and honestly saw a negative sign. I had exactly zero dollars in my checking accou",
+      "premise": "My bank charged me for having no money. I checked my balance at an automated teller machine on a rainy Tuesday morning and honestly saw a negative sign. I had exactly zero dollars in my checking accou",
+      "key_words": [
+        "bank",
+        "fee",
+        "manager",
+        "account",
+        "money",
+        "refund"
+      ],
+      "skeleton": "unknown|money",
+      "topic": "money",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female"
     }
   ]
 }
