@@ -1695,6 +1695,37 @@
       "narratorGender": "female",
       "words": 515,
       "duration": 110.68
+    },
+    {
+      "date": "2026-10-14_212941",
+      "title": "My neighbor charged me for my own driveway 🚗💸 #shorts",
+      "niche": "story",
+      "tags": [
+        "neighbor",
+        "property",
+        "revenge",
+        "parking",
+        "drama"
+      ],
+      "videoId": "oNeXuEb4ltU",
+      "tiktokBufferPostId": "6acff60ad7ed7764890c6f11",
+      "used_ids": [],
+      "narration": "My neighbor started charging me for my driveway. I stared at the paper tucked under my windshield wiper, feeling honestly confused. It was a formal invoice for three hundred dollars in parking fees fo",
+      "premise": "My neighbor started charging me for my driveway. I stared at the paper tucked under my windshield wiper, feeling honestly confused. It was a formal invoice for three hundred dollars in parking fees fo",
+      "key_words": [
+        "neighbor",
+        "driveway",
+        "invoice",
+        "parking",
+        "property",
+        "surveyor"
+      ],
+      "skeleton": "neighbor|money",
+      "topic": "neighbor",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 414,
+      "duration": 106.23
     }
   ]
 }
