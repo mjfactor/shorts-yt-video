@@ -23,6 +23,9 @@ assets/background-musics/*
 # excludes the whole directory).
 !assets/background-musics/
 !assets/background-musics/bgm*.mp3
+# BGM provenance manifest (sha256 + license/claim state) IS committed too:
+# a Content ID claim has to map back to a file, in CI as well as locally.
+!assets/background-musics/bgm_manifest.json
 !assets/backgrounds/*.mp4
 !assets/backgrounds/*.mov
 !assets/backgrounds/*.webm

@@ -1,13 +1,16 @@
 """Story stage 3: BG-driven 1080x1920 render with card + word-pop captions.
 
-Pipeline: pick one clip from the local assets/backgrounds folder → one
-continuous single-take BG track (total = narration + 0.4s) → card overlay
-+ ASS burn + mixed audio in one final pass (crf20/veryfast/AAC-192k).
+Pipeline: pick clips from the local assets/backgrounds folder → one BG
+track (total = narration + 0.4s), either ONE continuous single take
+(STORY_BG_SEGMENTS 0/1, the default) or N segments from different clips
+concatenated back into a single track → card overlay + ASS burn + mixed
+audio in one final pass (crf20/veryfast/AAC-192k).
 Local clips are the ONLY background source: an empty folder is a hard
 failure, never a silent fallback.
 """
 from __future__ import annotations
 
+import json
 import random
 import re
 import time
@@ -32,6 +35,9 @@ CARD_Y_OFFSET = -280
 # thumbnail, so the two can never drift apart.
 CARD_Y_FRAC = 0.30
 BG_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
+# Provenance record for the BGM pool, kept by tools/bgm_manifest.py next to
+# the tracks. Purely advisory: a bad manifest must never silence the bed.
+BGM_MANIFEST_NAME = "bgm_manifest.json"
 
 STORY_CARD_THEME = {
     "card_fill": (18, 18, 24, 255),
@@ -41,6 +47,71 @@ STORY_CARD_THEME = {
 }
 
 
+def _load_bgm_manifest(base: Path) -> dict[str, dict]:
+    """Read bgm_manifest.json beside the pool. Never raises.
+
+    Missing / unreadable / malformed / non-dict all degrade to `{}` with a
+    single log line, which means "no manifest, no blacklist" — the same
+    behavior as the unmanifested pool the pipeline had before.
+    """
+    path = base / BGM_MANIFEST_NAME
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        log(f"Story BGM manifest unreadable ({path.name}: {e}); ignoring it.")
+        return {}
+    tracks = raw.get("tracks") if isinstance(raw, dict) else None
+    if not isinstance(tracks, dict):
+        log(f"Story BGM manifest malformed ({path.name}); ignoring it.")
+        return {}
+    return {str(k): v for k, v in tracks.items() if isinstance(v, dict)}
+
+
+def _bgm_blocked(entry: dict | None) -> bool:
+    """True when a track is blacklisted. `claimed` is canonical; `disabled`
+    is an accepted synonym."""
+    if not isinstance(entry, dict):
+        return False
+    return bool(entry.get("claimed") or entry.get("disabled"))
+
+
+def _bgm_provenance(entry: dict | None) -> str:
+    """Provenance suffix for the CI log line, '' when nothing is known."""
+    if not isinstance(entry, dict):
+        return ""
+    bits = [str(entry.get("provider") or "").strip(),
+            str(entry.get("title") or "").strip(),
+            str(entry.get("artist") or "").strip()]
+    bits = [b for b in bits if b]
+    if _bgm_blocked(entry):
+        bits.append("FLAGGED")
+    return f" [{' - '.join(bits)}]" if bits else ""
+
+
+def _choose_bgm(pool: list[Path], base: Path) -> tuple[Path, str, str]:
+    """Manifest-aware pick from one pool (never empty).
+
+    Returns (pick, count_phrase, provenance_suffix). A pool file absent
+    from the manifest is still a candidate (the pool predates the
+    manifest); entries flagged claimed/disabled are dropped; if the
+    manifest would exclude everything the blacklist is ignored with a
+    warning — a bad manifest must never silently mute the bed.
+    """
+    manifest = _load_bgm_manifest(base)
+    eligible = [p for p in pool if not _bgm_blocked(manifest.get(p.name))]
+    if manifest and not eligible:
+        where = base.as_posix() or "."
+        warn(f"Story BGM manifest excluded every track in {where}; ignoring "
+             "the blacklist so the bed keeps playing.")
+        eligible = list(pool)
+    count = (f"{len(eligible)} files" if len(eligible) == len(pool)
+             else f"{len(eligible)} of {len(pool)} files")
+    pick = random.choice(eligible)
+    return pick, count, _bgm_provenance(manifest.get(pick.name))
+
+
 def _pick_bgm(cfg: StoryConfig) -> Path | None:
     """Bed source priority: explicit STORY_BED_PATH file → one random
     match for bgm_glob from cfg.bgm_dir → the same pattern at the repo
@@ -48,7 +119,9 @@ def _pick_bgm(cfg: StoryConfig) -> Path | None:
 
     Pool is sorted then random.choice per video and logged with the file
     name and pool size. Both layouts work, so moving the tracks between
-    them never silences the bed.
+    them never silences the bed. When the pool has a bgm_manifest.json,
+    tracks flagged claimed/disabled are skipped and the picked one is
+    logged with its provider/artist (see _choose_bgm).
     """
     if cfg.bed_path:
         explicit = Path(cfg.bed_path)
@@ -61,16 +134,16 @@ def _pick_bgm(cfg: StoryConfig) -> Path | None:
         if base.is_dir():
             pool = sorted(base.glob(pattern))
             if pool:
-                pick = random.choice(pool)
+                pick, count, prov = _choose_bgm(pool, base)
                 log(f"Story BGM pool: picked {pick.name} "
-                    f"({len(pool)} files) from {base.as_posix() or '.'}.")
+                    f"({count}) from {base.as_posix() or '.'}.{prov}")
                 return pick
     # Legacy layout: pool at the repo root.
     pool = sorted(Path().glob(pattern))
     if pool:
-        pick = random.choice(pool)
-        log(f"Story BGM pool: picked {pick.name} ({len(pool)} files) "
-            "from the repo root.")
+        pick, count, prov = _choose_bgm(pool, Path())
+        log(f"Story BGM pool: picked {pick.name} ({count}) "
+            f"from the repo root.{prov}")
         return pick
     log(f"Story BGM pool: no {pattern} match in "
         f"{getattr(cfg, 'bgm_dir', '') or '.'} or the repo root; "
@@ -100,44 +173,154 @@ def _seg_filter(speed: float) -> str:
     return f"{_cover_filter()},setpts=PTS/{sp:.3f},fps=30,format=yuv420p"
 
 
-def _build_single_clip_track(clip: Path, total: float, speed: float,
-                            workdir: Path) -> tuple[Path, float, float]:
-    """One continuous background take from a local clip.
+def _render_bg_segment(clip: Path, duration: float, speed: float,
+                       out_path: Path, frames: int | None = None) -> float:
+    """Cut `duration` seconds of `clip` into `out_path`; return the start offset.
 
-    Picks a random start offset so repeated use of the same file looks
-    different, cuts exactly `total` seconds of output, and covers the
+    The reusable per-segment renderer: one continuous take from one local
+    clip. Picks a random start offset so repeated use of the same file looks
+    different, cuts exactly `duration` seconds of output, and covers the
     whole span even when the source is shorter than needed (looped input
-    with -stream_loop -1, truncated to the exact length). Returns
-    (track_path, start_offset, speed).
+    with -stream_loop -1, truncated to the exact length).
+
+    `frames` (30fps) is supplied by the segmented path so N segments
+    concatenate to EXACTLY the same length; when it is None the output is
+    cut with -t exactly as the single-take path has always done.
     """
     sp = max(0.2, float(speed))
+    dur = max(0.0, float(duration))
     try:
         src_dur = ffprobe_duration(clip)
     except Exception:
         src_dur = 0.0
-    need = total * sp  # source seconds required at this speed
+    need = dur * sp  # source seconds required at this speed
     if src_dur > need:
         offset = random.uniform(0.0, max(0.0, src_dur - need))
     else:
         # Short source: loop it and keep playing from 0.
         offset = 0.0
-    track = workdir / "bg_single.mp4"
     args = ["ffmpeg", "-y"]
     if src_dur <= need:
         args += ["-stream_loop", "-1"]
-    args += ["-ss", f"{offset:.3f}", "-i", str(clip),
-             "-t", f"{total:.3f}", "-vf", _seg_filter(sp),
+    args += ["-ss", f"{offset:.3f}", "-i", str(clip)]
+    if frames and frames > 0:
+        args += ["-frames:v", str(int(frames))]
+    else:
+        args += ["-t", f"{dur:.3f}"]
+    args += ["-vf", _seg_filter(sp),
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-             "-an", str(track)]
-    run_ffmpeg(args, "bg-single-clip")
-    log(f"Story BG single-clip: {clip.name} @ {sp:.2f}x, start {offset:.1f}s, "
+             "-an", str(out_path)]
+    run_ffmpeg(args, "bg-segment")
+    log(f"Story BG segment: {clip.name} @ {sp:.2f}x, start {offset:.1f}s, "
         f"need {need:.1f}s of {src_dur:.1f}s source"
         f"{' (looped to cover)' if src_dur <= need else ''} "
-        f"-> {total:.1f}s track.")
-    return track, offset, sp
+        f"-> {dur:.1f}s {out_path.name}.")
+    return offset
 
 
-def _mix_filter(total: float, bed_volume: float = 0.12) -> str:
+def _segment_frame_counts(total: float, segments: int,
+                          fps: int = 30) -> tuple[list[int], int]:
+    """Frame counts per segment that sum EXACTLY to round(total*fps).
+
+    Flooring every segment would shorten the track by up to `segments` frames
+    and desync the 2s outro fade in _mix_filter (keyed off `total`), so the
+    remainder is handed out one frame at a time instead.
+    """
+    n = max(1, int(segments or 1))
+    total_frames = max(n, int(round(float(total) * fps)))
+    base, rem = divmod(total_frames, n)
+    return [base + (1 if i < rem else 0) for i in range(n)], total_frames
+
+
+def _concat_segments(paths: list[Path], out_path: Path,
+                     workdir: Path, total: float) -> None:
+    """Stitch rendered segments into one track (stream copy, else re-encode).
+
+    Every segment was encoded with the same _seg_filter params (1080x1920,
+    30fps, yuv420p, cover-crop, same speed) so -c copy is normally exact;
+    the duration is verified anyway and a re-encode is the fallback if the
+    copy path drifts. Runs with cwd=workdir so the list file holds bare
+    relative names (absolute Windows paths need escaping and -safe 1
+    rejects drive letters anyway).
+    """
+    list_path = workdir / "bg_seg_list.txt"
+    list_path.write_text(
+        "".join(f"file '{p.name}'\n" for p in paths), encoding="utf-8")
+    out_abs = str(Path(out_path).resolve())
+    run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "1",
+                "-i", list_path.name, "-c", "copy", out_abs],
+               "bg-concat", cwd=workdir)
+    try:
+        got = ffprobe_duration(out_path)
+    except Exception:
+        got = -1.0
+    if abs(got - float(total)) <= 0.1:
+        return
+    warn(f"Story BG concat: stream-copy gave {got:.2f}s, expected "
+         f"{total:.2f}s; re-encoding instead.")
+    run_ffmpeg(["ffmpeg", "-y", "-f", "concat", "-safe", "1",
+                "-i", list_path.name,
+                "-vf", f"fps=30,format=yuv420p",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-an", out_abs],
+               "bg-concat-reencode", cwd=workdir)
+    got = ffprobe_duration(out_path)
+    log(f"Story BG concat: re-encoded to {got:.2f}s (target {total:.2f}s).")
+
+
+def _build_bg_track(order: list[Path], total: float, speed: float,
+                    segments: int, workdir: Path,
+                    bg_dir: str) -> tuple[Path, list[Path]]:
+    """Render the background track; return (track_path, clips_used).
+
+    segments <= 1 is exactly the historical single continuous take. N >= 2
+    cuts the same total into N segments, each from a DIFFERENT clip in
+    `order` (cycling, so the whole pool is used and wraps), concatenated
+    back into one track. Every segment gets its own random start offset.
+    A failing clip warns and the next in `order` is tried; when EVERY clip
+    fails the run stops hard — there is no other background source.
+    """
+    track = workdir / "bg_track.mp4"
+    n = max(1, int(segments or 1))
+    if n <= 1 or len(order) < 2:
+        for cand in order:
+            try:
+                _render_bg_segment(cand, total, speed, track)
+                return track, [cand]
+            except Exception as e:
+                warn(f"Story BG: local clip {cand.name} failed "
+                     f"({type(e).__name__}: {e}); trying another local clip...")
+        raise RuntimeError(
+            f"Story BG: all {len(order)} local clips in '{bg_dir}' "
+            f"failed to render; no other background source exists.")
+
+    frames, _total_frames = _segment_frame_counts(total, n)
+    seg_paths: list[Path] = []
+    used: list[Path] = []
+    for i, count in enumerate(frames):
+        seg_path = workdir / f"bg_seg_{i:02d}.mp4"
+        start = i % len(order)
+        for k in range(len(order)):
+            cand = order[(start + k) % len(order)]
+            try:
+                _render_bg_segment(cand, count / 30.0, speed, seg_path,
+                                   frames=count)
+                seg_paths.append(seg_path)
+                used.append(cand)
+                break
+            except Exception as e:
+                warn(f"Story BG: local clip {cand.name} failed "
+                     f"({type(e).__name__}: {e}); trying another local clip...")
+        else:
+            raise RuntimeError(
+                f"Story BG: all {len(order)} local clips in '{bg_dir}' "
+                f"failed to render segment {i + 1}/{n}; no other background "
+                f"source exists.")
+    _concat_segments(seg_paths, track, workdir, total)
+    return track, used
+
+
+def _mix_filter(total: float, bed_volume: float = 0.15) -> str:
     """Voice-forward mix chain (inputs: 0=BG video, 1=narration, 2=bed).
 
     Looser ducking (threshold 0.15, ratio 3, release 180) so the bed sits
@@ -233,9 +416,10 @@ def _composite_thumb(card_png_path: Path, bg_track: Path,
                      output_thumb_path: Path, offset: float) -> Path | None:
     """Thumbnail = the real BG frame + the card, at the video's card y.
 
-    `bg_track` is the ALREADY-RENDERED background take (the winning clip
-    from the pool, already cut from its random start offset and already
-    speed-adjusted), NOT the raw source clip. Sourcing the frame from it
+    `bg_track` is the ALREADY-RENDERED background track (the winning clip
+    from the pool — or, with STORY_BG_SEGMENTS on, the first of the
+    concatenated segments — already cut from its random start offset and
+    already speed-adjusted), NOT a raw source clip. Sourcing the frame from
     is what makes the thumbnail match the video: same clip, same offset,
     same speed, and the same full-bleed cover crop via _cover_filter()
     (which _seg_filter also uses for the video path). Reading the raw
@@ -334,7 +518,7 @@ def build_visuals(content: Content, narration: NarrationResult,
     """Render the story Short: BG track + card + burned captions + mix.
 
     no_card skips the card overlay (preview tools); everything else —
-    the single BG take, captions, mix, encode — is the SAME render.
+    the BG track, captions, mix, encode — is the SAME render.
     """
     t_start = time.monotonic()
     workdir = Path(workdir)
@@ -363,41 +547,45 @@ def build_visuals(content: Content, narration: NarrationResult,
     log(f"Stage 1/6 clips: {len(clips)} local BG source(s) in "
         f"{Path(cfg.bg_dir).as_posix()}.")
 
-    # Stage 2: one continuous take from a single local clip (the whole
-    # video is one BG track, never a cut-up). Selection rotates through the
-    # pool by video_number (STORY_BG_SELECT=rotate, default) so consecutive
-    # uploads use consecutive clips; set it to "random" to shuffle instead.
-    # The start offset INSIDE the chosen clip stays random either way, so
-    # the same clip never looks identical on its next turn. A broken clip
-    # warns and the next in the order is tried; when EVERY clip fails the
-    # run stops hard — there is no other background source.
+    # Stage 2: background track from the local pool. Selection rotates
+    # through the pool by video_number (STORY_BG_SELECT=rotate, default) so
+    # consecutive uploads use consecutive clips; set it to "random" to
+    # shuffle instead. The start offset INSIDE each clip stays random either
+    # way, so the same clip never looks identical on its next turn.
+    # STORY_BG_SEGMENTS (default 0 = off) then cuts the same total: 0/1 =
+    # ONE continuous take (historical behavior), N>=2 = N segments, each
+    # from a different clip in that same order (cycling, so the whole pool
+    # is used), concatenated back into a single track. A broken clip warns
+    # and the next in the order is tried; when EVERY clip fails the run
+    # stops hard — there is no other background source.
     speed = float(getattr(cfg, "bg_single_speed", 1.8) or 1.8)
     video_number = int(content.extras.get("video_number") or 0)
     select = str(getattr(cfg, "bg_select", "rotate") or "rotate")
+    segments = max(0, int(getattr(cfg, "bg_segments", 0) or 0))
     order = _bg_order(clips, video_number, select)
     log(f"Stage 2/6 BG pick: video #{video_number} -> {order[0].name} "
         f"({select} over {len(clips)} clips: "
         f"{', '.join(c.name for c in order[:6])}"
         f"{'...' if len(order) > 6 else ''}).")
-    bg_track: Path | None = None
-    bg_source: Path | None = None
-    for cand in order:
-        try:
-            bg_track, _off, _sp = _build_single_clip_track(
-                cand, total, speed, workdir)
-            bg_source = cand  # the clip the video ACTUALLY uses
-            log(f"Stage 2/6 single-clip mode: {bg_track.name} from "
-                f"{cand.name} @ {speed:.2f}x.")
-            break
-        except Exception as e:
-            warn(f"Story BG: local clip {cand.name} failed "
-                 f"({type(e).__name__}: {e}); trying another local clip...")
-    if bg_track is None:
-        raise RuntimeError(
-            f"Story BG: all {len(order)} local clips in '{cfg.bg_dir}' "
-            f"failed to render; no other background source exists.")
+    bg_track, bg_clips = _build_bg_track(order, total, speed, segments,
+                                         workdir, cfg.bg_dir)
+    # The clips actually used ARE the segments actually rendered (one clip
+    # per segment), so len(bg_clips) is the truthful count even when the
+    # pool holds a single clip and segmentation could not be honored.
+    n_segments = len(bg_clips)
+    names = [c.name for c in bg_clips]
+    if segments >= 2 and len(order) < 2:
+        warn(f"Story BG: only {len(order)} local clip available; "
+             f"STORY_BG_SEGMENTS={segments} needs at least 2, so the video "
+             f"keeps one continuous take.")
+    shown = ",".join(names[:12])
+    log(f"Stage 2/6 {'single-clip' if n_segments == 1 else 'segmented'} "
+        f"mode: {bg_track.name} from {n_segments} segment(s) @ "
+        f"{speed:.2f}x: {shown}{'...' if len(names) > 12 else ''}.")
     log(f"Stage 3/6 BG track: {bg_track.name} "
-        f"({ffprobe_duration(bg_track):.1f}s continuous).")
+        f"({ffprobe_duration(bg_track):.1f}s, {n_segments} segment"
+        f"{'s' if n_segments > 1 else ''}: "
+        f"{shown}{'...' if len(names) > 12 else ''}).")
     # No stock footage is embedded, so nothing to attribute or dedup.
     credits: list[str] = []
     used_ids: list[str] = []
@@ -456,7 +644,7 @@ def build_visuals(content: Content, narration: NarrationResult,
     final_preset = "veryfast"
     require_ass_filter()
     # fontsdir must be the real font dir, never workdir (workdir holds
-    # bg_single.mp4/bed.mp3/etc and libass spams "Error opening memory font"
+    # bg_track.mp4/bed.mp3/etc and libass spams "Error opening memory font"
     # for every media file). Ensure the dir exists and always pass it:
     # an empty scan means no spam, and libass still uses fontconfig
     # system fonts (DejaVu on CI).
@@ -467,7 +655,7 @@ def build_visuals(content: Content, narration: NarrationResult,
         pass  # still pass the path: missing dir scans nothing (≠ workdir)
     vf_args, cwd = ass_cwd_args(ass_path, fontsdir=_fonts_dir.resolve())
     subs = vf_args[1]  # "ass=<rel>:fontsdir=<dir>" for filter_complex use
-    mix_fc = _mix_filter(total, getattr(cfg, "bgm_volume", 0.12))
+    mix_fc = _mix_filter(total, getattr(cfg, "bgm_volume", 0.15))
     out_mp4 = workdir / "short.mp4"
     # ffmpeg runs with cwd=workdir (for the cwd-relative ASS filter), so
     # every -i input and the output must be absolute; repo-relative
@@ -518,16 +706,21 @@ def build_visuals(content: Content, narration: NarrationResult,
         f"preset {final_preset}).")
     if size_mb >= 100:
         warn(f"Story video {size_mb:.1f} MB >= 100 MB budget.")
-    # One continuous BG take: there are no segments to report.
-    extras = {"segments": 1, "card_dur": card_dur,
+    # Real segment count: 1 for the single continuous take, STORY_BG_SEGMENTS
+    # when the timeline is cut up. Machine-readable proof in out/*.json.
+    extras = {"segments": n_segments, "bg_clips": names,
+              "card_dur": card_dur,
               "card_end": card_end, "genre": genre,
               "size_mb": round(size_mb, 1)}
     # Thumbnail: card over a frame of the SAME rendered BG track the video
     # uses (same clip, random start offset, speed and cover crop already
-    # baked in), so the composite matches the video's background. Falls
-    # back to a frame of the final mp4. Both paths are warn-only.
+    # baked in), so the composite matches the video's background. With
+    # segmentation on, STORY_THUMB_OFFSET_SECONDS lands in the FIRST
+    # segment (the default 1.0s is inside it) — always a freshly rendered
+    # frame, never a stale one. Falls back to a frame of the final mp4.
+    # Both paths are warn-only.
     log(f"Stage 6/6 thumb source: bg_track {bg_track.name} from "
-        f"{bg_source.name if bg_source else bg_track.name}.")
+        f"{', '.join(names) if names else bg_track.name}.")
     thumb = _composite_thumb(workdir / "card.png", bg_track,
                              workdir / "thumb.jpg",
                              _thumb_offset(cfg, card_dur))

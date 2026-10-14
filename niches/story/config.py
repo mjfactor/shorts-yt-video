@@ -103,7 +103,7 @@ class StoryConfig(NicheConfig):
     # Clip source: the only background footage source is this folder.
     # An empty folder is a hard render failure, never a silent fallback.
     bg_dir: str = "assets/backgrounds"
-    # Playback speed for the single continuous local take (default 1.8x,
+    # Playback speed for the local background take(s) (default 1.8x,
     # a mild nudge that keeps the footage moving without over-speding it).
     bg_single_speed: float = 1.8
     # Which clip each video starts on: "rotate" (default) walks the pool in
@@ -111,6 +111,13 @@ class StoryConfig(NicheConfig):
     # consecutive clips and wrap around; "random" shuffles instead. The
     # start offset INSIDE the clip is random either way.
     bg_select: str = "rotate"
+    # How many visual segments the timeline is cut into (0 or 1 = today's
+    # behavior: ONE continuous take for the whole video). N >= 2 splits the
+    # same total into N segments, each rendered from a DIFFERENT pool clip
+    # (the rotate/shuffle order, cycling), each with its own random start
+    # offset, concatenated back into a single track. Default 0 = off until
+    # there is a retention baseline.
+    bg_segments: int = 0
     # Narrator gender: auto infers clear first-person cues, then falls back
     # to the UTC half-day rotation (female before 12:00 UTC, male after);
     # male/female force one voice.
@@ -124,9 +131,11 @@ class StoryConfig(NicheConfig):
     # falls back to the repo root when this folder is missing.
     bgm_dir: str = "assets/background-musics"
     # BGM bed level in the final render mix (linear pre-duck gain;
-    # 0.44 is ~+2dB over 0.34 and ~+11dB over the old 0.12; narration is
-    # mixed at full untouched volume, so voice clarity never degrades).
-    bgm_volume: float = 0.20
+    # 0.15 is ~-2.5 dB under the old 0.20 and ~-8 dB under the old 0.34;
+    # narration is mixed at full untouched volume, so voice clarity never
+    # degrades). Keep this, the env_float default below, and the
+    # getattr/_mix_filter fallbacks in visuals.py on the same number.
+    bgm_volume: float = 0.15
     story_genres: tuple[str, ...] = DEFAULT_GENRES
     # Word-timing model for the FINAL mix only.
     whisper_model: str = "base"
@@ -257,6 +266,7 @@ class StoryConfig(NicheConfig):
                                                "STORY_")),
             bg_select=(env_str("BG_SELECT", "rotate", "STORY_").strip().lower()
                        or "rotate"),
+            bg_segments=max(0, env_int("BG_SEGMENTS", 0, "STORY_")),
             narrator_gender_mode=(env_str("NARRATOR_GENDER_MODE", "auto",
                                           "STORY_").strip().lower()
                                   or "auto"),
@@ -264,7 +274,7 @@ class StoryConfig(NicheConfig):
             bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_") or "bgm*.mp3",
             bgm_dir=env_str("BGM_DIR", "assets/background-musics",
                             "STORY_") or "assets/background-musics",
-            bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.20, "STORY_")),
+            bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.15, "STORY_")),
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),
             whisper_model=env_str("WHISPER_MODEL", "base", "STORY_") or "base",
             history_wps=env_float("HISTORY_WPS", 2.9, "STORY_"),
