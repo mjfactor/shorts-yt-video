@@ -275,10 +275,20 @@ def history_block(history: list[dict], prompt_n: int) -> str:
     return AVOID_INTRO + "\n".join(format_history_line(h) for h in recent) + "\n" + AVOID_OUTRO
 
 
-def measure_wps(history: list[dict], default: float = 2.9) -> float:
-    """Speech rate from history entries carrying words+duration, else default."""
+def measure_wps(history: list[dict], default: float = 3.5) -> float:
+    """End-to-end speech rate (words/sec) from history entries carrying both
+    `words` and `duration`, else `default` (STORY_HISTORY_WPS).
+
+    Entries missing either key (everything written before core recorded
+    them) or carrying junk are skipped silently — never raises. The
+    returned value is the rate of FINISHED videos, so it already includes
+    the edge voice rate and the length overshoot; effective_wps must not
+    re-apply either. Clamped 2.5-5.5 (real edge runs sit ~4.5-5.0).
+    """
     rates = []
     for h in (history or [])[-30:]:
+        if not isinstance(h, dict):
+            continue
         try:
             w = float(h.get("words", 0))
             d = float(h.get("duration", 0))
@@ -290,7 +300,7 @@ def measure_wps(history: list[dict], default: float = 2.9) -> float:
         return default
     rates.sort()
     mid = rates[len(rates) // 2]
-    return min(4.2, max(2.2, mid))
+    return min(5.5, max(2.5, mid))
 
 
 def parse_edge_rate_pct(rate: str | None) -> float:
@@ -302,31 +312,49 @@ def parse_edge_rate_pct(rate: str | None) -> float:
     return -val if m.group(1) == "-" else val
 
 
-def effective_wps(cfg: StoryConfig, wps: float) -> float:
-    """Edge-aware speech rate: history wps scaled by STORY_EDGE_RATE,
-    clamped to 2.2-4.2 wps, then multiplied by STORY_LENGTH_OVERSHOOT
-    (clamped 1.0-1.20) so drafts aim mid-range, not the bare floor."""
+def effective_wps(cfg: StoryConfig, wps: float | None) -> float:
+    """Speech rate used to size the word budget, clamped to 2.5-5.5 wps.
+
+    Two branches, and the distinction matters:
+
+    * `wps` supplied (it came from measure_wps over history entries that
+      carry words+duration) is an END-TO-END rate measured off finished
+      videos, so the edge relative rate and the length overshoot are
+      already baked into it. It is used as-is: no edge multiplier, no
+      overshoot. Re-applying them double-counted and made drafts
+      overshoot the length ceiling by ~30%.
+    * `wps` falsy (nothing measurable in history yet) falls back to
+      STORY_HISTORY_WPS, which is an ASSUMED rate, so today's shape is
+      kept: STORY_EDGE_RATE (+20% / +28% female) then
+      STORY_LENGTH_OVERSHOOT (clamped 1.0-1.20).
+    """
     try:
         base = float(wps) if wps else float(cfg.history_wps)
     except (TypeError, ValueError):
         base = float(cfg.history_wps)
+    try:
+        over = float(getattr(cfg, "length_overshoot", 1.12))
+    except (TypeError, ValueError):
+        over = 1.12
+    over = min(1.20, max(1.0, over))
+    if wps:
+        return min(5.5, max(2.5, base))
     edge_pct = parse_edge_rate_pct(getattr(cfg, "edge_rate", "+20%"))
     scaled = base * (1.0 + edge_pct / 100.0)
-    scaled = min(4.2, max(2.2, scaled))
-    try:
-        over = float(getattr(cfg, "length_overshoot", 1.08))
-    except (TypeError, ValueError):
-        over = 1.08
-    over = min(1.20, max(1.0, over))
-    return scaled * over
+    return min(5.5, max(2.5, scaled)) * over
 
 
-def target_words(cfg: StoryConfig, wps: float) -> tuple[int, int]:
-    """(lo, hi) word budget from TARGET_MIN/MAX * edge-aware effective wps.
+def target_words(cfg: StoryConfig, wps: float | None) -> tuple[int, int]:
+    """(lo, hi) word budget from TARGET_MIN/MAX * effective wps.
 
-    At 100-120s, history 2.9 wps, edge +20% and 1.08 overshoot this is
-    roughly 390-490 words (mid ~440w), matching the 3.5-3.8 wps edge
-    reality with headroom instead of the old 290-348w short floor.
+    Two shapes depending on whether `wps` is measured (see effective_wps):
+
+    * calibrated (`wps` from measure_wps, real edge rate ~4.795 wps for
+      finished videos): budget 480-575 words -> 100.1-119.9s.
+    * uncalibrated (no history words/duration yet, HISTORY_WPS 3.5 with
+      edge +20% -> 4.2, overshoot 1.12 -> 4.704): 470-564 words ->
+      98.0-117.6s at the same real rate, i.e. still inside the fit loop's
+      target_min-5 .. target_max+5 band.
     """
     eff = effective_wps(cfg, wps)
     return (max(60, round(cfg.target_min * eff)),
@@ -394,7 +422,7 @@ def _is_near_miss(n: int, lo: int, hi: int, tol: int = 15) -> bool:
 
 
 def validate_extra(data: dict, cfg: StoryConfig | None = None,
-                   wps: float = 2.9, *, micro_accept: bool = False) -> dict:
+                   wps: float = 3.5, *, micro_accept: bool = False) -> dict:
     """Strict-check the story payload. Raises ValueError when unusable.
 
     `micro_accept=True` widens the word-count gate: the ceiling keeps the
@@ -1334,6 +1362,6 @@ def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
 def sample_content() -> Content:
     """Offline sample (first fallback variant) for demos/tests."""
     meta, slots = _build_fallback_meta(_FALLBACK_VARIANTS[0])
-    out = _to_content(meta, slots, wps=2.9)
+    out = _to_content(meta, slots, wps=3.5)
     out.extras["offline"] = True
     return out

@@ -924,6 +924,16 @@ def run(niche) -> dict:
                        or slots.get("narrator_gender", "")).strip()
         if narrator:
             entry["narratorGender"] = narrator
+        # Speech-rate calibration feed: story's measure_wps() reads these
+        # two numbers and nothing else, so without them the word budget
+        # stays on the uncalibrated HISTORY_WPS assumption. Final narration
+        # result, i.e. after the duration-fit re-speed/trim loop.
+        if narration is not None:
+            try:
+                entry["words"] = int(narration.words)
+                entry["duration"] = round(float(narration.duration), 2)
+            except (AttributeError, TypeError, ValueError):
+                pass
         save_history(entry)
         log("Done.")
         return {"mp4": out_mp4, "srt": out_srt, "metadata": out_json,

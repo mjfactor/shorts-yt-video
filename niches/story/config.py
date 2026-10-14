@@ -139,11 +139,17 @@ class StoryConfig(NicheConfig):
     story_genres: tuple[str, ...] = DEFAULT_GENRES
     # Word-timing model for the FINAL mix only.
     whisper_model: str = "base"
-    # Measured speech rate (words/sec); history-calibrated at runtime.
-    history_wps: float = 2.9
-    # Length overshoot multiplier on the edge-aware word budget: the edge
-    # TTS path runs faster than history wps implies, so aim above the bare
-    # seconds*wps floor (default 1.08 targets mid-range, not the floor).
+    # Measured speech rate (words/sec); history-calibrated at runtime from
+    # the `words`/`duration` core now records per entry. 3.5 is the
+    # UNCALIBRATED fallback (no measured entries yet): edge +20% and the
+    # 1.12 overshoot lift it to ~4.70, close to the real ~4.79 end-to-end
+    # rate. Only this default is an assumption — a measured rate is used
+    # as-is (see content.effective_wps).
+    history_wps: float = 3.5
+    # Length overshoot multiplier on the ASSUMED word budget: the edge TTS
+    # path runs faster than an uncalibrated HISTORY_WPS implies, so aim
+    # above the bare seconds*wps floor (targets mid-range, not the floor).
+    # Does NOT apply to a history-measured rate — that already includes it.
     length_overshoot: float = 1.12
     # Caption style (burned word-pop on 1080x1920; 132 = +10% net after
     # 144 read slightly big; STORY_ASS_FONTSIZE overrides).
@@ -277,9 +283,9 @@ class StoryConfig(NicheConfig):
             bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.15, "STORY_")),
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),
             whisper_model=env_str("WHISPER_MODEL", "base", "STORY_") or "base",
-            history_wps=env_float("HISTORY_WPS", 2.9, "STORY_"),
+            history_wps=env_float("HISTORY_WPS", 3.5, "STORY_"),
             length_overshoot=min(1.20, max(1.0, env_float(
-                "LENGTH_OVERSHOOT", 1.08, "STORY_"))),
+                "LENGTH_OVERSHOOT", 1.12, "STORY_"))),
             timeout=env_int("TIMEOUT", 40, "STORY_"),
             tts_timeout=env_int("TTS_TIMEOUT", 90, "STORY_"),
             tries=env_int("TRIES", 2, "STORY_"),
