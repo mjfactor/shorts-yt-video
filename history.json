@@ -1602,6 +1602,37 @@
       "topic": "money",
       "topic_source": "genre-rotation",
       "narratorGender": "female"
+    },
+    {
+      "date": "2026-10-14_042716",
+      "title": "My best friend stole my cat's surgery fund 🐱💸 #shorts",
+      "niche": "story",
+      "tags": [
+        "friendship",
+        "betrayal",
+        "money",
+        "cat",
+        "drama"
+      ],
+      "videoId": "b8UdN7sdEns",
+      "tiktokBufferPostId": null,
+      "used_ids": [],
+      "narration": "My best friend stole my cat's surgery fund. My cat, Luna, needed an emergency procedure last month because she swallowed a hair tie. The vet estimated the cost at two thousand dollars. I did not have ",
+      "premise": "My best friend stole my cat's surgery fund. My cat, Luna, needed an emergency procedure last month because she swallowed a hair tie. The vet estimated the cost at two thousand dollars. I did not have ",
+      "key_words": [
+        "friend",
+        "cat",
+        "theft",
+        "money",
+        "betrayal",
+        "police"
+      ],
+      "skeleton": "",
+      "topic": "friendship",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female",
+      "words": 336,
+      "duration": 71.06
     }
   ]
 }
