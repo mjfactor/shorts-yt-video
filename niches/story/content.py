@@ -19,12 +19,12 @@ from niches.base import Content
 from .config import (DEFAULT_GENRES, DEFAULT_TEXT_MODELS, MODE,
                      StoryConfig)
 
-AVOID_INTRO = "Already-aired stories — do NOT reuse these titles or premises:\n"
+AVOID_INTRO = "Already-aired stories â€” do NOT reuse these titles or premises:\n"
 AVOID_OUTRO = "Your story must have a DIFFERENT premise from every entry above. "
 
 _TTS_BAD_RE = re.compile(r"[*#_`|~@^<>{}\[\]\\]")
 _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]")
-# Stage-direction leak guard: rehooks are metadata pointers, never spoken —
+# Stage-direction leak guard: rehooks are metadata pointers, never spoken â€”
 # the model must never voice labels like "Rehook line:" inside the story.
 _REHOOK_LITERAL_RE = re.compile(r"re[\s-]*hook", re.IGNORECASE)
 # Markers of copied Reddit material (never air these).
@@ -41,11 +41,11 @@ _UNSAFE_RE = re.compile(
 # actually it worked" is not caught.
 _MARKER = (r"(?:i mean|so yeah|well|honestly|basically|anyway|actually)")
 _STACKED_MARKER_RE = re.compile(
-    r"(?:^|(?<=[.!?…])\s|(?<=,)\s)" + _MARKER + r"\s*,?\s*" + _MARKER + r"\b",
+    r"(?:^|(?<=[.!?â€¦])\s|(?<=,)\s)" + _MARKER + r"\s*,?\s*" + _MARKER + r"\b",
     re.IGNORECASE)
 # Cinematic reaction lines. These are the recurring stock phrases that show up
 # in aired stories and make the narration read as a film scene instead of a
-# real memory — viewers call them out as fabricated. The REALISM section of
+# real memory â€” viewers call them out as fabricated. The REALISM section of
 # the Gemini prompt steers the model away from them; this gate enforces it.
 _CLICHE_RE = re.compile(
     r"worth every (single )?(penny|cent|dollar)"
@@ -123,7 +123,7 @@ def _gender_bucket(now: datetime | None = None) -> int:
     """UTC half-day bucket: (days since epoch) * 2 + (0 if hour < 12 else 1).
 
     Advances on its own, so the 10:00 and 22:00 UTC scheduled runs can
-    never land in the same bucket. Pure clock math — no history, no I/O.
+    never land in the same bucket. Pure clock math â€” no history, no I/O.
     """
     t = now or datetime.now(timezone.utc)
     if t.tzinfo is not None:
@@ -132,7 +132,7 @@ def _gender_bucket(now: datetime | None = None) -> int:
         + (0 if t.hour < 12 else 1)
 
 
-# First-person narrator cues ONLY — never side characters ("my sister",
+# First-person narrator cues ONLY â€” never side characters ("my sister",
 # "my mother") and never bare props ("engagement ring"). The model decides
 # everything probabilistic; these regexes are the hard override.
 _FEMALE_NARRATOR_CUES = (
@@ -256,7 +256,7 @@ def history_dedup_payload(title: str, narration: str,
     `narration` key is kept (holding the excerpt, not the script) so anything
     still reading it keeps working.
 
-    Existing entries are NEVER rewritten — the file shrinks on its own as
+    Existing entries are NEVER rewritten â€” the file shrinks on its own as
     HISTORY_KEEP rolls old full-narration entries out of the flat cap.
     """
     excerpt = _premise_excerpt(narration)
@@ -275,15 +275,23 @@ def history_block(history: list[dict], prompt_n: int) -> str:
     return AVOID_INTRO + "\n".join(format_history_line(h) for h in recent) + "\n" + AVOID_OUTRO
 
 
-def measure_wps(history: list[dict], default: float = 3.5) -> float:
+def measure_wps(history: list[dict]) -> float | None:
     """End-to-end speech rate (words/sec) from history entries carrying both
-    `words` and `duration`, else `default` (STORY_HISTORY_WPS).
+    `words` and `duration`, or **None** when history has nothing measurable.
+
+    **None is load-bearing, not a fallback.** `effective_wps` treats a
+    truthy `wps` as MEASURED (used as-is, no multipliers) and a falsy one as
+    ASSUMED (applies EDGE_RATE then LENGTH_OVERSHOOT off
+    `cfg.history_wps`). Returning the STORY_HISTORY_WPS default from here
+    made an uncalibrated install look calibrated, so the assumed branch was
+    unreachable and every draft was budgeted at 3.5 wps â€” well under the
+    real ~4.8, producing 71s videos instead of 100-120s.
 
     Entries missing either key (everything written before core recorded
-    them) or carrying junk are skipped silently — never raises. The
-    returned value is the rate of FINISHED videos, so it already includes
-    the edge voice rate and the length overshoot; effective_wps must not
-    re-apply either. Clamped 2.5-5.5 (real edge runs sit ~4.5-5.0).
+    them) or carrying junk are skipped silently â€” never raises. A returned
+    value is the rate of FINISHED videos, so it already includes the edge
+    voice rate and the length overshoot; effective_wps must not re-apply
+    either. Clamped 2.5-5.5 (real edge runs sit ~4.5-5.5).
     """
     rates = []
     for h in (history or [])[-30:]:
@@ -297,7 +305,7 @@ def measure_wps(history: list[dict], default: float = 3.5) -> float:
         except (TypeError, ValueError):
             continue
     if not rates:
-        return default
+        return None
     rates.sort()
     mid = rates[len(rates) // 2]
     return min(5.5, max(2.5, mid))
@@ -349,12 +357,15 @@ def target_words(cfg: StoryConfig, wps: float | None) -> tuple[int, int]:
 
     Two shapes depending on whether `wps` is measured (see effective_wps):
 
-    * calibrated (`wps` from measure_wps, real edge rate ~4.795 wps for
-      finished videos): budget 480-575 words -> 100.1-119.9s.
-    * uncalibrated (no history words/duration yet, HISTORY_WPS 3.5 with
-      edge +20% -> 4.2, overshoot 1.12 -> 4.704): 470-564 words ->
-      98.0-117.6s at the same real rate, i.e. still inside the fit loop's
-      target_min-5 .. target_max+5 band.
+    * calibrated (`wps` a real measurement, ~4.7 wps off finished videos):
+      ~470-564 words -> ~99-119s.
+    * uncalibrated (`measure_wps` returned None, HISTORY_WPS 3.5 with edge
+      +20% -> 4.2, overshoot 1.12 -> 4.704): 470-564 words -> ~99-119s too.
+
+    Both land in band. The two paths used to disagree because measure_wps
+    returned its 3.5 default instead of None, so the uncalibrated branch
+    never ran and every draft was budgeted at 3.5 wps (~350-420 words ->
+    71-78s videos).
     """
     eff = effective_wps(cfg, wps)
     return (max(60, round(cfg.target_min * eff)),
@@ -370,7 +381,7 @@ def _str_list(v: object) -> list[str]:
 
 def _check_sentences(story: str) -> str | None:
     """Longest-sentence gate (<=30 words); returns reason or None."""
-    for sent in re.split(r"[.!?…]+", story):
+    for sent in re.split(r"[.!?â€¦]+", story):
         if len(sent.split()) > MAX_SENTENCE_WORDS:
             return (f"sentence over {MAX_SENTENCE_WORDS} words: "
                     f"'{sent.strip()[:60]}...'")
@@ -379,8 +390,8 @@ def _check_sentences(story: str) -> str | None:
 
 def _norm_card_words(s: str) -> list[str]:
     """Lowercased words, punctuation stripped, for card-line matching."""
-    return [w.strip(".,!?\"'…").lower() for w in s.split()
-            if w.strip(".,!?\"'…")]
+    return [w.strip(".,!?\"'â€¦").lower() for w in s.split()
+            if w.strip(".,!?\"'â€¦")]
 
 
 def _starts_with_card(story: str, card_text: str) -> bool:
@@ -388,7 +399,7 @@ def _starts_with_card(story: str, card_text: str) -> bool:
     trailing punctuation ignored). Empty card_text always matches."""
     if not _norm_card_words(card_text):
         return True
-    first = re.split(r"[.!?…]+", story.strip(), maxsplit=1)[0]
+    first = re.split(r"[.!?â€¦]+", story.strip(), maxsplit=1)[0]
     return _norm_card_words(first) == _norm_card_words(card_text)
 
 
@@ -409,7 +420,7 @@ def _micro_margin(lo: int, hi: int) -> int:
 
 def _is_near_miss(n: int, lo: int, hi: int, tol: int = 15) -> bool:
     """True when n sits just outside the strict [lo-tol, hi+tol] window
-    but inside the micro margin — accept without a retry call.
+    but inside the micro margin â€” accept without a retry call.
 
     The floor side uses the under-floor grace band (up to
     _MICRO_FLOOR_WORDS under); the ceiling side keeps the micro margin.
@@ -422,7 +433,7 @@ def _is_near_miss(n: int, lo: int, hi: int, tol: int = 15) -> bool:
 
 
 def validate_extra(data: dict, cfg: StoryConfig | None = None,
-                   wps: float = 3.5, *, micro_accept: bool = False) -> dict:
+                   wps: float | None = None, *, micro_accept: bool = False) -> dict:
     """Strict-check the story payload. Raises ValueError when unusable.
 
     `micro_accept=True` widens the word-count gate: the ceiling keeps the
@@ -454,7 +465,7 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
         raise ValueError(f"'story_text' out of range ({words} words, need {lo - 15 if cfg is not None else lo}-{hi + 15 if cfg is not None else hi})")
     if cfg is not None and micro_accept and words < lo - 15:
         warn(f"'story_text' {words} words is under the {lo - 15}-word floor "
-             f"(grace to {lo - 15 - _MICRO_FLOOR_WORDS}) — airing with "
+             f"(grace to {lo - 15 - _MICRO_FLOOR_WORDS}) â€” airing with "
              f"warning; narration runs a few seconds short.")
     for field in ("story_text", "hook"):
         text = story if field == "story_text" else str(data.get(field, "") or "")
@@ -472,14 +483,14 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
     cliche = _CLICHE_RE.search(story)
     if cliche:
         raise ValueError(f"cliche reaction line {cliche.group()!r} in story "
-                         "— use concrete behavior instead")
+                         "â€” use concrete behavior instead")
     long_sent = _check_sentences(story)
     if long_sent:
         raise ValueError(long_sent)
     stacked = _STACKED_MARKER_RE.search(story)
     if stacked:
         raise ValueError(
-            f"stacked discourse marker {stacked.group().strip()!r} in story — "
+            f"stacked discourse marker {stacked.group().strip()!r} in story â€” "
             "one marker per sentence; 'I mean' must rephrase, not prefix")
     hook = str(data.get("hook", "") or "").strip()
     if hook and not story.startswith(hook[:20]):
@@ -565,7 +576,7 @@ def sanitize_title(title: str, slots: dict | None = None) -> str:
     """
     t = re.sub(r"\s+", " ", (title or "")).strip()
     t = re.sub(r"#\S+", "", t).strip()
-    t = re.sub(r"\s*[–—\-:|;,.]+\s*$", "", t).strip()
+    t = re.sub(r"\s*[â€“â€”\-:|;,.]+\s*$", "", t).strip()
     if len(t) > 100:
         cut = t[:100].rsplit(" ", 1)[0] or t[:100]
         t = cut.strip()
@@ -610,7 +621,7 @@ def _entry_skeleton(h: dict) -> str | None:
     Prefers the `skeleton` value stored at write time, else derives it from
     the entry's premise. Deriving from the excerpt is equivalent to deriving
     from the full script because _skeleton_key only reads the first
-    SKELETON_HEAD_CHARS chars, which the excerpt preserves verbatim — so old
+    SKELETON_HEAD_CHARS chars, which the excerpt preserves verbatim â€” so old
     full-narration entries and new trimmed ones classify identically.
     """
     stored = str(h.get("skeleton") or "").strip()
@@ -709,13 +720,13 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         f"Write a YouTube Shorts reddit-style story in the '{genre}' lane.\n\n"
         "This is ONE original, self-contained micro-story told in first or "
         "second person, the kind of tale that goes viral on story channels. "
-        "It must be 100 percent original — never copy or retell a real Reddit "
+        "It must be 100 percent original â€” never copy or retell a real Reddit "
         "post, and never use real people, brands, or defamatory places.\n\n"
         "TONE & VOICE (NATURAL STORYTELLING):\n"
-        "Tell this story the way a real person would tell it to a friend over coffee—"
+        "Tell this story the way a real person would tell it to a friend over coffeeâ€”"
         "natural, unfiltered, emotional. Use everyday language with the occasional "
         "filler word ('um', 'honestly', 'so yeah', 'basically'), but at most ONE "
-        "per sentence and never two in a row — 'I mean, honestly' is wrong and "
+        "per sentence and never two in a row â€” 'I mean, honestly' is wrong and "
         "reads as a subtitle error. 'I mean' must actually restart or rephrase "
         "what you just said, never sit as a bare prefix; 'honestly' may open a "
         "sentence on its own. "
@@ -726,7 +737,7 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "avoid theatrical phrases like 'little did I know', 'catastrophic failure', "
         "'under the false guise', or 'panic swept the room'. Real people say 'I had "
         "no idea', 'total disaster', 'they lied', 'everyone freaked out'. Keep it "
-        "concrete and physical—real objects, real actions, real consequences.\n\n"
+        "concrete and physicalâ€”real objects, real actions, real consequences.\n\n"
         "GROUNDED & BELIEVABLE (audiences are skeptical):\n"
         "These stories are told in first person like real memories, so every "
         "detail must survive a skeptical viewer. Write like someone recounting "
@@ -738,7 +749,7 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "- No cinematic reaction lines. Never write 'worth every penny', 'looked "
         "me dead in the eye', 'my blood went cold', 'like nothing had happened', "
         "'priceless', 'chill down my spine', 'the world tilted', or anything "
-        "close — the validator rejects these. Show the reaction through what "
+        "close â€” the validator rejects these. Show the reaction through what "
         "people DO (someone stops talking, puts a cup down, changes the "
         "subject) instead of narrated interior drama.\n"
         "- Keep the mechanism plausible: the narrator is an ordinary person "
@@ -751,16 +762,16 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "Let one detail stay unresolved or slightly uncertain. Do not wrap up "
         "every thread neatly.\n"
         "- Concrete over cinematic: real numbers ('forty-two dollars', 'two "
-        "years'), real objects, real time stamps, real small annoyances — not "
+        "years'), real objects, real time stamps, real small annoyances â€” not "
         "weather, lighting, or camera language.\n"
         "- Keep it in the past tense with the narrator's own limited knowledge: "
         "they only know what they personally saw, heard, or were told. They may "
         "be wrong about the cause.\n\n"
-        f"LENGTH MATH — HARD REQUIREMENT (validator REJECTS short scripts):\n"
+        f"LENGTH MATH â€” HARD REQUIREMENT (validator REJECTS short scripts):\n"
         f"TOTAL {lo}-{hi} words, aim {mid} words (never the floor). "
         f"At ~{eff:.1f} wps, {lo} words ~= {lo_secs}s and {hi} words ~= "
         f"{hi_secs}s for the {secs}s target. Under {lo} words is "
-        f"under-length and REJECTED — count every word before answering "
+        f"under-length and REJECTED â€” count every word before answering "
         f"and deliver the FULL {mid}-word count, never a short draft. "
         f"Under {lo - 15 - _MICRO_FLOOR_WORDS} words is unusable even on "
         f"grace.\n\n"
@@ -772,7 +783,7 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         f"Story flow (natural human pacing, {lo}-{hi} words total, about {secs} seconds):\n"
         "Start with a hook that drops you into the tension ('My landlord kept my "
         "deposit over a single nail hole'). Then tell the story the way it actually "
-        "unfolded—setup, escalation, your response, and the outcome. Don't think "
+        "unfoldedâ€”setup, escalation, your response, and the outcome. Don't think "
         "in rigid beats or formulas. Think: What happened? How did I feel? What did "
         "I do next? What happened then?\n\n"
         "Natural story rhythm:\n"
@@ -783,13 +794,13 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "- The confrontation: where it all comes to a head\n"
         "- The outcome: justice, revenge, consequences, or a cliffhanger\n\n"
         "Build natural turning points around 20-30s, 50-60s, and 80-90s where the "
-        "story shifts—but don't telegraph them. Just let the story naturally escalate. "
+        "story shiftsâ€”but don't telegraph them. Just let the story naturally escalate. "
         "These should feel like 'wait, WHAT?' moments, not labeled plot points.\n\n"
         "Ending must deliver: either satisfying payoff (clear consequences, real justice) "
         "or a genuine cliffhanger that demands part 2. Set ending_type to 'payoff' or "
         "'cliffhanger'. Only cliffhangers get part_2_seed (one sentence teasing what "
         "happens next).\n\n"
-        "Hook examples (voice reference only—never copy, always invent fresh): "
+        "Hook examples (voice reference onlyâ€”never copy, always invent fresh): "
         "'My landlord kept my deposit over a nail hole.' 'My roommate ate my "
         "leftovers one too many times.' 'The hallway light flickered at 3 AM.'\n\n"
         "story_text and narration must be IDENTICAL: the full spoken story, "
@@ -797,8 +808,8 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         f"genre must echo '{genre}'. "
         f"narrator_gender is whatever the narrator of THIS story is: decide "
         f"it from the story's own first-person context and write the narration "
-        f"to match. First inspect the narrator's own cues — 'my husband', 'my "
-        f"wife', 'my fiancee', 'I was pregnant', 'as a woman', 'as a man' — and "
+        f"to match. First inspect the narrator's own cues â€” 'my husband', 'my "
+        f"wife', 'my fiancee', 'I was pregnant', 'as a woman', 'as a man' â€” and "
         f"set narrator_gender to the one the narrator IS. Pick the gender the "
         f"story fits best when the cues are softer, and never let a side "
         f"character's gender decide it ('my sister', 'my boss') and never "
@@ -807,23 +818,23 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         f"scheduled UTC default \"{gender}\". "
         "key_words: 4-8 lowercase content words (people, places, objects, "
         "moods) for dedup and visuals.\n\n"
-        "rehooks: metadata ONLY, never spoken — exactly 3 objects "
+        "rehooks: metadata ONLY, never spoken â€” exactly 3 objects "
         "{\"at\": \"20-30s\" | \"50-60s\" | "
         "\"80-90s\", \"line\": <exact story line>}. Each line must be a plain "
         "in-world sentence already appearing verbatim in the story. NEVER write "
         "the words 'rehook', 're-hook', or 'stage direction', and never use labels "
-        "like 'Rehook line:', anywhere in story_text/narration/beats/hook — the "
+        "like 'Rehook line:', anywhere in story_text/narration/beats/hook â€” the "
         "narrator speaks every word, so any label would be voiced aloud. "
         "Re-hooks must be natural in-story narrative turns "
         "invented uniquely for your story (never copy example text). "
         "NEVER break the fourth wall with viewer survey questions like 'Do you think I am wrong?' or "
         "'Am I the jerk?'. Keep the listener fully inside the story.\n\n"
-        "TTS rules (strict): Keep sentences under 30 words—break longer ones into two. "
+        "TTS rules (strict): Keep sentences under 30 wordsâ€”break longer ones into two. "
         "Vary your rhythm naturally: some sentences flow longer (15-20 words), others "
         "punch short (3-8 words). Example: 'He stared at me. Nobody said anything. "
-        "Then I pulled out the email.' Plain text only—no emojis, no markdown "
+        "Then I pulled out the email.' Plain text onlyâ€”no emojis, no markdown "
         "(*, #, _, `, |, ~, @, ^, < >). Write numbers as words ('three AM', 'twenty "
-        "bucks'). Skip dialogue tags ('he said')—just describe what happened.\n\n"
+        "bucks'). Skip dialogue tags ('he said')â€”just describe what happened.\n\n"
         "Safety (strict): no graphic sexual content, no violence against "
         "minors, no hate toward any group, nothing age-restricted or "
         "demonetization-bait. Everyday conflict, petty revenge, workplace "
@@ -837,11 +848,11 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "{\"text\": <exact story chunk>}. The beat texts "
         "joined with single spaces must equal narration EXACTLY.\n\n"
         f"Beat structure (divide story into 3-5 natural chunks, totalling {lo}-{hi} words):\n"
-        "Split the story where visual scenes naturally change—not by formula, but by "
+        "Split the story where visual scenes naturally changeâ€”not by formula, but by "
         "what's actually happening. Aim for roughly "
-        f"{mid // 5} words per beat on average, but let the story breathe—some beats "
+        f"{mid // 5} words per beat on average, but let the story breatheâ€”some beats "
         "can be 70 words, others 100+. The final beat must deliver a real ending "
-        "(60+ words minimum)—never rush it with 'and that was that' or 'follow for "
+        "(60+ words minimum)â€”never rush it with 'and that was that' or 'follow for "
         "part 2' without payoff.\n\n"
         "Do not include markdown, notes, or any extra keys. Output only the "
         "JSON object."
@@ -864,7 +875,7 @@ def _draft_word_count(raw: object) -> int | None:
     return len(draft.split())
 
 
-def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
+def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float | None,
                        raw: object, err: Exception) -> tuple[str, dict]:
     """Same-model length retry prompt with the measured word delta.
 
@@ -889,7 +900,7 @@ def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
         total = per_beat * 3
         s_word = "sentence" if per_beat == 1 else "sentences"
         header = (
-            f"CORRECTION — your draft is {n} words but the validator needs "
+            f"CORRECTION â€” your draft is {n} words but the validator needs "
             f"{lo}-{hi} (aim {mid}, +{delta} words). EXPAND the SAME story "
             f"(same hook, same twist, same ending): add {per_beat} full "
             f"{s_word} "
@@ -905,7 +916,7 @@ def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
         total = per_beat * 3
         s_word = "sentence" if per_beat == 1 else "sentences"
         header = (
-            f"CORRECTION — your draft is {n} words but the validator needs "
+            f"CORRECTION â€” your draft is {n} words but the validator needs "
             f"{lo}-{hi} (aim {mid}, cut ~{delta} words). CONDENSE the SAME "
             f"story (same hook, same twist, same ending): trim setup "
             f"adjectives and merge setup sentences first "
@@ -918,7 +929,7 @@ def _length_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
     return header + base_prompt, slots
 
 
-def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
+def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float | None,
                       raw: object, err: Exception | None) -> tuple[str, dict]:
     """Same-model shape retry prompt carrying the validator's specifics.
 
@@ -926,7 +937,7 @@ def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
     CORRECTION header is prepended naming the exact validator error,
     the offending sentence excerpt(s), and the card-vs-first-sentence
     diff. Instructs a surgical fix only (split >30w sentences at
-    conjunctions, card verbatim as sentence 1 — shortened to <=8 words
+    conjunctions, card verbatim as sentence 1 â€” shortened to <=8 words
     first when the card itself is overlong, beats joined == narration
     exactly, under-range totals pulled back with scaled sensory-beat
     expansion per beat (same delta math as _length_fix_prompt) and
@@ -943,27 +954,27 @@ def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
         return base_prompt, slots
     narr = narr.strip()
     n = len(narr.split())
-    long_hits = [s.strip() for s in re.split(r"[.!?…]+", narr)
+    long_hits = [s.strip() for s in re.split(r"[.!?â€¦]+", narr)
                  if s.strip() and len(s.split()) > MAX_SENTENCE_WORDS][:2]
     card = str(raw.get("card_text", "") or "").strip()
-    first = re.split(r"[.!?…]+", narr, maxsplit=1)[0].strip()
+    first = re.split(r"[.!?â€¦]+", narr, maxsplit=1)[0].strip()
     card_n = len(card.split()) if card else 0
     specifics = [f"validator error: {err}."]
     for s in long_hits:
         specifics.append(
             f"offending sentence ({len(s.split())} words): "
-            f"'{s[:120]}...' — split it into two sentences at a "
+            f"'{s[:120]}...' â€” split it into two sentences at a "
             "conjunction (and/but/because/so/when/while/which/that).")
     if card and card_n > 8:
         specifics.append(
-            f"card line is {card_n} words ('{card}') — shorten the card "
+            f"card line is {card_n} words ('{card}') â€” shorten the card "
             f"itself to 8 words or fewer, then copy that shortened card "
             f"VERBATIM as sentence 1 (replace the opening sentence "
             f"wholesale, do not merge).")
     elif card and first != card:
         specifics.append(
             f"card line is '{card}' but the story opens with "
-            f"'{first[:80]}' — copy the card line VERBATIM as sentence 1 "
+            f"'{first[:80]}' â€” copy the card line VERBATIM as sentence 1 "
             f"(replace the opening sentence wholesale, do not merge).")
     s_lo, s_hi = lo - 15, hi + 15
     if n < s_lo:
@@ -992,8 +1003,8 @@ def _shape_fix_prompt(history: list[dict], cfg: StoryConfig, wps: float,
     specifics.append(
         f"keep the SAME story (same hook, twist, ending), keep every "
         f"sentence 30 words or fewer, keep beat texts joined equal to "
-        f"narration EXACTLY — surgical fix only, no rewrite.")
-    return "CORRECTION — " + " ".join(specifics) + "\n\n" + base_prompt, slots
+        f"narration EXACTLY â€” surgical fix only, no rewrite.")
+    return "CORRECTION â€” " + " ".join(specifics) + "\n\n" + base_prompt, slots
 
 
 def _make_client(cfg: StoryConfig):
@@ -1006,12 +1017,12 @@ def _make_client(cfg: StoryConfig):
                             tries=cfg.tries, backoff=cfg.backoff)
 
 
-def _to_content(meta: dict, slots: dict, wps: float,
+def _to_content(meta: dict, slots: dict, wps: float | None,
                 history: list[dict] | None = None) -> Content:
-    """Validated meta + slots → stage Content (all story fields in extras).
+    """Validated meta + slots â†’ stage Content (all story fields in extras).
 
     history is used to populate one extra for build_visuals:
-      - video_number: len(same-niche history) → BG clip rotation
+      - video_number: len(same-niche history) â†’ BG clip rotation
     """
     history = history or []
     same_niche = [h for h in history if h.get("niche", "") == MODE]
@@ -1057,11 +1068,11 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
 
     When keys exist but every model fails (transport/JSON errors or
     unfixable validator rejects), raises RuntimeError instead of airing
-    a short silent fallback — the error propagates through core.run
+    a short silent fallback â€” the error propagates through core.run
     (no history recorded) to pipeline notify_failure + exit 1.
     """
     history = history or []
-    wps = measure_wps(history, cfg.history_wps)
+    wps = measure_wps(history)
     client = _make_client(cfg)
     if client is not None:
         models = list(getattr(cfg, "story_models", None)
@@ -1145,7 +1156,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
                 raise RuntimeError(
                     f"Story Gemini failed on all {len(models)} models "
                     f"(last error: {last_error}); refusing silent "
-                    f"fallback — fix keys/quota/prompt and re-run."
+                    f"fallback â€” fix keys/quota/prompt and re-run."
                 ) from last_error
             window = [h for h in history[-cfg.dedup_window:]
                       if h.get("niche", "") == MODE]
@@ -1190,7 +1201,7 @@ def generate_content(history: list[dict], cfg: StoryConfig) -> Content:
 
 _FALLBACK_VARIANTS = (
     {
-        "title": "I Finally Said No to Weekend Work 😤",
+        "title": "I Finally Said No to Weekend Work ðŸ˜¤",
         "card_text": "I said no, then they moved my desk",
         "card_highlight_word": "desk",
         "hook": "I said no, then they moved my desk.",
@@ -1228,7 +1239,7 @@ _FALLBACK_VARIANTS = (
         ],
     },
     {
-        "title": "My Neighbor Learned to Fear My Blender 🔊",
+        "title": "My Neighbor Learned to Fear My Blender ðŸ”Š",
         "card_text": "He drummed at midnight, I blended at seven",
         "card_highlight_word": "blended",
         "hook": "He drummed at midnight, I blended at seven.",
@@ -1265,7 +1276,7 @@ _FALLBACK_VARIANTS = (
         ],
     },
     {
-        "title": "The Gas Station Phone Rings at 3 AM 📞😱",
+        "title": "The Gas Station Phone Rings at 3 AM ðŸ“žðŸ˜±",
         "card_text": "Do not turn around",
         "card_highlight_word": "around",
         "hook": "Do not turn around.",
@@ -1362,6 +1373,6 @@ def fallback_script(history: list[dict] | None = None) -> tuple[dict, dict]:
 def sample_content() -> Content:
     """Offline sample (first fallback variant) for demos/tests."""
     meta, slots = _build_fallback_meta(_FALLBACK_VARIANTS[0])
-    out = _to_content(meta, slots, wps=3.5)
+    out = _to_content(meta, slots, wps=None)
     out.extras["offline"] = True
     return out
