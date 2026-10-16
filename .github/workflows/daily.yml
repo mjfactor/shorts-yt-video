@@ -81,6 +81,14 @@ jobs:
       STORY_BG_SEGMENTS: ${{ vars.BG_SEGMENTS || '3' }}
       STORY_BGM_DIR: ${{ vars.STORY_BGM_DIR }}
       STORY_BGM_VOLUME: ${{ vars.STORY_BGM_VOLUME }}
+      # Bed-duck + band-limit knobs (empty repo vars fall back to the
+      # dataclass defaults; env_* treats "" as unset).
+      STORY_BGM_DUCK_THRESHOLD: ${{ vars.STORY_BGM_DUCK_THRESHOLD }}
+      STORY_BGM_DUCK_RATIO: ${{ vars.STORY_BGM_DUCK_RATIO }}
+      STORY_BGM_DUCK_ATTACK_MS: ${{ vars.STORY_BGM_DUCK_ATTACK_MS }}
+      STORY_BGM_DUCK_RELEASE_MS: ${{ vars.STORY_BGM_DUCK_RELEASE_MS }}
+      STORY_BGM_HIGHPASS_HZ: ${{ vars.STORY_BGM_HIGHPASS_HZ }}
+      STORY_BGM_LOWPASS_HZ: ${{ vars.STORY_BGM_LOWPASS_HZ }}
       STORY_WHISPER_MODEL: ${{ vars.STORY_WHISPER_MODEL }}
     steps:
       - uses: actions/checkout@v4

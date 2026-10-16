@@ -130,12 +130,33 @@ class StoryConfig(NicheConfig):
     # from the repo root to assets/background-musics/; _pick_bgm still
     # falls back to the repo root when this folder is missing.
     bgm_dir: str = "assets/background-musics"
-    # BGM bed level in the final render mix (linear pre-duck gain;
-    # 0.15 is ~-2.5 dB under the old 0.20 and ~-8 dB under the old 0.34;
-    # narration is mixed at full untouched volume, so voice clarity never
-    # degrades). Keep this, the env_float default below, and the
-    # getattr/_mix_filter fallbacks in visuals.py on the same number.
-    bgm_volume: float = 0.15
+    # BGM bed level in the final render mix (linear pre-duck gain). Measured:
+    # at 0.15 with the old loose duck the loudest pool track sat only ~6 dB
+    # under the voice, which still hurt narration intelligibility. Target is
+    # ~-20 dB under the voice: the sidechain duck in _mix_filter does most of
+    # that work, and this gain sets the level BETWEEN sentences (the floor the
+    # duck rides down from). Keep this default, the env_float default below,
+    # and the getattr/_mix_filter fallbacks in visuals.py on the same number.
+    bgm_volume: float = 0.05
+    # Sidechain duck: LINEAR amplitude of the narration above which the bed
+    # is pushed down. 0.05 sits above typical speech RMS so the bed is pulled
+    # down for the whole sentence, not just the loudest peaks.
+    bgm_duck_threshold: float = 0.05
+    # Duck strength (compression ratio, 1 = off). 8:1 is ~-18 dB of gain
+    # reduction at the threshold, which is what actually gets the bed to
+    # ~-20 dB under the voice; the old 3:1 only bought ~6 dB.
+    bgm_duck_ratio: float = 8.0
+    # Duck ramp times in ms: fast attack (transients duck immediately), slow
+    # release (the bed eases back up instead of pumping between words).
+    bgm_duck_attack_ms: int = 10
+    bgm_duck_release_ms: int = 400
+    # Highpass on the bed to clear the sub-180 Hz region (rumble and the
+    # speech-fundamental range) where music energy competes hardest with
+    # narration. 0 = disabled.
+    bgm_highpass_hz: int = 180
+    # Lowpass on the bed to drop harsh top end that reads as sibilance next
+    # to the voice. 0 = disabled (no lowpass filter emitted at all).
+    bgm_lowpass_hz: int = 9000
     story_genres: tuple[str, ...] = DEFAULT_GENRES
     # Word-timing model for the FINAL mix only.
     whisper_model: str = "base"
@@ -280,7 +301,15 @@ class StoryConfig(NicheConfig):
             bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_") or "bgm*.mp3",
             bgm_dir=env_str("BGM_DIR", "assets/background-musics",
                             "STORY_") or "assets/background-musics",
-            bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.15, "STORY_")),
+            bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.05, "STORY_")),
+            bgm_duck_threshold=max(0.0, env_float("BGM_DUCK_THRESHOLD", 0.05,
+                                                  "STORY_")),
+            bgm_duck_ratio=max(0.0, env_float("BGM_DUCK_RATIO", 8.0,
+                                               "STORY_")),
+            bgm_duck_attack_ms=env_int("BGM_DUCK_ATTACK_MS", 10, "STORY_"),
+            bgm_duck_release_ms=env_int("BGM_DUCK_RELEASE_MS", 400, "STORY_"),
+            bgm_highpass_hz=env_int("BGM_HIGHPASS_HZ", 180, "STORY_"),
+            bgm_lowpass_hz=env_int("BGM_LOWPASS_HZ", 9000, "STORY_"),
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),
             whisper_model=env_str("WHISPER_MODEL", "base", "STORY_") or "base",
             history_wps=env_float("HISTORY_WPS", 3.5, "STORY_"),

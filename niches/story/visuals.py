@@ -320,17 +320,55 @@ def _build_bg_track(order: list[Path], total: float, speed: float,
     return track, used
 
 
-def _mix_filter(total: float, bed_volume: float = 0.15) -> str:
+def _mix_filter(
+    total: float,
+    bed_volume: float = 0.05,
+    *,
+    duck_threshold: float = 0.05,
+    duck_ratio: float = 8.0,
+    duck_attack_ms: int = 10,
+    duck_release_ms: int = 400,
+    highpass_hz: int = 180,
+    lowpass_hz: int = 9000,
+) -> str:
     """Voice-forward mix chain (inputs: 0=BG video, 1=narration, 2=bed).
 
-    Looser ducking (threshold 0.15, ratio 3, release 180) so the bed sits
-    higher between words; narration is mixed at full untouched volume, so
-    voice clarity never depends on the duck. 2s outro fade, normalize=0.
+    Measured: the old loose duck (threshold 0.15, ratio 3, attack 20,
+    release 180) at bed_volume 0.15 left the loudest pool track only ~6 dB
+    under the voice — not enough for narration intelligibility. The target
+    is ~-20 dB under the voice, reached two ways:
+
+      * the duck now bites: threshold 0.05 (a linear amplitude above typical
+        speech RMS, so the bed is pulled down for the whole sentence) at
+        ratio 8 (~18 dB of gain reduction) with a 10 ms attack and a 400 ms
+        release, which keeps the bed from pumping between words;
+      * the bed is band-limited before the duck (highpass 180 Hz, lowpass
+        9 kHz), so the music energy that competes with the 200 Hz-4 kHz
+        speech band is not in the mix to begin with.
+
+    bed_volume only sets the level BETWEEN sentences (the floor the duck
+    rides down from). highpass_hz/lowpass_hz <= 0 OMIT that filter — never
+    emit f=0, which is invalid. Stream indices are fixed by the story's
+    input order (0=BG, 1=narration, 2=bed); do not renumber.
+    2s outro fade, normalize=0, narration mixed at full untouched volume.
     """
+    gain = max(0.0, float(bed_volume))
+    # Band limit first, so the duck measures (and is heard against) a bed
+    # that has already been cleaned of the speech-competing bands. A
+    # disabled (<= 0) filter is dropped from the chain entirely.
+    bed_chain = [f"volume={gain:.2f}"]
+    if float(highpass_hz) > 0:
+        bed_chain.append(f"highpass=f={float(highpass_hz):.0f}")
+    if float(lowpass_hz) > 0:
+        bed_chain.append(f"lowpass=f={float(lowpass_hz):.0f}")
     fade_st = max(0.0, float(total) - 2.0)
-    return (f"[2:a]volume={max(0.0, float(bed_volume)):.2f}[b];"
-            "[b][1:a]sidechaincompress=threshold=0.15:ratio=3:"
-            "attack=20:release=180[duck];"
+    return (f"[2:a]{','.join(bed_chain)}"
+            "[b];"
+            "[b][1:a]"
+            f"sidechaincompress=threshold={float(duck_threshold):g}"
+            f":ratio={float(duck_ratio):g}"
+            f":attack={int(duck_attack_ms)}"
+            f":release={int(duck_release_ms)}[duck];"
             "[1:a][duck]amix=inputs=2:duration=first:normalize=0,"
             f"afade=t=out:st={fade_st:.2f}:d=2[aout]")
 
@@ -655,7 +693,14 @@ def build_visuals(content: Content, narration: NarrationResult,
         pass  # still pass the path: missing dir scans nothing (≠ workdir)
     vf_args, cwd = ass_cwd_args(ass_path, fontsdir=_fonts_dir.resolve())
     subs = vf_args[1]  # "ass=<rel>:fontsdir=<dir>" for filter_complex use
-    mix_fc = _mix_filter(total, getattr(cfg, "bgm_volume", 0.15))
+    mix_fc = _mix_filter(
+        total, getattr(cfg, "bgm_volume", 0.05),
+        duck_threshold=getattr(cfg, "bgm_duck_threshold", 0.05),
+        duck_ratio=getattr(cfg, "bgm_duck_ratio", 8.0),
+        duck_attack_ms=getattr(cfg, "bgm_duck_attack_ms", 10),
+        duck_release_ms=getattr(cfg, "bgm_duck_release_ms", 400),
+        highpass_hz=getattr(cfg, "bgm_highpass_hz", 180),
+        lowpass_hz=getattr(cfg, "bgm_lowpass_hz", 9000))
     out_mp4 = workdir / "short.mp4"
     # ffmpeg runs with cwd=workdir (for the cwd-relative ASS filter), so
     # every -i input and the output must be absolute; repo-relative
