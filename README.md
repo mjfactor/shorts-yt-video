@@ -65,6 +65,22 @@ niche, so `available_niches()` returns `['story']`.
 > reference (and they are the only remaining users of `engine/pexels.py` and
 > `PEXELS_API_KEY`). The rows above describe what they still contain.
 
+## Story premises and narrator voice
+
+`niches/story/content.py` builds a premise-first Gemini prompt. It asks the
+model to compare three different premises privately in the existing story
+request, favoring personal stakes, curiosity, and human complications over
+recycled fee/theft/revenge plots. No extra Gemini request or model change is
+required. It asks for a conversational first-person voice without forced
+filler, decorative scene-setting, or guaranteed perfect justice. The JSON,
+length, card, caption, safety, and dedup contracts remain unchanged.
+Correction requests include the full previous JSON draft so stateless Gemini
+calls can repair the existing story instead of inventing a replacement.
+
+Offline prompt regression checks (no API calls, rendering, or uploads):
+`python tools/test_story_prompt.py`. These check instructions and formatting
+contracts, not the quality of a live model's output.
+
 ## Run (story)
 
 ```bash
