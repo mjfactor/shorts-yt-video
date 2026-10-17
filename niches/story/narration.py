@@ -355,6 +355,20 @@ def _edge_rate_for(cfg: StoryConfig, voice: str) -> str:
     return cfg.edge_rate
 
 
+def _edge_pitch_for(cfg: StoryConfig, voice: str) -> str:
+    """Effective edge SSML pitch for a picked voice.
+
+    Female voices (Jenny/Ava name match, same hints as _edge_rate_for)
+    get cfg.edge_pitch_female (default +20Hz, the auditioned lift that
+    keeps Jenny warm without a cartoonish shift); every other voice
+    keeps the global cfg.edge_pitch (default +0Hz).
+    """
+    name = str(voice or "").lower()
+    if any(h in name for h in _EDGE_FEMALE_HINTS):
+        return getattr(cfg, "edge_pitch_female", "+20Hz") or "+20Hz"
+    return getattr(cfg, "edge_pitch", "+0Hz") or "+0Hz"
+
+
 def _parse_edge_rate(rate: str) -> float:
     """'+20%' -> 0.20 (edge relative-rate flag)."""
     m = re.match(r"\s*([+-]?)(\d+(?:\.\d+)?)\s*%?\s*$", rate or "")
@@ -445,7 +459,7 @@ def _edge_chunked(text: str, voice: str, rate: str, cfg: StoryConfig,
             seg,
             attempts=2,
             waits=(2.0, 4.0),
-            pitch=getattr(cfg, "edge_pitch", "+0Hz"),
+            pitch=_edge_pitch_for(cfg, voice),
         )
         # Trim per-sentence silence BEFORE measuring the offset, then
         # restore a short controlled pause (all but last sentence) so the
@@ -555,7 +569,7 @@ def _synth_single_seg(text: str, voice: str, rate: str, cfg: StoryConfig,
     seg_mp3 = workdir / f"narr_edge_{tag}_raw.mp3"
     events = edge_client.synth_sync(
         text, voice, rate, seg_mp3,
-        pitch=getattr(cfg, "edge_pitch", "+0Hz"))
+        pitch=_edge_pitch_for(cfg, voice))
     words = _map_edge_words(events, text)
     return _edge_single_surgery(seg_mp3, words, text, cfg, workdir, tag)
 
@@ -612,10 +626,11 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
     gender = str(content.extras.get("narrator_gender", "") or "")
     voice, voice_why = _edge_voice_for(cfg, f"{content.title}|{genre}", gender)
     rate = _edge_rate_for(cfg, voice)
+    pitch = _edge_pitch_for(cfg, voice)
     is_female_voice = any(h in str(voice).lower() for h in _EDGE_FEMALE_HINTS)
-    rate_note = "female rate" if is_female_voice else "global rate"
-    log(f"Story TTS edge voice={voice} ({voice_why}) rate={rate} ({rate_note}) "
-        f"genre={genre or '?'} narrator_gender={gender or '?'}")
+    rate_note = "female rate/pitch" if is_female_voice else "global rate/pitch"
+    log(f"Story TTS edge voice={voice} ({voice_why}) rate={rate} pitch={pitch} "
+        f"({rate_note}) genre={genre or '?'} narrator_gender={gender or '?'}")
     raw_mp3 = workdir / "narr_edge_raw.mp3"
     edge_error: Exception | None = None
     words: list[dict] = []
@@ -707,7 +722,7 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
         f"({wps_measured:.2f} wps), card_end={card_end:.1f}s [{fit_note}]")
     return NarrationResult(
         audio=mp3, duration=dur, words=len(text.split()),
-        voice=voice, style=f"edge-tts {rate}",
+        voice=voice, style=f"edge-tts {rate} {pitch}",
         extras={"words": words, "card_end": card_end,
                 "chunks": n_chunks, "tts_engine": "edge",
                 "wps_measured": round(wps_measured, 3), "fit": fit_note,

@@ -188,7 +188,9 @@ def write_ass(words: list[dict], out_ass: str | Path, *,
 # ---------------------------------------------------------------------------
 
 WORDPOP_FONTNAME = "Montserrat ExtraBold"
-# Caption size nudged 158 -> 145 (read slightly big). Group width scales
+# Caption size nudged 158 -> 145 (read slightly big); the story niche
+# overrides it with cfg.ass_fontsize (currently 135), so this stays the
+# fallback for callers that pass no size. Group width scales
 # with size via _max_chars_for(), so 60px side margins stay in the safe
 # area; outline 9 / shadow 3 keep the stroke proportionate.
 WORDPOP_FONTSIZE = 145

@@ -330,6 +330,7 @@ def _mix_filter(
     duck_release_ms: int = 400,
     highpass_hz: int = 180,
     lowpass_hz: int = 9000,
+    output_gain_db: float = 7.0,
 ) -> str:
     """Voice-forward mix chain (inputs: 0=BG video, 1=narration, 2=bed).
 
@@ -351,6 +352,15 @@ def _mix_filter(
     emit f=0, which is invalid. Stream indices are fixed by the story's
     input order (0=BG, 1=narration, 2=bed); do not renumber.
     2s outro fade, normalize=0, narration mixed at full untouched volume.
+
+    Output stage: output_gain_db of make-up gain on the mixed bus, then
+    alimiter pinned at -2 dBFS. Untouched, the mix measures ~-22 LUFS -
+    ~8 dB under the ~-14 LUFS YouTube plays loud uploads at (and YouTube
+    does NOT turn quiet uploads up), so phone playback read weak; +7 dB
+    lands ~-16 LUFS with only the loudest peaks caught by the limiter.
+    level=disabled is required: this ffmpeg's alimiter defaults to
+    auto-level ON, which re-normalizes output to 0 dBTP and silently
+    defeats the ceiling (verified by measurement).
     """
     gain = max(0.0, float(bed_volume))
     # Band limit first, so the duck measures (and is heard against) a bed
@@ -362,6 +372,9 @@ def _mix_filter(
     if float(lowpass_hz) > 0:
         bed_chain.append(f"lowpass=f={float(lowpass_hz):.0f}")
     fade_st = max(0.0, float(total) - 2.0)
+    # -2.0 dBFS limiter ceiling: measured output true-peak tracks it
+    # exactly (-2.0 dBTP), leaving AAC-encode/upload headroom.
+    ceiling = 10 ** (-2.0 / 20)
     return (f"[2:a]{','.join(bed_chain)}"
             "[b];"
             "[b][1:a]"
@@ -370,7 +383,9 @@ def _mix_filter(
             f":attack={int(duck_attack_ms)}"
             f":release={int(duck_release_ms)}[duck];"
             "[1:a][duck]amix=inputs=2:duration=first:normalize=0,"
-            f"afade=t=out:st={fade_st:.2f}:d=2[aout]")
+            f"afade=t=out:st={fade_st:.2f}:d=2,"
+            f"volume={float(output_gain_db):g}dB,"
+            f"alimiter=limit={ceiling:.3f}:level=disabled[aout]")
 
 
 def _card_input_args(card_png: Path, card_dur: float) -> list[str]:
@@ -655,7 +670,7 @@ def build_visuals(content: Content, narration: NarrationResult,
     # Upload SRT keeps all words (YouTube captions aren't on the card).
     out_srt = write_upload_srt(words, workdir / "captions.srt")
     log(f"Stage 4/6 captions: {len(words)} timed words → ASS burn "
-        f"(after {card_end:.1f}s) + SRT upload.")
+        f"@{cfg.ass_fontsize}px (after {card_end:.1f}s) + SRT upload.")
 
     # Stage 5: BGM bed (explicit file → random bgm pool → drone → silent).
     # Loop the bed at UNITY gain: loop_bed's own default (0.08) used to stack
@@ -700,7 +715,8 @@ def build_visuals(content: Content, narration: NarrationResult,
         duck_attack_ms=getattr(cfg, "bgm_duck_attack_ms", 10),
         duck_release_ms=getattr(cfg, "bgm_duck_release_ms", 400),
         highpass_hz=getattr(cfg, "bgm_highpass_hz", 180),
-        lowpass_hz=getattr(cfg, "bgm_lowpass_hz", 9000))
+        lowpass_hz=getattr(cfg, "bgm_lowpass_hz", 9000),
+        output_gain_db=getattr(cfg, "mix_gain_db", 7.0))
     out_mp4 = workdir / "short.mp4"
     # ffmpeg runs with cwd=workdir (for the cwd-relative ASS filter), so
     # every -i input and the output must be absolute; repo-relative

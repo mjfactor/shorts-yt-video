@@ -81,6 +81,10 @@ class StoryConfig(NicheConfig):
     # default (+28%). STORY_ prefix wins, bare EDGE_RATE_FEMALE falls back.
     edge_rate_female: str = "+28%"
     edge_pitch: str = "+0Hz"
+    # Female voices get their own pitch lift (same name-match as the
+    # female rate): +20Hz off the audition ladder keeps Jenny warm
+    # without a cartoonish shift. Male/custom voices stay on edge_pitch.
+    edge_pitch_female: str = "+20Hz"
     # Captions: 1/true = uppercase word-pop.
     caption_upper: bool = False
     # Card floor: overlay shows max(card_seconds, card_line_end + pad).
@@ -157,6 +161,14 @@ class StoryConfig(NicheConfig):
     # Lowpass on the bed to drop harsh top end that reads as sibilance next
     # to the voice. 0 = disabled (no lowpass filter emitted at all).
     bgm_lowpass_hz: int = 9000
+    # Output loudness: make-up gain (dB) on the mixed voice+bed bus right
+    # before encode, then a hard limiter ceiling at -2 dBFS so the boost
+    # cannot clip (see visuals._mix_filter). Untouched, the mix measured
+    # ~-22 LUFS on out/demo_story.mp4 - ~8 dB under the ~-14 LUFS that
+    # YouTube plays loud uploads at, and YouTube does not turn quiet
+    # uploads up - so phone playback read as weak. +7 dB lands ~-16 LUFS
+    # with only the loudest voice peaks touched by the limiter.
+    mix_gain_db: float = 7.0
     story_genres: tuple[str, ...] = DEFAULT_GENRES
     # Word-timing model for the FINAL mix only.
     whisper_model: str = "base"
@@ -172,9 +184,9 @@ class StoryConfig(NicheConfig):
     # above the bare seconds*wps floor (targets mid-range, not the floor).
     # Does NOT apply to a history-measured rate — that already includes it.
     length_overshoot: float = 1.12
-    # Caption style (burned word-pop on 1080x1920; nudged down 158 -> 145;
-    # STORY_ASS_FONTSIZE overrides).
-    ass_fontsize: int = 145
+    # Caption style (burned word-pop on 1080x1920; nudged down 158 -> 145 ->
+    # 135 -> 115 as it read too big; STORY_ASS_FONTSIZE overrides).
+    ass_fontsize: int = 115
     # Network knobs.
     timeout: int = 40
     tts_timeout: int = 90
@@ -278,8 +290,10 @@ class StoryConfig(NicheConfig):
             edge_rate=env_str("EDGE_RATE", "+20%", "STORY_") or "+20%",
             edge_rate_female=env_str("EDGE_RATE_FEMALE", "+28%", "STORY_") or "+28%",
             edge_pitch=env_str("EDGE_PITCH", "+0Hz", "STORY_") or "+0Hz",
+            edge_pitch_female=(env_str("EDGE_PITCH_FEMALE", "+20Hz", "STORY_")
+                               or "+20Hz"),
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
-            ass_fontsize=env_int("ASS_FONTSIZE", 145, "STORY_"),
+            ass_fontsize=env_int("ASS_FONTSIZE", 115, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),
             thumb_offset_seconds=env_float(
                 "THUMB_OFFSET_SECONDS", 1.0, "STORY_"),
@@ -310,6 +324,7 @@ class StoryConfig(NicheConfig):
             bgm_duck_release_ms=env_int("BGM_DUCK_RELEASE_MS", 400, "STORY_"),
             bgm_highpass_hz=env_int("BGM_HIGHPASS_HZ", 180, "STORY_"),
             bgm_lowpass_hz=env_int("BGM_LOWPASS_HZ", 9000, "STORY_"),
+            mix_gain_db=env_float("MIX_GAIN_DB", 7.0, "STORY_"),
             story_genres=_tuple("STORY_GENRES", DEFAULT_GENRES),
             whisper_model=env_str("WHISPER_MODEL", "base", "STORY_") or "base",
             history_wps=env_float("HISTORY_WPS", 3.5, "STORY_"),

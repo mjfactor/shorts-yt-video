@@ -145,12 +145,12 @@ Per-niche (prefix wins over the bare fallback, per `niches/base.py env_*`).
 - `STORY_TTS_MODEL` / `STORY_TTS_MODELS`, `STORY_TTS_VOICES`, `STORY_TTS_ENGINE`,
   `STORY_TTS_PROVIDER_ORDER`, `STORY_EDGE_VOICE` / `STORY_EDGE_VOICES`,
   `STORY_EDGE_RATE`, `STORY_EDGE_RATE_FEMALE`, `STORY_EDGE_PITCH`,
-  `STORY_NARRATOR_GENDER_MODE`
+  `STORY_EDGE_PITCH_FEMALE`, `STORY_NARRATOR_GENDER_MODE`
 - `STORY_MODELS` (script models; bare `GEMINI_MODELS` overrides the whole pool)
 - `STORY_BG_DIR` (`assets/backgrounds` — the **only** background source) and
   `STORY_BG_SINGLE_SPEED` (1.8, playback speed of the single continuous take)
 - Audio bed: `STORY_BGM_DIR` (`assets/background-musics`), `STORY_BGM_GLOB`
-  (`bgm*.mp3`), `STORY_BGM_VOLUME`, `STORY_BED_PATH`
+  (`bgm*.mp3`), `STORY_BGM_VOLUME`, `STORY_BED_PATH`, `STORY_MIX_GAIN_DB`
 - Captions + card: `STORY_CAPTION_UPPER`, `STORY_ASS_FONTSIZE`,
   `STORY_CARD_SECONDS`, `STORY_THUMB_OFFSET_SECONDS`, `STORY_CARD_LIKES`,
   `STORY_CARD_SHARES`, `STORY_CARD_SHOW_REACTIONS`, `STORY_CHANNEL_HANDLE`,

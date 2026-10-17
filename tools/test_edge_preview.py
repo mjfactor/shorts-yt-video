@@ -23,7 +23,8 @@ from engine.ffmpeg_utils import ffprobe_duration, log
 from niches.base import Content, NarrationResult
 from niches.story import visuals as story_visuals
 from niches.story.config import StoryConfig
-from niches.story.narration import _map_edge_words, card_end_time
+from niches.story.narration import (_edge_pitch_for, _edge_rate_for,
+                                    _map_edge_words, card_end_time)
 
 
 def _default_text(n_words: int = 55) -> str:
@@ -104,10 +105,10 @@ def main(argv: list[str] | None = None) -> None:
                     help="narration text file (default: bundled sample head)")
     ap.add_argument("--voice", default=None,
                     help="edge voice (default: first EDGE_VOICES pool entry)")
-    ap.add_argument("--rate", default="+20%",
-                    help="edge rate flag (default: +20%%)")
-    ap.add_argument("--pitch", default="+0Hz",
-                    help="edge pitch flag (default: +0Hz; e.g. +150Hz)")
+    ap.add_argument("--rate", default=None,
+                    help="edge rate flag (default: per-voice cfg EDGE_RATE*)")
+    ap.add_argument("--pitch", default=None,
+                    help="edge pitch flag (default: per-voice cfg EDGE_PITCH*)")
     ap.add_argument("--bg-dir", default="assets/backgrounds",
                     help="local BG clips only, never Pexels (default: %(default)s)")
     ap.add_argument("--card", default=None,
@@ -125,13 +126,17 @@ def main(argv: list[str] | None = None) -> None:
         cfg = StoryConfig.from_env()
         voice = args.voice or (cfg.edge_voices[0] if cfg.edge_voices
                                else cfg.edge_voice)
+        rate = (args.rate if args.rate is not None
+                else _edge_rate_for(cfg, voice))
+        pitch = (args.pitch if args.pitch is not None
+                 else _edge_pitch_for(cfg, voice))
         tmp = tempfile.TemporaryDirectory()
         workdir = Path(tmp.name)
         raw_mp3 = workdir / "preview_raw.mp3"
-        log(f"Preview synth: voice={voice} rate={args.rate} pitch={args.pitch} "
+        log(f"Preview synth: voice={voice} rate={rate} pitch={pitch} "
             f"({len(text.split())} words)")
-        events = edge_client.synth_sync(text, voice, args.rate, raw_mp3,
-                                           pitch=args.pitch)
+        events = edge_client.synth_sync(text, voice, rate, raw_mp3,
+                                        pitch=pitch)
         words = _map_edge_words(events, text)
         wav = _preview_wav(raw_mp3, workdir / "preview.wav")
         dur = ffprobe_duration(wav)
@@ -147,7 +152,7 @@ def main(argv: list[str] | None = None) -> None:
                     "genre": "preview", "topic": "preview"})
         narration = NarrationResult(
             audio=wav, duration=dur, words=len(text.split()),
-            voice=voice, style=f"edge-tts {args.rate} {args.pitch}",
+            voice=voice, style=f"edge-tts {rate} {pitch}",
             extras={"words": words,
                     "card_end": max(cfg.card_seconds,
                                     card_end_time(words, card_text, hook)
