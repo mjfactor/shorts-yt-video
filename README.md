@@ -95,13 +95,18 @@ python demo.py --help
 
 Real parser: `demo.py [-h] [--tts {auto,gemini,edge}] [--words WORDS]`.
 
-The demo uses the story niche's `sample_content()` plus offline stand-ins:
-narration from the real niche `narrate()` (tone WAV with proportional timings
-if edge-tts has no network), and backgrounds from real files in `BG_DIR` /
-`STORY_BG_DIR` when present, else generated `testsrc`/`rgbtestsrc`/`smptebars`
-color clips. Output: playable 1080x1920 `out/demo_story.mp4`. The bundled
-sample is shorter than the 100–120s target window, so the demo is a timing /
-plumbing check, not a full-length proof. Requires only ffmpeg + ffprobe.
+The demo renders through the **same production stages** as a real upload:
+narration from the real niche `narrate()` (tone WAV with proportional
+timings if edge-tts has no network), then the real visuals stage
+`niches.story.visuals.build_visuals()` — same BG track, card, word-pop
+captions, BGM bed and encode. Only content generation and upload are
+skipped. Backgrounds come from real files in `BG_DIR` / `STORY_BG_DIR`
+when present, else generated `testsrc`/`rgbtestsrc`/`smptebars` color
+clips. Output: playable 1080x1920 `out/demo_story.mp4` (+
+`demo_story.srt` / `demo_story_thumb.jpg` copied from the same render).
+The bundled sample is shorter than the 100–120s target window, so the
+demo is a timing / plumbing check, not a full-length proof. Requires only
+ffmpeg + ffprobe.
 
 ## Setup (one time)
 

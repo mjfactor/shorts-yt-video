@@ -9,7 +9,7 @@ Run: Gemini script → TTS audio+timings → local-clip background → FFmpeg 10
 ## Commands (PowerShell — `NICHE=x cmd` does NOT work; use `$env:NICHE`)
 
 - Full run (story default): `python pipeline.py` (needs `ffmpeg` + `ffprobe` on PATH)
-- Offline demo, zero API keys, never uploads → `out/demo_story.mp4`: `python demo.py`; only flags are `--tts {auto,gemini,edge}` and `--words N` (there is **no** `--niche`; it errors). Uses real clips from `STORY_BG_DIR` when present, synthesizes a testsrc 1080x1920 card only when the dir is empty/missing.
+- Offline demo, zero API keys, never uploads, renders through the **prod stages** (`narrate()` + `build_visuals()`), skipping only content generation and upload → `out/demo_story.mp4` (+ `demo_story.srt` / `demo_story_thumb.jpg` copies from the same render): `python demo.py`; only flags are `--tts {auto,gemini,edge}` and `--words N` (there is **no** `--niche`; it errors). Uses real clips from `STORY_BG_DIR` when present, synthesizes testsrc 1080x1920 clips only when the dir is empty/missing.
 - **The test suite is `python deprecated_niches/test_explainer.py`** (standalone via its own `sys.path` bootstrap). There is **no `tests/` dir** — `python -m unittest discover -s tests` is dead. The file is not collected by discovery and only exercises the deprecated explainer. **CI runs no tests and no lint.**
 - Syntax check: `python -m py_compile pipeline.py core.py demo.py get_refresh_token.py` (+ any `niches/<name>/*.py`, `engine/*.py` you touch)
 - Deps: `pip install -r requirements.txt` (`edge-tts`, `requests`, `Pillow`, `google-api-python-client`, `google-auth`, `google-auth-oauthlib`; no local transcription models)

@@ -4,16 +4,18 @@ Usage:
     python demo.py
     python demo.py --tts edge --words 60
 
-Uses the story niche's sample_content() plus bundled / offline narration
-and local sample backgrounds: real niche narrate() (STORY_TTS_ENGINE wired
-in-process only; --tts auto = gemini with a key, else edge preview). Edge
-needs network; when unreachable it falls back to a tone WAV with a clear
-warning. Captions are always center word-pop ASS burned over the card +
-BG track. Backgrounds: real files from BG_DIR when present, else generated
-FFmpeg testsrc color clips (testsrc / rgbtestsrc / smptebars, 1080x1920).
+Renders through the SAME prod stages as the pipeline: the story niche's
+real narrate() (STORY_TTS_ENGINE wired in-process only; --tts auto =
+gemini with a key, else edge preview) and the real visuals stage
+niches.story.visuals.build_visuals() — same BG track, card, word-pop
+captions, BGM bed and final encode as an uploaded Short, minus content
+generation and upload. Edge needs network; when unreachable narration
+falls back to a tone WAV with proportional timings. Backgrounds: real
+files from BG_DIR when present, else generated FFmpeg testsrc color
+clips (testsrc / rgbtestsrc / smptebars, 1080x1920).
 
-Output: out/demo_story.mp4 (playable 1080x1920). Requires only ffmpeg +
-ffprobe on PATH.
+Output: out/demo_story.mp4 (+ demo_story.srt / demo_story_thumb.jpg
+copied from the same render). Requires ffmpeg + ffprobe on PATH.
 """
 import argparse
 import json
@@ -46,14 +48,6 @@ STORY_WPS = 2.9  # measured speech rate default in niches/story/config.py
 # Background testsrc palette (FFmpeg lavfi sources, scaled to canvas).
 BG_SOURCES = ("testsrc", "rgbtestsrc", "smptebars")
 BG_EXTS = (".mp4", ".mov", ".mkv", ".webm")
-
-
-def _bg_dir() -> Path:
-    """Background dir: STORY_BG_DIR wins, then BG_DIR, else default."""
-    raw = (os.getenv("STORY_BG_DIR", "") or "").strip() \
-        or (os.getenv("BG_DIR", "") or "").strip() \
-        or "assets/backgrounds"
-    return Path(raw)
 
 
 def _local_backgrounds(bg_dir: Path) -> list[Path]:
@@ -120,8 +114,9 @@ def _story_engine_choice(tts: str) -> str:
     return "gemini" if has_key else "edge"
 
 
-def _story_narrate_preview(niche, content, engine_name: str, workdir: Path):
-    """Real niche narrate() with STORY_TTS_ENGINE wired in-process only.
+def _story_narrate_preview(niche, content, engine_name: str,
+                           workdir: Path):
+    """Real niche narrate() + its cfg, STORY_TTS_ENGINE wired in-process only.
 
     The env override is restored afterwards (no persistent env writes).
     Raises on failure so the caller can fall back to tone + proportional.
@@ -131,7 +126,7 @@ def _story_narrate_preview(niche, content, engine_name: str, workdir: Path):
     try:
         from niches.story.config import StoryConfig
         cfg = StoryConfig.from_env()
-        return niche.narrate(content, cfg, workdir)
+        return niche.narrate(content, cfg, workdir), cfg
     finally:
         if prev is None:
             os.environ.pop("STORY_TTS_ENGINE", None)
@@ -139,70 +134,43 @@ def _story_narrate_preview(niche, content, engine_name: str, workdir: Path):
             os.environ["STORY_TTS_ENGINE"] = prev
 
 
-def _render_story_captioned(bg_clips: list[Path], audio_path: Path,
-                            words: list[dict], content, out_path: Path,
-                            workdir: Path) -> None:
-    """Concat BG track, overlay the story card, burn center word-pop ASS."""
-    from engine.ass import write_ass
-    from engine.ffmpeg_utils import subtitles_filter
-    from engine.overlay_card import render_card
-    from engine.srt import write_srt
+def _proportional_result(content, cfg, audio_path: Path,
+                         duration: float):
+    """Offline NarrationResult for the tone fallback (prod extras shape)."""
+    from engine.align import proportional_fallback
+    from niches.base import NarrationResult
     from niches.story.narration import card_end_time
-    from niches.story.visuals import CARD_Y_OFFSET, STORY_CARD_THEME
 
-    lst = workdir / "demo_bg_concat.txt"
-    lst.write_text("".join(f"file '{p.resolve()}'\n" for p in bg_clips),
-                   encoding="utf-8")
-    bg_track = workdir / "demo_bg_track.mp4"
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                    "-i", str(lst), "-c", "copy", str(bg_track)],
-                   check=True, capture_output=True, text=True)
+    words = proportional_fallback(content.narration_text, duration)
     extras = content.extras or {}
-    card_text = extras.get("card_text", content.title)
-    card_png = render_card(
-        card_text, extras.get("card_highlight_word", ""),
-        handle=os.getenv("STORY_CHANNEL_HANDLE",
-                         os.getenv("CHANNEL_HANDLE", "@UnhingedStories")),
-        avatar_path=os.getenv("STORY_AVATAR_PATH",
-                              os.getenv("AVATAR_PATH", "assets/avatar.png")),
-        out_png=workdir / "demo_card.png", theme=STORY_CARD_THEME)
-    words = [dict(w) for w in (words or [])]
-    card_dur = max(3.0, card_end_time(
-        words, card_text, extras.get("hook", "")) + 0.4)
-    # Suppress burned-in subtitles during card display: the card text
-    # serves as the on-screen visual for the opening narration.
-    caption_words = [w for w in words
-                     if float(w.get("start", 0)) >= card_dur]
-    # Style here must mirror the production word-pop (engine.ass
-    # write_wordpop_ass) or a demo render cannot validate a caption change.
-    # Do NOT hand-set an anchor: the \pos height comes from engine.ass
-    # pop_tag() / CAPTION_POS_Y, shared by both writers.
-    ass_path = write_ass(
-        caption_words, workdir / "demo_captions.ass",
-        style={"fontname": "Montserrat ExtraBold",
-               "fontsize": 158,
-               "primary_colour": "&H00FFFFFF",
-               "outline": 9, "shadow": 3, "alignment": 5, "margin_v": 200,
-               "play_res_x": 1080, "play_res_y": 1920},
-        key_words=set(extras.get("key_words", [])),
-        upper=False, gapless=True)
-    write_srt(words, workdir / "demo_captions.srt", gapless=True)
-    subs = subtitles_filter(ass_path.resolve())
-    card_src = (str(card_png.resolve()).replace("\\", "/")
-                .replace("'", "'\\''").replace(":", "\\:"))
-    filt = (
-        f"movie='{card_src}',format=rgba[card];"
-        f"[0:v][card]overlay=(W-w)/2:(H-h)/2{CARD_Y_OFFSET:+d}:"
-        f"enable='between(t,0,{card_dur:.2f})'[ov];"
-        f"[ov]{subs},format=yuv420p[vout]")
-    subprocess.run(["ffmpeg", "-y", "-i", str(bg_track), "-i", str(audio_path),
-                    "-filter_complex", filt,
-                    "-map", "[vout]", "-map", "1:a",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                    "-preset", "veryfast",
-                    "-c:a", "aac", "-b:a", "192k",
-                    "-shortest", str(out_path)],
-                   check=True, capture_output=True, text=True)
+    card_end = max(cfg.card_seconds, card_end_time(
+        words, extras.get("card_text", ""), extras.get("hook", "")) + 0.15)
+    return NarrationResult(
+        audio=audio_path, duration=duration,
+        words=len(content.narration_text.split()),
+        voice="offline-tone", style="tone",
+        extras={"words": words, "card_end": card_end,
+                "tts_engine": "tone", "fit": "offline fallback",
+                "key_words": list(extras.get("key_words", [])),
+                "genre": extras.get("genre", "")})
+
+
+def _ensure_preview_backgrounds(cfg, workdir: Path) -> None:
+    """Point cfg.bg_dir at generated testsrc clips when the dir is empty.
+
+    Real BG_DIR files win whenever present; the visuals stage hard-fails
+    on an empty dir, so generated clips keep the demo offline-capable.
+    """
+    if _local_backgrounds(Path(cfg.bg_dir)):
+        core.log(f"BG: using local clips from {cfg.bg_dir}")
+        return
+    gen = workdir / "preview_bg"
+    gen.mkdir(parents=True, exist_ok=True)
+    core.log(f"BG_DIR '{cfg.bg_dir}' empty/missing: generating "
+             f"{len(BG_SOURCES)} testsrc color clips (no API)...")
+    for i, src in enumerate(BG_SOURCES):
+        _generate_bg_clip(src, 8.0, gen / f"bg{i}.mp4")
+    cfg.bg_dir = str(gen)
 
 
 # Regression guard: narration must stay audible (digital silence is -inf;
@@ -271,7 +239,7 @@ def _probe(path: Path) -> str:
 
 
 def render_demo(tts: str = "auto", words: int | None = None) -> Path:
-    """Render the story demo MP4. No API keys required, never uploads."""
+    """Render the story demo MP4 through the prod stages. Never uploads."""
     niche = story_niche
     content = niche.sample_content()
     core.log(f"=== DEMO: story ({getattr(niche, 'LABEL', '')}) ===")
@@ -287,26 +255,27 @@ def render_demo(tts: str = "auto", words: int | None = None) -> Path:
     story_workdir = ASSETS / "demo_story_work"
     story_workdir.mkdir(parents=True, exist_ok=True)
     try:
-        result = _story_narrate_preview(
+        narration, cfg = _story_narrate_preview(
             niche, content, engine_name, story_workdir)
-        audio_path = result.audio
-        duration = result.duration
-        story_words = list(result.extras.get("words") or [])
-        core.log(f"Story preview voice: {result.voice} "
-                 f"({result.extras.get('tts_engine')}, "
-                 f"{len(story_words)} timed words) [{result.extras.get('fit')}]")
+        core.log(f"Story preview voice: {narration.voice} "
+                 f"({narration.extras.get('tts_engine')}, "
+                 f"{len(narration.extras.get('words') or [])} timed words) "
+                 f"[{narration.extras.get('fit')}]")
     except Exception as e:
+        from niches.story.config import StoryConfig
         core.warn(f"Story narrate failed ({e}); tone WAV fallback "
                   f"(edge-tts needs network).")
+        cfg = StoryConfig.from_env()
         floor = STORY_MIN_SEC if not words else 5.0
         duration = min(max(nwords / STORY_WPS, floor), STORY_MAX_SEC)
         audio_path = ASSETS / "demo_story.wav"
         core.log(f"Generating offline tone WAV ({duration:.1f}s, no API)...")
         _generate_tone_wav(duration, audio_path)
-        from engine.align import proportional_fallback
-        story_words = proportional_fallback(
-            content.narration_text, duration)
-        core.log(f"Fallback timings: {len(story_words)} proportional words")
+        narration = _proportional_result(content, cfg, audio_path, duration)
+        core.log(f"Fallback timings: "
+                 f"{len(narration.extras.get('words') or [])} "
+                 f"proportional words")
+    duration = narration.duration
     core.log(f"Demo duration: {duration:.1f}s for {nwords} words")
     if nwords < 400:
         # Honest scope note: the 126-word bundled sample sits below the
@@ -317,31 +286,21 @@ def render_demo(tts: str = "auto", words: int | None = None) -> Path:
                  "budget; demo is a short timing check, not full-length "
                  "proof.")
 
-    srt_path = ASSETS / "demo_story.srt"
-    from engine.srt import write_srt
-    write_srt(story_words, srt_path, gapless=True)
-
-    # Backgrounds: BG_DIR files when present, else testsrc color clips.
-    bg_dir = _bg_dir()
-    local = _local_backgrounds(bg_dir)
-    bg_clips: list[Path] = []
-    if local:
-        core.log(f"Using {len(local)} local background(s) from {bg_dir}")
-        bg_clips = local[:3]
-    else:
-        core.log(f"BG_DIR '{bg_dir}' empty/missing: generating "
-                  f"{len(BG_SOURCES)} testsrc color clips (no API)...")
-        seg = duration / len(BG_SOURCES)
-        for i, src in enumerate(BG_SOURCES):
-            clip = ASSETS / f"demo_story_bg{i}.mp4"
-            _generate_bg_clip(src, seg, clip)
-            bg_clips.append(clip)
+    # Backgrounds: real BG_DIR files when present, else generated testsrc
+    # clips. The render itself is the SAME prod visual stage.
+    _ensure_preview_backgrounds(cfg, story_workdir)
+    from niches.story.visuals import build_visuals
+    core.log("Rendering through the prod visuals stage "
+             "(niches.story.visuals.build_visuals)...")
+    result = build_visuals(content, narration, cfg, story_workdir)
 
     out_path = OUT / "demo_story.mp4"
-    core.log(f"Rendering demo video to {out_path}...")
-    # Card + center word-pop captions burned over the BG track.
-    _render_story_captioned(bg_clips, audio_path, story_words,
-                            content, out_path, story_workdir)
+    shutil.copy(result.mp4, out_path)
+    if result.srt:
+        shutil.copy(result.srt, OUT / "demo_story.srt")
+    thumb = result.extras.get("thumb")
+    if thumb:
+        shutil.copy(thumb, OUT / "demo_story_thumb.jpg")
 
     n_audio, mean_db = _assert_audible_audio(out_path)
     size_kb = out_path.stat().st_size // 1024

@@ -172,9 +172,9 @@ class StoryConfig(NicheConfig):
     # above the bare seconds*wps floor (targets mid-range, not the floor).
     # Does NOT apply to a history-measured rate — that already includes it.
     length_overshoot: float = 1.12
-    # Caption style (burned word-pop on 1080x1920; 132 = +10% net after
-    # 144 read slightly big; STORY_ASS_FONTSIZE overrides).
-    ass_fontsize: int = 158
+    # Caption style (burned word-pop on 1080x1920; nudged down 158 -> 145;
+    # STORY_ASS_FONTSIZE overrides).
+    ass_fontsize: int = 145
     # Network knobs.
     timeout: int = 40
     tts_timeout: int = 90
@@ -279,7 +279,7 @@ class StoryConfig(NicheConfig):
             edge_rate_female=env_str("EDGE_RATE_FEMALE", "+28%", "STORY_") or "+28%",
             edge_pitch=env_str("EDGE_PITCH", "+0Hz", "STORY_") or "+0Hz",
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
-            ass_fontsize=env_int("ASS_FONTSIZE", 158, "STORY_"),
+            ass_fontsize=env_int("ASS_FONTSIZE", 145, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),
             thumb_offset_seconds=env_float(
                 "THUMB_OFFSET_SECONDS", 1.0, "STORY_"),

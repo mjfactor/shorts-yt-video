@@ -188,11 +188,10 @@ def write_ass(words: list[dict], out_ass: str | Path, *,
 # ---------------------------------------------------------------------------
 
 WORDPOP_FONTNAME = "Montserrat ExtraBold"
-# Caption size 132 (orig 120 -> 144 slightly big -> 132, +10% net):
-# user frame showed small word-pop ("speak") at 120, slightly big at 144.
-# Outline 9 / shadow 3 keep the stroke proportionate; 60px side margins +
-# <=14-char groups stay in safe area.
-WORDPOP_FONTSIZE = 158
+# Caption size nudged 158 -> 145 (read slightly big). Group width scales
+# with size via _max_chars_for(), so 60px side margins stay in the safe
+# area; outline 9 / shadow 3 keep the stroke proportionate.
+WORDPOP_FONTSIZE = 145
 # Import-time snapshot of pop_tag() (env as of import). Kept for callers that
 # reference the constant; the writers themselves call pop_tag() at write time.
 WORDPOP_POP = pop_tag()
