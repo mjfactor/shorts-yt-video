@@ -1820,6 +1820,67 @@
       "narratorGender": "female",
       "words": 440,
       "duration": 110.18
+    },
+    {
+      "date": "2026-10-16_162941",
+      "title": "My Gym Locked My Locker Forever 🔐😡 #shorts",
+      "niche": "story",
+      "tags": [
+        "gymstory",
+        "lockerroom",
+        "badservice",
+        "pettyrevenge",
+        "storytime"
+      ],
+      "videoId": "m_Cw005LDy4",
+      "tiktokBufferPostId": null,
+      "used_ids": [],
+      "narration": "My Gym Locked My Locker Forever. I walked into the local fitness club on a Tuesday evening carrying my gym bag and wearing my worn out sneakers. The front desk worker gave me a strange look as I scann",
+      "premise": "My Gym Locked My Locker Forever. I walked into the local fitness club on a Tuesday evening carrying my gym bag and wearing my worn out sneakers. The front desk worker gave me a strange look as I scann",
+      "key_words": [
+        "gym",
+        "locker",
+        "manager",
+        "padlock",
+        "belongings",
+        "review"
+      ],
+      "skeleton": "",
+      "topic": "social-media",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 435,
+      "duration": 108.59
+    },
+    {
+      "date": "2026-10-16_204824",
+      "title": "My Boss Billed Me For The Office Coffee ☕💸 #shorts",
+      "niche": "story",
+      "tags": [
+        "revenge",
+        "office",
+        "work",
+        "boss",
+        "petty"
+      ],
+      "videoId": "Yrkm0k2-B9E",
+      "tiktokBufferPostId": "6ad28fe6c34368e4b092e900",
+      "used_ids": [],
+      "narration": "My boss billed me for the office coffee. I honestly thought it was a joke when the invoice hit my inbox on Friday afternoon. My boss, Dave, had been obsessed with cutting costs lately. He started moni",
+      "premise": "My boss billed me for the office coffee. I honestly thought it was a joke when the invoice hit my inbox on Friday afternoon. My boss, Dave, had been obsessed with cutting costs lately. He started moni",
+      "key_words": [
+        "boss",
+        "invoice",
+        "coffee",
+        "office",
+        "revenge"
+      ],
+      "skeleton": "boss|money",
+      "topic": "petty-revenge",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 422,
+      "duration": 95.41
     }
   ]
 }
