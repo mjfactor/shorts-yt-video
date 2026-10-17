@@ -101,8 +101,8 @@ class StoryConfig(NicheConfig):
     channel_handle: str = "@UnhingedStories"
     avatar_path: str = "assets/avatar.png"
     # Card engagement row (KoalaReads-style decorative placeholders).
-    card_likes: str = "420+"
-    card_shares: str = "420+"
+    card_likes: str = "930+"
+    card_shares: str = "930+"
     card_show_reactions: bool = True
     # Clip source: the only background footage source is this folder.
     # An empty folder is a hard render failure, never a silent fallback.
@@ -299,8 +299,8 @@ class StoryConfig(NicheConfig):
                 "THUMB_OFFSET_SECONDS", 1.0, "STORY_"),
             channel_handle=env_str("CHANNEL_HANDLE", "@UnhingedStories", "STORY_") or "@UnhingedStories",
             avatar_path=env_str("AVATAR_PATH", "assets/avatar.png", "STORY_") or "assets/avatar.png",
-            card_likes=env_str("CARD_LIKES", "420+", "STORY_") or "420+",
-            card_shares=env_str("CARD_SHARES", "420+", "STORY_") or "420+",
+            card_likes=env_str("CARD_LIKES", "930+", "STORY_") or "930+",
+            card_shares=env_str("CARD_SHARES", "930+", "STORY_") or "930+",
             card_show_reactions=env_bool("CARD_SHOW_REACTIONS", True, "STORY_"),
             bg_dir=env_str("BG_DIR", "assets/backgrounds", "STORY_") or "assets/backgrounds",
             bg_single_speed=max(0.2, env_float("BG_SINGLE_SPEED", 1.8,

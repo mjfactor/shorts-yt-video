@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 DEFAULT_BOLD_FONTS = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -248,23 +248,24 @@ def render_card(text: str, highlight_word: str, *, handle: str,
 
 
 # ---------------------------------------------------------------------------
-# Spec-exact opening card (story niche): ~900px RGBA, pure white #FFFFFF.
+# Mobile-first opening card: transparent RGBA, themeable social-post layout.
 # ---------------------------------------------------------------------------
 
 SPEC_CARD_THEME = {
     "card_fill": (255, 255, 255, 255),     # Clean, modern pure white
-    "card_border": (225, 228, 232, 255),   # Subtle border edge
+    "card_border": (229, 232, 237, 255),
     "font_family": "Montserrat ExtraBold",
-    "radius": 40,
-    "avatar_size": 96,
+    "radius": 32,
+    "avatar_size": 76,
     "avatar_bg": (30, 30, 34, 255),
     "handle_color": (20, 23, 26, 255),
-    "handle_size": 38,
+    "handle_size": 32,
     "badge_color": (29, 155, 240, 255),
-    "badge_radius": 13,
+    "badge_radius": 11,
     "text_color": (18, 18, 20, 255),
     "highlight_color": (224, 0, 0, 255),   # Vibrant red #E00000
-    "body_size": 54,
+    "highlight_fill": (255, 237, 240, 255),
+    "body_size": 62,
     "body_min_size": 32,
     "body_max_lines": 3,
     "icon_color": (120, 125, 132, 255),
@@ -274,13 +275,25 @@ SPEC_CARD_THEME = {
     "upvote_color": (255, 69, 0, 255),
     "comment_color": (16, 185, 129, 255),
     "bookmark_color": (245, 158, 11, 255),
-    "likes_text": "720+",
-    "shares_text": "413+",
+    "likes_text": "930+",
+    "shares_text": "930+",
     "engagement_color": (120, 125, 132, 255),
-    "engagement_size": 32,
+    "engagement_size": 24,
     "show_awards": True,
     "show_reactions": True,
-    "pad": 36,
+    "pad": 32,
+    "shadow_color": (16, 24, 40, 58),
+    "shadow_blur": 9,
+    "shadow_margin": 18,
+    "divider_color": (233, 236, 240, 255),
+    "control_fill": (245, 246, 248, 255),
+    "label_text": "",
+    "label_color": (103, 111, 123, 255),
+    "label_fill": None,
+    "header_fill": None,
+    "header_gradient": None,
+    "accent_colors": None,
+    "highlight_gradient": None,
     "heart_icon_path": "assets/icons/heart.png",
     "share_icon_path": "assets/icons/share.png",
     "upvote_icon_path": "assets/icons/upvote.png",
@@ -300,10 +313,11 @@ def _spec_handle_letter(handle: str) -> str:
 
 
 def _spec_glyph_width(font, word: str) -> int:
-    """Word width via textbbox measurement (font.getbbox, no Draw needed)."""
+    """Reserve both the text advance and any glyph overhang when laying out."""
     try:
         box = font.getbbox(word)
-        return max(0, int(box[2]) - int(box[0]))
+        ink = max(0, int(box[2]) - int(box[0]))
+        return max(ink, math.ceil(font.getlength(word)))
     except Exception:
         return len(word) * int(getattr(font, "size", 20)) // 2
 
@@ -324,12 +338,14 @@ def _spec_wrap_text(text: str, highlight_word: str, max_w: int,
         font = load_font(size, bold=True, theme=theme)
         space_w = _spec_glyph_width(font, " ")
         lines, cur, cur_w = [], [], 0
+        widest_word = 0
         for w in words:
             clean_w = w.strip(".,!?\"'").lower()
             color = (theme["highlight_color"]
                      if hl and clean_w == hl
                      else theme["text_color"])
             ww = _spec_glyph_width(font, w)
+            widest_word = max(widest_word, ww)
             if cur and cur_w + space_w + ww > max_w:
                 lines.append(cur)
                 cur, cur_w = [], 0
@@ -337,10 +353,99 @@ def _spec_wrap_text(text: str, highlight_word: str, max_w: int,
             cur_w += (space_w if cur_w else 0) + ww
         if cur:
             lines.append(cur)
-        if len(lines) <= max_lines or size <= min_size:
+        if (len(lines) <= max_lines and widest_word <= max_w) or size <= min_size:
             break
-        size = max(min_size, size - 4)
-    return lines, font, size, size + 14
+        size = max(min_size, size - 2)
+
+    def line_width(line):
+        return (sum(_spec_glyph_width(font, word) for word, _ in line)
+                + max(0, len(line) - 1) * space_w)
+
+    # Avoid a packed first line followed by a lonely trailing word. Moving
+    # words only across adjacent lines preserves the spoken hook verbatim.
+    for i in range(len(lines) - 2, -1, -1):
+        while len(lines[i]) > 1:
+            left, right = lines[i][:-1], [lines[i][-1], *lines[i + 1]]
+            old_gap = abs(line_width(lines[i]) - line_width(lines[i + 1]))
+            new_gap = abs(line_width(left) - line_width(right))
+            if line_width(right) > max_w or new_gap >= old_gap:
+                break
+            lines[i], lines[i + 1] = left, right
+    return lines, font, size, size + 12
+
+
+def _spec_fit_label(text: str, max_w: int, size: int, theme: dict):
+    """Fit secondary text without letting a long handle overlap its badge."""
+    min_size = min(size, 20)
+    font = load_font(size, bold=True, theme=theme)
+    while size > min_size and _spec_glyph_width(font, text) > max_w:
+        size -= 1
+        font = load_font(size, bold=True, theme=theme)
+    if _spec_glyph_width(font, text) > max_w:
+        while text and _spec_glyph_width(font, text + "…") > max_w:
+            text = text[:-1]
+        text = text.rstrip() + "…" if text else ""
+    return text, font
+
+
+def _spec_gradient(size: tuple[int, int], colors) -> Image.Image:
+    """Horizontal two-color ramp for the frame and small accent surfaces."""
+    ramp = Image.linear_gradient("L").rotate(90).resize(size)
+    return Image.composite(Image.new("RGBA", size, colors[1]),
+                           Image.new("RGBA", size, colors[0]), ramp)
+
+
+def _spec_round_mask(size: tuple[int, int], box, radius: int) -> Image.Image:
+    """Antialias curved edges without supersampling every text/asset draw."""
+    mask = Image.new("L", (size[0] * 2, size[1] * 2), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        tuple(int(v * 2) for v in box), radius=radius * 2, fill=255)
+    return mask.resize(size, Image.Resampling.LANCZOS)
+
+
+def _spec_surface(width: int, height: int, bottom: int,
+                  header_bottom: int, theme: dict) -> Image.Image:
+    """Paint the optional accent frame and masthead inside one RGBA canvas."""
+    size = (width, height)
+    inset, radius = int(theme["shadow_margin"]), int(theme["radius"])
+    shadow_color = theme["shadow_color"]
+    shadow_mask = Image.new("L", size, 0)
+    ImageDraw.Draw(shadow_mask).rounded_rectangle(
+        (inset, inset + 7, width - inset, bottom + 7),
+        radius=radius, fill=shadow_color[3])
+    img = Image.new("RGBA", size, shadow_color[:3] + (0,))
+    img.putalpha(shadow_mask.filter(ImageFilter.GaussianBlur(theme["shadow_blur"])))
+    bounds = (inset, inset, width - inset, bottom)
+    accents = theme.get("accent_colors")
+    if accents:
+        frame = _spec_gradient(size, accents)
+        frame.putalpha(_spec_round_mask(size, bounds, radius))
+        img.alpha_composite(frame)
+        border = 3
+    else:
+        ImageDraw.Draw(img).rounded_rectangle(
+            bounds, radius=radius, fill=theme["card_border"])
+        border = 2
+    inner = (inset + border, inset + border,
+             width - inset - border, bottom - border)
+    inner_mask = _spec_round_mask(size, inner, max(1, radius - border))
+    face = Image.new("RGBA", size, theme["card_fill"])
+    alpha = face.getchannel("A")
+    face.putalpha(Image.composite(alpha, Image.new("L", size, 0), inner_mask))
+    img.alpha_composite(face)
+    if theme.get("header_fill"):
+        header = (_spec_gradient(size, theme["header_gradient"])
+                  if theme.get("header_gradient")
+                  else Image.new("RGBA", size, theme["header_fill"]))
+        header_mask = inner_mask.copy()
+        ImageDraw.Draw(header_mask).rectangle(
+            (0, header_bottom, width, height), fill=0)
+        header.putalpha(header_mask)
+        img.alpha_composite(header)
+        if accents:
+            rule = _spec_gradient((width - 2 * (inset + border), 3), accents)
+            img.alpha_composite(rule, (inset + border, header_bottom - 3))
+    return img
 
 
 def _bezier_point(p0: tuple[float, float], p1: tuple[float, float],
@@ -594,9 +699,9 @@ def _draw_spec_bookmark(draw: ImageDraw.ImageDraw, x: int, y: int,
 
 def _draw_engagement_count(draw: ImageDraw.ImageDraw, x: int, y_center: float,
                            text: str, font, color: tuple) -> int:
-    """Draw a count label (e.g. "420+") vertically centered; returns width."""
-    label = str(text or "").strip() or "420+"
-    label = "".join(c for c in label if 32 <= ord(c) < 127) or "420+"
+    """Draw a count label (e.g. "930+") vertically centered; returns width."""
+    label = str(text or "").strip() or "930+"
+    label = "".join(c for c in label if 32 <= ord(c) < 127) or "930+"
     top = int(y_center - int(getattr(font, "size", 30)) / 2)
     draw.text((x, top), label, font=font, fill=color)
     try:
@@ -631,117 +736,154 @@ def render_spec_card(text: str, highlight_word: str, *, handle: str,
                      shares: str | None = None,
                      show_reactions: bool | None = None,
                      show_awards: bool | None = None) -> Path:
-    """Spec-exact viral social card (KoalaReads style): transparent RGBA ~900px wide.
+    """Render a mobile-readable social card with transparent shadow margins.
 
-    Header:
-    - Circular avatar at top-left
-    - Bold handle + Twitter/Instagram verified blue badge
-    - Colorful strip of authentic Reddit/social awards directly beneath handle
-
-    Body:
-    - Full-width left-aligned text (starts under the avatar header)
-    - Dynamic font scaling for punchy 1-3 lines
-    - Highlight word rendered in bold red (#E00000)
-
-    Bottom:
-    - Clean engagement row with neutral grey hollow heart + like count (e.g. 732+)
-    - Modern share tray icon + share count (e.g. 420+)
-    - Counts and visibility customizable via kwargs or theme
+    The hook stays verbatim; only the handle may shrink or ellipsize.
+    Counts remain caller-supplied decorative labels, not live engagement.
+    ``show_reactions`` is the compatibility alias for ``show_awards``.
     """
-    th = dict(SPEC_CARD_THEME)
-    th.update(theme or {})
-    likes_text = (str(likes) if likes is not None
-                  else str(th.get("likes_text", "732+")))
-    shares_text = (str(shares) if shares is not None
-                   else str(th.get("shares_text", "420+")))
-    awards = (show_awards if show_awards is not None
-              else (show_reactions if show_reactions is not None
-                    else bool(th.get("show_awards", th.get("show_reactions", True)))))
+    overrides = theme or {}
+    th = {**SPEC_CARD_THEME, **overrides}
+    likes_text = str(likes) if likes is not None else str(th["likes_text"])
+    shares_text = str(shares) if shares is not None else str(th["shares_text"])
+    if show_awards is not None:
+        awards = show_awards
+    elif show_reactions is not None:
+        awards = show_reactions
+    else:
+        awards = bool(overrides.get("show_awards", overrides.get(
+            "show_reactions", th["show_awards"])))
 
-    pad = int(th.get("pad", 36))
-    av_size = int(th.get("avatar_size", 96))
-    hx = pad + av_size + 18
+    inset = int(th["shadow_margin"])
+    pad = min(int(th["pad"]), width // 12)
+    left, right = inset + pad, width - inset - pad
+    content_w = right - left
+    top = inset + pad
+    av_size = min(int(th["avatar_size"]), width // 5)
+    hx = left + av_size + 16
+    badge_r = int(th["badge_radius"])
+    menu_w = 32 if width >= 500 else 0
+    handle_text, handle_font = _spec_fit_label(
+        str(handle), max(1, right - hx - menu_w - 2 * badge_r - 14),
+        int(th["handle_size"]), th)
+    label = str(th.get("label_text", "")).strip()
+    secondary = bool(label or awards)
+    handle_box = handle_font.getbbox(handle_text or "Ag")
+    handle_h = handle_box[3] - handle_box[1]
+    handle_y = top + (5 if secondary else (av_size - handle_h) // 2)
 
-    # Body spans full width of card (starts from left margin under avatar)
-    max_body_w = width - 2 * pad - 8
     lines, body_font, _size, lh = _spec_wrap_text(
-        text, highlight_word, max_body_w, th)
+        text, highlight_word, content_w - 8, th)
+    header_h = max(av_size, handle_h + (38 if secondary else 0))
+    header_bottom = top + header_h + 20
+    body_y = (header_bottom + 30 if th.get("header_fill")
+              else top + header_h + 28)
+    body_box = body_font.getbbox("Ag", anchor="ls")
+    body_h = max(0, len(lines) - 1) * lh + body_box[3] - body_box[1]
+    divider_y = body_y + body_h + 26
+    row_top, row_h = divider_y + 17, 46
+    height = row_top + row_h + pad + inset + 7
+    surface_bottom = height - inset - 7
 
-    header_h = av_size + (24 if awards else 8)
-    body_y = pad + header_h + 10
-    body_h = len(lines) * lh
-    eng_y = body_y + body_h + 18
-    height = eng_y + 44 + pad
+    # All decoration stays inside the same PNG bounds for both consumers:
+    # FFmpeg's opening overlay and the Pillow thumbnail composite.
+    img = _spec_surface(width, height, surface_bottom, header_bottom, th)
+    d = ImageDraw.Draw(img)
+    if th.get("accent_colors"):
+        ring_size = av_size + 10
+        ring = _spec_gradient((ring_size, ring_size), th["accent_colors"])
+        ring.putalpha(_spec_round_mask(
+            ring.size, (0, 0, ring_size - 1, ring_size - 1), ring_size // 2))
+        img.alpha_composite(ring, (left - 5, top - 5))
+    avatar = circular_avatar(avatar_path, av_size, theme={
+        **th, "avatar_fallback_text": _spec_handle_letter(handle)})
+    img.alpha_composite(avatar, (left, top))
+    d.text((hx, handle_y), handle_text, font=handle_font,
+           fill=th["handle_color"], anchor="lt")
+    badge_cx = hx + _spec_glyph_width(handle_font, handle_text) + badge_r + 8
+    draw_verified_badge(d, badge_cx, handle_y + handle_h // 2,
+                        badge_r, color=th["badge_color"])
+    if menu_w:
+        for dx in (0, 8, 16):
+            cx, cy = right - 18 + dx, top + 17
+            d.ellipse((cx - 2, cy - 2, cx + 2, cy + 2), fill=th["icon_color"])
+
+    secondary_y = handle_y + handle_h + 12
+    sx = hx
+    if label:
+        label_text, label_font = _spec_fit_label(
+            label, max(1, right - hx - 16), 18, th)
+        label_w = _spec_glyph_width(label_font, label_text) + 18
+        d.rounded_rectangle((sx, secondary_y, sx + label_w, secondary_y + 26),
+                            radius=8, fill=th.get("label_fill") or th["control_fill"])
+        d.text((sx + 9, secondary_y + 5), label_text, font=label_font,
+               fill=th["label_color"], anchor="lt")
+        sx += label_w + 12
+    if awards:
+        # A compact three-award crop keeps the familiar social-post cue
+        # without the old nine-icon strip competing with the hook.
+        awards_w = min(76, max(0, right - sx))
+        if awards_w:
+            strip = Image.new("RGBA", (awards_w, 24), (0, 0, 0, 0))
+            _draw_mini_awards(ImageDraw.Draw(strip), 0, 0, size=22, spacing=5)
+            img.alpha_composite(strip, (sx, secondary_y + 1))
+
+    space_w = _spec_glyph_width(body_font, " ")
+    baseline = body_y - body_box[1]
+    highlighted = (highlight_word or "").strip().strip(".,!?\"'").lower()
+    for line in lines:
+        x = left + 4
+        for word, color in line:
+            if (highlighted and word.strip(".,!?\"'").lower() == highlighted
+                    and th.get("highlight_fill")):
+                box = d.textbbox((x, baseline), word, font=body_font, anchor="ls")
+                marker_box = (box[0] - 4, box[1] - 3, box[2] + 4, box[3] + 3)
+                if th.get("highlight_gradient"):
+                    marker_size = (marker_box[2] - marker_box[0] + 1,
+                                   marker_box[3] - marker_box[1] + 1)
+                    marker = _spec_gradient(marker_size, th["highlight_gradient"])
+                    marker.putalpha(_spec_round_mask(
+                        marker_size, (0, 0, marker_size[0] - 1, marker_size[1] - 1), 10))
+                    img.alpha_composite(marker, marker_box[:2])
+                else:
+                    d.rounded_rectangle(marker_box, radius=8, fill=th["highlight_fill"])
+            d.text((x, baseline), word, font=body_font, fill=color, anchor="ls")
+            x += _spec_glyph_width(body_font, word) + space_w
+        baseline += lh
+
+    d.line((left, divider_y, right, divider_y), fill=th["divider_color"], width=2)
+    labels = ["".join(c for c in value.strip() if 32 <= ord(c) < 127) or "930+"
+              for value in (likes_text, shares_text)]
+    eng_size = int(th["engagement_size"])
+    while True:
+        eng_font = load_font(eng_size, bold=False, theme=th)
+        item_widths = [_spec_glyph_width(eng_font, value) + 60 for value in labels]
+        if sum(item_widths) + 12 <= content_w or eng_size <= 14:
+            break
+        eng_size -= 1
+    cur_x = left
+    row_mid = row_top + row_h // 2
+    eng_color = th["engagement_color"]
+    for i, (value, item_w) in enumerate(zip(labels, item_widths)):
+        d.rounded_rectangle((cur_x, row_top, cur_x + item_w, row_top + row_h),
+                            radius=row_h // 2, fill=th["control_fill"])
+        icon_x = cur_x + 13
+        icon_path = th.get("heart_icon_path" if i == 0 else "share_icon_path")
+        if not _paste_custom_icon(img, icon_path, icon_x, row_mid - 12, 24):
+            if i == 0:
+                heart = _draw_heart_filled if th.get("heart_filled") else _draw_heart_outline
+                heart(d, icon_x + 12, row_mid, size=24, color=th["heart_color"])
+            else:
+                _draw_share_tray(d, icon_x, row_mid - 12, size=24,
+                                 color=th["share_color"], stroke=2)
+        d.text((icon_x + 34, row_mid), value, font=eng_font,
+               fill=eng_color, anchor="lm")
+        cur_x += item_w + 12
+    if right - cur_x >= 38:
+        _draw_spec_bookmark(d, right - 21, row_top + 9,
+                            color=th["icon_color"], size=27)
 
     out = Path(out_png)
-    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    # 1. Card Background
-    card_fill = th.get("card_fill", (255, 255, 255, 255))
-    card_border = th.get("card_border", (225, 228, 232, 255))
-    radius = int(th.get("radius", 40))
-    d.rounded_rectangle([4, 4, width - 4, height - 4],
-                        radius=radius, fill=card_fill,
-                        outline=card_border, width=2)
-
-    # 2. Circular Avatar
-    letter = _spec_handle_letter(handle)
-    avatar = circular_avatar(
-        avatar_path, av_size,
-        theme={**th, "avatar_fallback_text": letter})
-    img.paste(avatar, (pad, pad), avatar)
-
-    # 3. Handle & Verified Badge
-    handle_h = int(th.get("handle_size", 38))
-    handle_font = load_font(handle_h, bold=True, theme=th)
-    handle_y = pad + (10 if awards else max(0, (av_size - handle_h) // 2))
-    d.text((hx, handle_y), handle, font=handle_font, fill=th["handle_color"])
-    badge_r = int(th.get("badge_radius", 13))
-    badge_cx = hx + text_width(d, handle, handle_font) + 20
-    badge_cy = handle_y + handle_h // 2 + 1
-    draw_verified_badge(d, badge_cx, badge_cy, badge_r,
-                        color=th.get("badge_color", (29, 155, 240, 255)))
-
-    # 4. Mini Awards Strip (directly below handle)
-    if awards:
-        awards_y = handle_y + handle_h + 8
-        _draw_mini_awards(d, hx, awards_y, size=24, spacing=6)
-
-    # 5. Body Text (left-aligned under header)
-    space_w = _spec_glyph_width(body_font, " ")
-    y = body_y
-    for line in lines:
-        x = pad + 4
-        for w, color in line:
-            d.text((x, y), w, font=body_font, fill=color)
-            x += _spec_glyph_width(body_font, w) + space_w
-        y += lh
-
-    # 6. Bottom Engagement Row (KoalaReads style)
-    eng_font = load_font(int(th.get("engagement_size", 32)), bold=False, theme=th)
-    eng_color = th.get("engagement_color", (120, 125, 132, 255))
-    cur_x = pad + 6
-    row_mid = eng_y + 16
-
-    # Item 1: Outline / Filled Heart + likes count
-    heart_col = th.get("heart_color", (235, 32, 60, 255))
-    pasted_heart = _paste_custom_icon(img, th.get("heart_icon_path"), cur_x, row_mid - 15, 30)
-    if not pasted_heart:
-        if th.get("heart_filled", False):
-            _draw_heart_filled(d, cur_x + 15, row_mid, size=30, color=heart_col)
-        else:
-            _draw_heart_outline(d, cur_x + 15, row_mid, size=30, color=heart_col, stroke=3)
-    cur_x += 34 + 10
-    cur_x += _draw_engagement_count(d, cur_x, row_mid, likes_text, eng_font, eng_color) + 40
-
-    # Item 2: Share Tray + shares count
-    pasted_share = _paste_custom_icon(img, th.get("share_icon_path"), cur_x, row_mid - 15, 30)
-    if not pasted_share:
-        _draw_share_tray(d, cur_x, row_mid - 15, size=30, color=eng_color, stroke=3)
-    cur_x += 32 + 10
-    cur_x += _draw_engagement_count(d, cur_x, row_mid, shares_text, eng_font, eng_color)
-
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(out, "PNG")
     return out

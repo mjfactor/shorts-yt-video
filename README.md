@@ -210,8 +210,14 @@ secrets/vars do not flow into jobs automatically.
   `.env` stay uncommitted, except the brand fonts/avatar, the BGM pool and the
   background clips listed above.
 
-Card branding (`STORY_CHANNEL_HANDLE`, theme colors) is config, not code —
-edit env, not `visuals.py`.
+The Reddit-style opening card pairs a bold neon cyan/magenta frame with a
+dark branded masthead and a light, high-contrast hook panel. Decorative likes
+and shares default to `930+` each; override them with `STORY_CARD_LIKES` and
+`STORY_CARD_SHARES`. Set the handle with `STORY_CHANNEL_HANDLE`; the production
+theme lives in `niches/story/visuals.py`.
+
+Offline card/config checks: `python tools/test_reddit_card.py` (no network,
+TTS, FFmpeg, uploads, or persistent render outputs).
 
 ## Synthetic-content disclosure
 
