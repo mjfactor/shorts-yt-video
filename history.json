@@ -1943,6 +1943,36 @@
       "narratorGender": "female",
       "words": 529,
       "duration": 116.26
+    },
+    {
+      "date": "2026-10-17_102620",
+      "title": "My coworker stole my clinic hours 🩺⏰ #shorts",
+      "niche": "story",
+      "tags": [
+        "workplace",
+        "coworker",
+        "schedule",
+        "office",
+        "drama"
+      ],
+      "videoId": "O68AZr5xYoc",
+      "tiktokBufferPostId": null,
+      "used_ids": [],
+      "narration": "My coworker stole my clinic hours. I work as a dental hygienist at a busy family practice downtown. We have four treatment rooms and three permanent hygienists sharing the roster. Mark joined our team",
+      "premise": "My coworker stole my clinic hours. I work as a dental hygienist at a busy family practice downtown. We have four treatment rooms and three permanent hygienists sharing the roster. Mark joined our team",
+      "key_words": [
+        "coworker",
+        "clinic",
+        "hours",
+        "schedule",
+        "manager"
+      ],
+      "skeleton": "",
+      "topic": "workplace",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female",
+      "words": 512,
+      "duration": 127.85
     }
   ]
 }
