@@ -2097,6 +2097,37 @@
       "narratorGender": "female",
       "words": 433,
       "duration": 109.85
+    },
+    {
+      "date": "2026-10-18_080840",
+      "title": "My Landlord Added My Dog to the Rent 🐕💸 #shorts",
+      "niche": "story",
+      "tags": [
+        "landlord",
+        "rent",
+        "dog",
+        "apartment",
+        "fees"
+      ],
+      "videoId": "Yrv6vtSPJac",
+      "tiktokBufferPostId": "6ad4806eae173d6e00f1411b",
+      "used_ids": [],
+      "narration": "My landlord added my dog to the rent. I honestly stared at the online portal invoice for a solid minute on Friday afternoon, trying to figure out why my monthly payment jumped by seventy five dollars.",
+      "premise": "My landlord added my dog to the rent. I honestly stared at the online portal invoice for a solid minute on Friday afternoon, trying to figure out why my monthly payment jumped by seventy five dollars.",
+      "key_words": [
+        "landlord",
+        "dog",
+        "rent",
+        "invoice",
+        "lease",
+        "manager"
+      ],
+      "skeleton": "landlord|money",
+      "topic": "money",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female",
+      "words": 448,
+      "duration": 99.74
     }
   ]
 }
