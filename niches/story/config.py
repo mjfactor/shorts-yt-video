@@ -81,10 +81,9 @@ class StoryConfig(NicheConfig):
     # default (+28%). STORY_ prefix wins, bare EDGE_RATE_FEMALE falls back.
     edge_rate_female: str = "+28%"
     edge_pitch: str = "+0Hz"
-    # Female voices get their own pitch lift (same name-match as the
-    # female rate): +20Hz off the audition ladder keeps Jenny warm
-    # without a cartoonish shift. Male/custom voices stay on edge_pitch.
-    edge_pitch_female: str = "+20Hz"
+    # Female pitch uses the same voice-name matching as the female rate;
+    # male/custom voices stay on edge_pitch.
+    edge_pitch_female: str = "+5Hz"
     # Captions: 1/true = uppercase word-pop.
     caption_upper: bool = False
     # Card floor: overlay shows max(card_seconds, card_line_end + pad).
@@ -290,8 +289,8 @@ class StoryConfig(NicheConfig):
             edge_rate=env_str("EDGE_RATE", "+20%", "STORY_") or "+20%",
             edge_rate_female=env_str("EDGE_RATE_FEMALE", "+28%", "STORY_") or "+28%",
             edge_pitch=env_str("EDGE_PITCH", "+0Hz", "STORY_") or "+0Hz",
-            edge_pitch_female=(env_str("EDGE_PITCH_FEMALE", "+20Hz", "STORY_")
-                               or "+20Hz"),
+            edge_pitch_female=(env_str("EDGE_PITCH_FEMALE", "+5Hz", "STORY_")
+                               or "+5Hz"),
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
             ass_fontsize=env_int("ASS_FONTSIZE", 115, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),
