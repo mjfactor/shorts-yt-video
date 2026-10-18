@@ -1973,6 +1973,68 @@
       "narratorGender": "female",
       "words": 512,
       "duration": 127.85
+    },
+    {
+      "date": "2026-10-17_175139",
+      "title": "My fiancé forgot our anniversary trip ✈️🤦‍♂️ #shorts",
+      "niche": "story",
+      "tags": [
+        "relationship",
+        "fiance",
+        "anniversary",
+        "story",
+        "work"
+      ],
+      "videoId": "yCbTURM-v1c",
+      "tiktokBufferPostId": null,
+      "used_ids": [],
+      "narration": "My fiancé forgot our anniversary trip. I stood in our hallway on a Thursday morning with my suitcase zipped shut. I clutched my passport in my hand while he walked out of our home office wearing his s",
+      "premise": "My fiancé forgot our anniversary trip. I stood in our hallway on a Thursday morning with my suitcase zipped shut. I clutched my passport in my hand while he walked out of our home office wearing his s",
+      "key_words": [
+        "fiancé",
+        "trip",
+        "suitcase",
+        "startup",
+        "weekend",
+        "plant"
+      ],
+      "skeleton": "",
+      "topic": "relationship",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 454,
+      "duration": 104.71
+    },
+    {
+      "date": "2026-10-17_202422",
+      "title": "My Tailor Lost My Grandfather's Watch ⌚🧵 #shorts",
+      "niche": "story",
+      "tags": [
+        "story",
+        "tailor",
+        "heirloom",
+        "mistake",
+        "family"
+      ],
+      "videoId": "CaxWWR1dPtc",
+      "tiktokBufferPostId": "6ad3daab0a208cb32337e49c",
+      "used_ids": [],
+      "narration": "My tailor lost my grandfather's watch. I brought it into the cramped alterations shop downtown to have the heavy leather strap replaced before my sister's wedding. Mr. Vance took the gold heirloom fro",
+      "premise": "My tailor lost my grandfather's watch. I brought it into the cramped alterations shop downtown to have the heavy leather strap replaced before my sister's wedding. Mr. Vance took the gold heirloom fro",
+      "key_words": [
+        "tailor",
+        "watch",
+        "shop",
+        "grandfather",
+        "wedding",
+        "locker"
+      ],
+      "skeleton": "",
+      "topic": "never-again",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 382,
+      "duration": 95.34
     }
   ]
 }
