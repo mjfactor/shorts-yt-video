@@ -19,9 +19,8 @@ jobs:
     permissions:
       contents: write  # write = commit history.json back so next run avoids repeats
     env:
-      # Single-niche default; to run several niches, fan out with a matrix
-      # (e.g. `strategy.matrix.niche: [story, explainer, ranking]`) and set
-      # NICHE: ${{ matrix.niche }} instead.
+      # Single-niche default; to run several niches, fan out with a strategy
+      # matrix and set NICHE: ${{ matrix.niche }} instead.
       NICHE: ${{ vars.NICHE || 'story' }}
       VISIBILITY: ${{ vars.VISIBILITY || 'private' }}
       TTS_ENGINE: ${{ vars.TTS_ENGINE || 'edge' }}

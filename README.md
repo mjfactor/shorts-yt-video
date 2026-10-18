@@ -16,7 +16,7 @@ pipeline.py (thin entry: NICHE env -> niches.load_niche() -> core.run(niche))
 ├─ engine/        policy-free toolbox (no voices, speeds, or queries
 │                 baked in; the niche passes those as params):
 │                 gemini_client, tts_cache, align (estimated timings),
-│                 ass/srt captions, pexels, overlay_card, audio_mix,
+│                 ass/srt captions, overlay_card, audio_mix,
 │                 ffmpeg_utils. Never imports core or any niche.
 └─ niches/<name>/ one subpackage per niche, 3 stages:
                   content.py      generate_content(history, cfg) -> Content
@@ -28,10 +28,6 @@ pipeline.py (thin entry: NICHE env -> niches.load_niche() -> core.run(niche))
 
 Imports flow one way: niche → engine, niche → niches.base. Core never
 imports a niche; engine never imports core or a niche.
-
-`engine/pexels.py` still ships in the toolbox, but its only callers are the
-**deprecated** niches in `deprecated_niches/` — the story niche embeds no
-stock footage and never reads `PEXELS_API_KEY`.
 
 ## Niche contract
 
@@ -54,17 +50,6 @@ niche, so `available_niches()` returns `['story']`.
 | Niche | Format | Signature |
 |---|---|---|
 | `story` | 100–120s Reddit-style micro-story (hook → escalation → twist → payoff), 1080x1920 with story card + word-pop captions over ONE continuous local background take | re-hooks at 20–30s / 50–60s, word budget from `TARGET_MIN`/`TARGET_MAX` × measured wps |
-| `explainer` *(deprecated)* | ~60–75s "how the world around you actually works" single-concept explainer | beats carry `visual_hint`s (diagram / process_flow / stock_footage / text_card) |
-| `ranking` *(deprecated)* | ~2-min Top-5 countdown (hook, #5–#1, closer) | 7 beats, leaderboard overlay, mystery #1 blur, ≥2-shared-items dedup |
-
-> **Deprecated:** `explainer` and `ranking` are no longer loadable. They were
-> moved out of `niches/` into `deprecated_niches/`, so `NICHE=explainer` /
-> `NICHE=ranking` now raise `ImportError` from `load_niche()`. `daily.yml`
-> still exports a few `EXPLAINER_*`/`RANKING_*` env entries, but with `story`
-> as the only registered niche they are inert. The two packages are kept for
-> reference (and they are the only remaining users of `engine/pexels.py` and
-> `PEXELS_API_KEY`). The rows above describe what they still contain.
-
 ## Story premises and narrator voice
 
 `niches/story/content.py` builds a premise-first Gemini prompt. It asks the
@@ -88,10 +73,6 @@ pip install -r requirements.txt
 python pipeline.py                  # story (the only live niche)
 NICHE=story python pipeline.py       # same thing, explicit
 ```
-
-`explainer` / `ranking` are deprecated — `NICHE=explainer python pipeline.py`
-and `NICHE=ranking python pipeline.py` now fail with `ImportError` (see the
-deprecation note above); their code is parked in `deprecated_niches/`.
 
 (Windows PowerShell: `$env:NICHE="story"; python pipeline.py`.)
 Needs `ffmpeg` + `ffprobe` on PATH. Output:
@@ -129,8 +110,6 @@ ffmpeg + ffprobe.
 1. Push this folder to a **private** GitHub repo.
 2. Add Secrets (Settings → Secrets and variables → Actions):
    `GEMINI_API_KEY`, `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN`
-   (`PEXELS_API_KEY` is **not** needed for story — only the deprecated
-   niches read it, and the story workflow does not wire it through.)
 3. Get the YouTube refresh token (headless runners can't click OAuth):
    - Google Cloud Console → new project → enable **YouTube Data API v3**
    - Create **OAuth Desktop Client**, set `YT_CLIENT_ID` / `YT_CLIENT_SECRET`
@@ -147,8 +126,7 @@ cross-niche fallbacks):
 
 - `GEMINI_API_KEY` (+ `GEMINI_API_KEY_2..10` failover; comma-separated keys in one var also work)
 - `YT_CLIENT_ID` / `YT_CLIENT_SECRET` / `YT_REFRESH_TOKEN`
-- `PEXELS_API_KEY` — deprecated niches only; the story niche never reads it
-- `VISIBILITY` (default `private`), `TTS_RATE` / `TTS_PITCH` / `TTS_VOLUME`, `BGM_VOLUME`
+- `VISIBILITY` (default `private`), `BGM_VOLUME`
 - `GEMINI_TIMEOUT` / `GEMINI_TTS_TIMEOUT` / `GEMINI_TRIES` / `GEMINI_BACKOFF`
 
 Per-niche (prefix wins over the bare fallback, per `niches/base.py env_*`).
@@ -175,14 +153,6 @@ Per-niche (prefix wins over the bare fallback, per `niches/base.py env_*`).
 - Retries/timeouts: `STORY_TIMEOUT`, `STORY_TTS_TIMEOUT`, `STORY_TRIES`,
   `STORY_BACKOFF`, `STORY_LITE_RETRIES`
 
-Deprecated-niche knobs (still read inside `deprecated_niches/`; `daily.yml`
-still exports a few of them, but they are inert while `story` is the only
-registered niche): `EXPLAINER_*` — `VOICE`, `TTS_RATE/PITCH/VOLUME/ENGINE`,
-`GEMINI_TTS_VOICES`, `STILLS_PER_BEAT`, `MIN/MAX_AUDIO_SEC`, `PEXELS_MIN_WIDTH`;
-`RANKING_*` — `VOICE/VOICES`, `TTS_RATE/PITCH/VOLUME/STYLE`, `TONE`,
-`TARGET_WPM`, `STILLS_PER_BEAT`, `MIN/MAX_AUDIO_SEC`, `PEXELS_MIN_WIDTH`,
-`PEXELS_CACHE_DIR`, `BGM_VOLUME`.
-
 New vars must also be wired through `.github/workflows/daily.yml` `env:` —
 secrets/vars do not flow into jobs automatically.
 
@@ -206,12 +176,9 @@ see [the Edge TTS feature audit](docs/edge-tts-features.md).
   folder must never be empty on a runner.
 - `assets/background-musics/` — committed `bgm*.mp3` BGM pool, one random track
   per video; with no pool the story synth falls back to a drone bed.
-- `assets/pexels_cache/` — legacy stock-download cache dir (gitignored,
-  `.gitkeep` tracked). Normal story runs never fill it: only the deprecated
-  niches download stock, into their own cache dir
-  (`RANKING_PEXELS_CACHE_DIR`, default `assets/`). `out/`, `assets/*` and
-  `.env` stay uncommitted, except the brand fonts/avatar, the BGM pool and the
-  background clips listed above.
+
+`out/`, `assets/*` and `.env` stay uncommitted, except the brand fonts/avatar,
+the BGM pool and the background clips listed above.
 
 The Reddit-style opening card pairs a bold neon cyan/magenta frame with a
 dark branded masthead and a light, high-contrast hook panel. Decorative likes
@@ -258,19 +225,13 @@ TTS narration, and (in demos) tone-audio/testsrc stand-ins. When publishing:
 | YouTube uploads | 100/day | 2/day |
 | Gemini Flash | free tier | a few calls/day |
 
-Story makes **zero** Pexels calls, so Pexels rate limits/quotas do not apply to
-the live run (only to the deprecated niches).
-
 ## Known limitations
 
 - **No local transcription models** (`engine/align.py`): word timing is
   estimated proportionally (never fatal), and story narration still ships.
-- **Pexels rate limits** (429): irrelevant for story (no Pexels calls). The
-  deprecated niches' `engine/pexels.py` backs off and retries; sustained
-  limiting degrades them to fewer/older cached clips, then Pillow cards.
-- **Gemini free-tier quotas**: key rotation + backoff + OpenRouter `:free`
-  failover + offline fallback variants keep runs green, but quota exhaustion
-  means the fallback script airs — check `topicSource` in `history.json`.
+- **Gemini free-tier quotas**: key rotation + backoff + offline fallback
+  variants keep runs green, but quota exhaustion means the fallback script
+  airs — check `topicSource` in `history.json`.
 - **Shorts ceiling — verify before raising targets**: Shorts accept ~3 min
   for vertical uploads, but confirm the *current* ceiling in YouTube docs
   before raising `STORY_TARGET_MAX`/`STORY_MAX_SECONDS`. Never assume a ≤60s cap
@@ -306,7 +267,7 @@ Missing creds = TikTok skipped with a warning, YouTube unaffected.
   and audio past `MAX_SECONDS` is trimmed at a sentence end — so broken or
   runaway TTS can't become an over-long video.
 - **Dedup:** `history.json` (kept to 110) is quoted into prompts (advisory)
-  plus hard gates per niche (same topic/title, shared ranked items,
+  plus hard gates per niche (same topic/title,
   >35% story word-overlap). New entries record topic/source/genre/items
   after every successful render, even when upload is skipped.
 - **Intermediates cleanup:** working files are deleted after every run

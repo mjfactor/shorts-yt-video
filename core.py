@@ -232,9 +232,7 @@ def _stage(name: str, detail: str = "") -> None:
     log(f"--- {name} ---" + (f" {detail}" if detail else ""))
 
 
-# Glob patterns for per-run intermediates. The stock-footage cache
-# (assets/pexels_cache) is intentionally NOT listed (re-downloads waste
-# time/bandwidth), and no pattern matches it.
+# Glob patterns for per-run intermediates.
 INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png",
                          "card_*.png", "*.ass", "bg_*.mp4", "beat_*.mp3",
                          "bed.mp3", "concat.txt", "video_only.mp4", "tts_*",
@@ -242,7 +240,7 @@ INTERMEDIATE_PATTERNS = ("seg_*.mp4", "slide_*.png",
 
 
 def cleanup_intermediates(workdir: Path | None = None) -> None:
-    """Delete per-run intermediates + workdir. Keeps the download cache."""
+    """Delete per-run intermediates + workdir."""
     for pattern in INTERMEDIATE_PATTERNS:
         for p in ASSETS.glob(pattern):
             try:

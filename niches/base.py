@@ -112,7 +112,7 @@ class Niche(ABC):
     @abstractmethod
     def build_visuals(self, content: Content, narration: NarrationResult,
                       cfg: NicheConfig, workdir: Path) -> VisualsResult:
-        """Render mp4+srt (engine.pexels / overlay_card / ffmpeg_utils)."""
+        """Render mp4+srt (overlay_card / ffmpeg_utils)."""
 
     def build_metadata(self, content: Content,
                        narration: NarrationResult | None = None,

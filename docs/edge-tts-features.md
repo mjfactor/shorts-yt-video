@@ -1,6 +1,6 @@
 # edge-tts: unused features in the live story pipeline
 
-Checked **2026-10-18** against upstream README, tagged source, releases, and current upstream HEAD. Scope: `engine/` + `niches/story/` + manual voice tools; **not** `deprecated_niches/`. Research only: no synthesis, live voice-catalogue request, dependency upgrade, or runtime/configuration edits. Female-pitch tuning is separate work; pitch is already integrated.
+Checked **2026-10-18** against upstream README, tagged source, releases, and current upstream HEAD. Scope: `engine/` + `niches/story/` + manual voice tools. Research only: no synthesis, live voice-catalogue request, dependency upgrade, or runtime/configuration edits. Female-pitch tuning is separate work; pitch is already integrated.
 
 ## Bottom line
 

@@ -1,4 +1,4 @@
-"""Zero-cost story Shorts pipeline: Gemini -> TTS -> Pexels/Visuals -> FFmpeg -> YouTube.
+"""Zero-cost story Shorts pipeline: Gemini -> TTS -> local-clip visuals -> FFmpeg -> YouTube.
 Run: python pipeline.py  (all config via env vars, see .env.example)
 Output: out/<date>_short.mp4 (+ .srt, metadata.json)
 

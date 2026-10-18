@@ -12,7 +12,6 @@ __all__ = [
     "align",
     "ass",
     "srt",
-    "pexels",
     "overlay_card",
     "audio_mix",
 ]
