@@ -390,20 +390,35 @@ def _split_sentences(text: str) -> list[str]:
             if s.strip()]
 
 
+def _norm_edge_token(w: str) -> str:
+    """Alnum-only casefolded form for tolerant boundary matching."""
+    return re.sub(r"[^a-z0-9]+", "", str(w or "").casefold())
+
+
 def _map_edge_words(events: list[dict], text: str) -> list[dict]:
     """Library events -> per-word [{word, start, end}] timings.
 
-    Counts match: narration words in order on event times (keeps the
-    caller's spelling/punctuation). Otherwise: edge event texts + log.
+    Genuinely 1:1 (same count AND every token agreeing once normalized):
+    narration words in order on event times (keeps the caller's
+    spelling/punctuation). Otherwise: edge event texts + log — including
+    when counts match but tokens diverge, because quirks can cancel out
+    in total and still shift the local correspondence, and the tolerant
+    sentence alignment can only work on the real event tokens.
     """
     want = text.split()
-    if events and len(events) == len(want):
+    if events and len(events) == len(want) and all(
+            _norm_edge_token(ev.get("word", "")) == _norm_edge_token(w)
+            for ev, w in zip(events, want)):
         return [{"word": w,
                  "start": round(float(ev.get("start", 0.0)), 3),
                  "end": round(float(ev.get("end", 0.0)), 3)}
                 for ev, w in zip(events, want)]
-    log(f"Story edge timings: event count ({len(events)}) != words "
-        f"({len(want)}); using edge event texts.")
+    if not events or len(events) != len(want):
+        log(f"Story edge timings: event count ({len(events)}) != words "
+            f"({len(want)}); using edge event texts.")
+    elif events:
+        log("Story edge timings: event tokens diverge from narration; "
+            "using edge event texts.")
     return [{"word": str(ev.get("word", "")),
              "start": round(float(ev.get("start", 0.0)), 3),
              "end": round(float(ev.get("end", 0.0)), 3)} for ev in events]
@@ -489,6 +504,61 @@ def _edge_chunked(text: str, voice: str, rate: str, cfg: StoryConfig,
     return mp3, words, len(parts)
 
 
+def _sentence_word_spans(sents: list[str], words: list[dict]) -> list[tuple[int, int]] | None:
+    """Word-index spans (inclusive) per sentence, or None when unalignable.
+
+    Always tolerant, never positional: token quirks can cancel out in
+    total (a split emoji pair offsets a dropped em dash) so equal counts
+    do NOT mean aligned boundaries. A sentence ends at the longest
+    trailing token sequence of the sentence (3 -> 2 -> 1 tokens) found
+    contiguously in the events, so a repeated final word cannot match
+    its earlier occurrence; a single-token endswith fallback (either
+    direction) is the last resort when quirks mangle the longer
+    sequences. A sentence whose end cannot be found merges into the
+    next one (its pause stays). Trailing events extend the final span
+    so no audio is dropped. None when no span can be formed at all. On
+    clean 1:1 input this yields the same spans a positional split would.
+    """
+    norm = [_norm_edge_token(w.get("word", "")) for w in words]
+    spans: list[tuple[int, int]] = []
+    idx = 0
+    for s in sents:
+        raw = s.split()
+        last = _norm_edge_token(raw[-1]) if raw else ""
+        found = -1
+        if last:
+            toks = [t for t in (_norm_edge_token(t) for t in raw) if t]
+            # Longest suffix first: a repeated final word must not match
+            # its earlier occurrence; shorter suffixes keep the old
+            # tolerant reach when longer ones are quirk-mangled.
+            for k in (3, 2, 1):
+                if len(toks) < k:
+                    continue
+                want = toks[-k:]
+                for j in range(idx, len(words) - k + 1):
+                    if all(norm[j + o] == want[o] for o in range(k)):
+                        found = j + k - 1
+                        break
+                if found >= 0:
+                    break
+            if found < 0:
+                for j in range(idx, len(words)):
+                    ev = norm[j]
+                    if ev and (ev.endswith(last) or last.endswith(ev)):
+                        found = j
+                        break
+        if found < 0:
+            continue  # merge this sentence into the next span
+        spans.append((idx, found))
+        idx = found + 1
+    if not spans:
+        return None
+    if idx < len(words):
+        a, _ = spans[-1]
+        spans[-1] = (a, len(words) - 1)
+    return spans
+
+
 def _edge_single_surgery(raw_mp3: Path, words: list[dict], text: str,
                          cfg: StoryConfig, workdir: Path,
                          tag: str = "seg") -> tuple[Path, list[dict]]:
@@ -500,19 +570,28 @@ def _edge_single_surgery(raw_mp3: Path, words: list[dict], text: str,
     re-offsets timings from ffprobe'd segment durations (like
     _edge_chunked, plus a monotonic clamp so WordBoundary end-overshoot
     never overlaps). Offline ffmpeg only — the one network call already
-    happened. Returns (mp3, words); bails out unchanged when trimming
-    is disabled or words cannot align to sentences.
+    happened. Returns (mp3, words); bails out unchanged only when
+    trimming is disabled or NO sentence boundary can be aligned —
+    edge token-count quirks (merged, dropped, or split boundary tokens)
+    are tolerated instead of aborting the surgery.
     """
     sents = _split_sentences(text)
     if len(sents) < 2 or not words:
         return raw_mp3, words
     if not getattr(cfg, "trim_chunk_silence", True):
         return raw_mp3, words
-    counts = [len(s.split()) for s in sents]
-    if sum(counts) != len(words):
+    word_count = sum(len(s.split()) for s in sents)
+    spans = _sentence_word_spans(sents, words)
+    if spans is None:
         warn(f"Story edge surgery: {len(words)} timed words vs "
-             f"{sum(counts)} sentence words; keeping single-call audio.")
+             f"{word_count} sentence words; keeping single-call audio.")
         return raw_mp3, words
+    if word_count != len(words):
+        log(f"Story edge surgery: tolerant alignment ({len(words)} events "
+            f"vs {word_count} words).")
+    if len(spans) < len(sents):
+        warn(f"Story edge surgery: {len(sents) - len(spans)} sentence "
+             f"boundary(ies) unmatched; those pauses stay.")
     raw_dur = ffprobe_duration(raw_mp3)
     if raw_dur <= 0:
         raise ValueError("edge single-call mp3 has no duration")
@@ -520,10 +599,11 @@ def _edge_single_surgery(raw_mp3: Path, words: list[dict], text: str,
                               DEFAULT_CHUNK_PAUSE_SEC) or 0.0)
     parts: list[Path] = []
     new_words: list[dict] = []
-    offset, idx, prev_end, pos = 0.0, 0, 0.0, 0.0
-    for i, cnt in enumerate(counts):
-        seg_words = words[idx:idx + cnt]
-        idx += cnt
+    offset, prev_end, pos = 0.0, 0.0, 0.0
+    for i, (a, b) in enumerate(spans):
+        seg_words = words[a:b + 1]
+        if not seg_words:
+            continue
         s0 = max(0.0, float(seg_words[0].get("start", 0.0)) - 0.05)
         s1 = min(raw_dur, float(seg_words[-1].get("end", 0.0)) + 0.05)
         s0 = max(s0, pos)  # clamp: end-overshoot never overlaps
@@ -536,7 +616,7 @@ def _edge_single_surgery(raw_mp3: Path, words: list[dict], text: str,
         tseg = workdir / f"narr_edge_{tag}{i:02d}_notrim.mp3"
         _trim_gap(seg, tseg)
         tseg.replace(seg)
-        if pause_sec > 0 and i < len(counts) - 1:
+        if pause_sec > 0 and i < len(spans) - 1:
             pseg = workdir / f"narr_edge_{tag}{i:02d}_pause.mp3"
             _pad_pause(seg, pseg, pause_sec)
             pseg.replace(seg)

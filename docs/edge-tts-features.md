@@ -42,6 +42,16 @@ Consequently, do **not** advertise these as unused Edge features:
 - Custom `<break>` / `mstts:silence`, `<emphasis>`, phonemes/lexicons/`say-as`, bookmarks, multiple voice/prosody blocks in one request, pitch contours, or an exact-duration SSML target. Azure documents these richer SSML capabilities; the Edge wrapper does not expose them. Pauses or voice changes constructed with separate synth calls and FFmpeg are application-level workarounds, not Edge SSML support. [Edge restriction][readme], [Microsoft structure/events][azure-structure], [Microsoft voice/prosody][azure-voice].
 - Selectable Azure PCM/high-bitrate formats, custom/personal voices, or an assumption that Azure's catalogue and metadata (`StyleList`, `RolePlayList`, `WordsPerMinute`) are the Edge catalogue. Azure is a separate authenticated service with its own costs and availability. No commercial-use rights or service guarantees are established by this note. [Edge API][api], [Microsoft REST API][azure-rest].
 
+## WordBoundary events are not 1:1 with words
+
+Edge's `WordBoundary` events do not always match a whitespace tokenization, and the quirks cluster on the tokens that matter most — the last word of a sentence:
+
+- **Dotted abbreviations merge:** `6 a.m.` arrives as a single event, not `6` + `a.m.` (-1 event).
+- **Standalone em dashes are dropped:** a bare `—` between clauses produces no event at all (-1).
+- **Emoji and `#token` sequences split:** `🚗📉` is two events, and `#shorts` is `#` + `shorts` (+1 each).
+
+`_edge_single_surgery()` used to require an exact `len(events) == len(text.split())` match and bail out to the raw single-call audio (long sentence pauses intact) on any of these. It now aligns tolerantly via `_sentence_word_spans()`: each sentence ends at the longest trailing token sequence of the sentence (up to 3 tokens, normalized alnum-only, matched contiguously in the events — so a repeated final word cannot match an earlier occurrence), with a single-token endswith fallback for quirk-mangled sequences, **even when the total counts match**, because local quirks cancel out (a split emoji pair offsets a dropped em dash) and leave every span end on the wrong event. A sentence whose end cannot be found merges into the next span — its pause stays, but the surgery still runs — and only a completely unalignable script falls back to single-call audio. Timing mapping (`_map_edge_words()`) falls back to the edge event texts whenever the tokens diverge from the narration, even at equal counts, so the tolerant matcher sees the real correspondence. [Narration][narration]
+
 ## Existing boundary-handling correctness flags (not fixed)
 
 1. **Empty word metadata can succeed silently.** `_stream_once()` only collects `WordBoundary`; `synth()` accepts nonempty audio even when that list is empty, merely warning about the count. `_check_edge_sanity([], duration)` returns `None`. Thus a changed/missing boundary response could reach captions without timed words. The explicit `WordBoundary` setting is present today, so this is a missing invariant, **not** a current default-selection bug. An offline, in-memory check confirmed `_check_edge_sanity([], 110.0) is None`. [Client][client], [sanity/mapping code][narration].
