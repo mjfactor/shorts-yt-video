@@ -343,7 +343,7 @@ def _edge_rate_for(cfg: StoryConfig, voice: str) -> str:
     """Effective edge SSML rate for a picked voice.
 
     Female voices (Jenny/Ava name match) run a slower natural cadence, so
-    they get cfg.edge_rate_female (default +28%); every other voice keeps
+    they get cfg.edge_rate_female (default +32%); every other voice keeps
     the global cfg.edge_rate (default +20%). Unknown/custom voices never
     match, so they stay on the global path. The word budget stays global
     (STORY_LENGTH_OVERSHOOT absorbs the residual spread), and the shared
@@ -351,7 +351,7 @@ def _edge_rate_for(cfg: StoryConfig, voice: str) -> str:
     """
     name = str(voice or "").lower()
     if any(h in name for h in _EDGE_FEMALE_HINTS):
-        return getattr(cfg, "edge_rate_female", "+28%") or "+28%"
+        return getattr(cfg, "edge_rate_female", "+32%") or "+32%"
     return cfg.edge_rate
 
 
@@ -359,12 +359,12 @@ def _edge_pitch_for(cfg: StoryConfig, voice: str) -> str:
     """Effective edge SSML pitch for a picked voice.
 
     Female voices (Jenny/Ava name match, same hints as _edge_rate_for)
-    get cfg.edge_pitch_female (default +5Hz); every other voice keeps
-    the global cfg.edge_pitch (default +0Hz).
+    get cfg.edge_pitch_female (default +0Hz — native pitch); every other
+    voice keeps the global cfg.edge_pitch (default +0Hz).
     """
     name = str(voice or "").lower()
     if any(h in name for h in _EDGE_FEMALE_HINTS):
-        return getattr(cfg, "edge_pitch_female", "+5Hz") or "+5Hz"
+        return getattr(cfg, "edge_pitch_female", "+0Hz") or "+0Hz"
     return getattr(cfg, "edge_pitch", "+0Hz") or "+0Hz"
 
 

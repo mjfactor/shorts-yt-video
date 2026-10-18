@@ -78,12 +78,13 @@ class StoryConfig(NicheConfig):
     edge_rate: str = "+20%"
     # Female edge voices (Jenny/Ava) run a slower natural cadence than the
     # male voices at the same relative SSML rate, so they get a hotter
-    # default (+28%). STORY_ prefix wins, bare EDGE_RATE_FEMALE falls back.
-    edge_rate_female: str = "+28%"
+    # default (+32%). STORY_ prefix wins, bare EDGE_RATE_FEMALE falls back.
+    edge_rate_female: str = "+32%"
     edge_pitch: str = "+0Hz"
     # Female pitch uses the same voice-name matching as the female rate;
-    # male/custom voices stay on edge_pitch.
-    edge_pitch_female: str = "+5Hz"
+    # male/custom voices stay on edge_pitch. +0Hz = Jenny's native pitch
+    # (+20Hz and +5Hz lifts were both auditioned and rejected).
+    edge_pitch_female: str = "+0Hz"
     # Captions: 1/true = uppercase word-pop.
     caption_upper: bool = False
     # Card floor: overlay shows max(card_seconds, card_line_end + pad).
@@ -287,10 +288,10 @@ class StoryConfig(NicheConfig):
             edge_voice=env_str("EDGE_VOICE", "en-US-JennyNeural", "STORY_") or "en-US-JennyNeural",
             edge_voices=_edge_pool(),
             edge_rate=env_str("EDGE_RATE", "+20%", "STORY_") or "+20%",
-            edge_rate_female=env_str("EDGE_RATE_FEMALE", "+28%", "STORY_") or "+28%",
+            edge_rate_female=env_str("EDGE_RATE_FEMALE", "+32%", "STORY_") or "+32%",
             edge_pitch=env_str("EDGE_PITCH", "+0Hz", "STORY_") or "+0Hz",
-            edge_pitch_female=(env_str("EDGE_PITCH_FEMALE", "+5Hz", "STORY_")
-                               or "+5Hz"),
+            edge_pitch_female=(env_str("EDGE_PITCH_FEMALE", "+0Hz", "STORY_")
+                               or "+0Hz"),
             caption_upper=env_bool("CAPTION_UPPER", False, "STORY_"),
             ass_fontsize=env_int("ASS_FONTSIZE", 115, "STORY_"),
             card_seconds=env_float("CARD_SECONDS", 3.0, "STORY_"),

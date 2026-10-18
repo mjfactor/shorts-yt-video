@@ -37,7 +37,7 @@ from engine.ffmpeg_utils import ffprobe_duration  # noqa: E402
 
 # (voice, rate) — current baselines first so differences are obvious.
 MALE_RATE = "+20%"    # EDGE_RATE
-FEMALE_RATE = "+28%"  # EDGE_RATE_FEMALE
+FEMALE_RATE = "+32%"  # EDGE_RATE_FEMALE
 CANDIDATES: tuple[tuple[str, str, str], ...] = (
     ("en-US-JennyNeural", FEMALE_RATE, "BASELINE (current female)"),
     ("en-US-AndrewNeural", MALE_RATE, "BASELINE (current male)"),
