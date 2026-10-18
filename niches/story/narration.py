@@ -347,7 +347,8 @@ def _edge_rate_for(cfg: StoryConfig, voice: str) -> str:
     the global cfg.edge_rate (default +20%). Unknown/custom voices never
     match, so they stay on the global path. The word budget stays global
     (STORY_LENGTH_OVERSHOOT absorbs the residual spread), and the shared
-    +0..+40% refit clamp in _edge_refit_rate applies unchanged.
+    +0..+40% refit clamp in _edge_refit_rate applies unchanged (floored
+    at this configured rate, so the refit never slows below it).
     """
     name = str(voice or "").lower()
     if any(h in name for h in _EDGE_FEMALE_HINTS):
@@ -377,10 +378,19 @@ def _parse_edge_rate(rate: str) -> float:
     return -val if m.group(1) == "-" else val
 
 
-def _edge_refit_rate(rate: str, dur: float) -> str:
-    """Rate re-aimed at the 110s midpoint: (1+r)*dur/110-1."""
+def _edge_refit_rate(rate: str, dur: float, floor: str | None = None) -> str:
+    """Rate re-aimed at the 110s midpoint: (1+r)*dur/110-1.
+
+    floor: configured base rate (pace guard). A short draft computes a
+    slower rate, but never slower than floor — e.g. first pass +32% at
+    90.5s used to refit to +5% and drag the voice down to hit 110s;
+    now it stays at +32% and airs ~90s instead. Speed-ups (over-window
+    durations) are unaffected, still clamped to +40%.
+    """
     new = (1.0 + _parse_edge_rate(rate)) * dur / MID_TARGET - 1.0
     new = min(0.40, max(0.0, new))  # clamp +0..+40%
+    if floor:
+        new = max(new, _parse_edge_rate(floor))
     return f"+{int(round(new * 100))}%"
 
 
@@ -743,9 +753,18 @@ def _narrate_edge(content: Content, cfg: StoryConfig,
     if cfg.target_min <= dur <= cfg.target_max:
         fit_note += f" (in {cfg.target_min:g}-{cfg.target_max:g} window)"
     elif cfg.target_min - 5 <= dur <= cfg.target_max + 5:
-        # Slight miss: max 2 re-synths with recomputed rate.
+        # Slight miss: max 2 re-synths with recomputed rate. Pace guard:
+        # never refit below the configured base rate (a short draft airs
+        # short rather than dragging the voice down toward 110s).
+        base_rate = rate
         for attempt in (1, 2):
-            rate = _edge_refit_rate(rate, dur)
+            new_rate = _edge_refit_rate(rate, dur, floor=base_rate)
+            if new_rate == rate:
+                fit_note += f" (refit held at {rate}; kept {dur:.1f}s)"
+                log(f"Story edge fit: refit held at configured {rate} "
+                    f"(pace guard); keeping {dur:.1f}s.")
+                break
+            rate = new_rate
             log(f"Story edge fit: re-synth {attempt}/2 @ {rate}...")
             raw_mp3, words = _synth_single_seg(
                 text, voice, rate, cfg, workdir, f"refit{attempt}")
