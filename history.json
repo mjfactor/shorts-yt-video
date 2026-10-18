@@ -2128,6 +2128,38 @@
       "narratorGender": "female",
       "words": 448,
       "duration": 99.74
+    },
+    {
+      "date": "2026-10-18_104455",
+      "title": "My best friend kept my travel journal ✈️📖 #shorts",
+      "niche": "story",
+      "tags": [
+        "friendship",
+        "travel",
+        "journal",
+        "story",
+        "confession"
+      ],
+      "videoId": "945-q1LSrxc",
+      "tiktokBufferPostId": null,
+      "used_ids": [],
+      "narration": "My best friend kept my travel journal. I handed the leather bound notebook over to Maya last month before she flew to Lisbon, because she wanted local cafe recommendations from my trip there two years",
+      "premise": "My best friend kept my travel journal. I handed the leather bound notebook over to Maya last month before she flew to Lisbon, because she wanted local cafe recommendations from my trip there two years",
+      "key_words": [
+        "friend",
+        "journal",
+        "pages",
+        "travel",
+        "apartment",
+        "blog",
+        "box"
+      ],
+      "skeleton": "",
+      "topic": "friendship",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female",
+      "words": 395,
+      "duration": 82.94
     }
   ]
 }
