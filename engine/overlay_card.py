@@ -837,7 +837,15 @@ def render_spec_card(text: str, highlight_word: str, *, handle: str,
             if (highlighted and word.strip(".,!?\"'").lower() == highlighted
                     and th.get("highlight_fill")):
                 box = d.textbbox((x, baseline), word, font=body_font, anchor="ls")
-                marker_box = (box[0] - 4, box[1] - 3, box[2] + 4, box[3] + 3)
+                pad_h = 5
+                pad_v = max(8, body_font.size // 5)
+                # Center the marker on the ink-top -> baseline band (the
+                # x-height/cap block) instead of the full ink box, so a
+                # descender (e.g. the g in "wrong") doesn't make the box
+                # look bottom-heavy. The descender may overflow the bottom
+                # edge, like a real highlighter stroke.
+                marker_box = (box[0] - pad_h, box[1] - pad_v,
+                              box[2] + pad_h, baseline + pad_v)
                 if th.get("highlight_gradient"):
                     marker_size = (marker_box[2] - marker_box[0] + 1,
                                    marker_box[3] - marker_box[1] + 1)

@@ -46,9 +46,9 @@ STORY_CARD_THEME = {
     "header_gradient": ((13, 23, 39, 255), (35, 20, 49, 255)),
     "accent_colors": ((27, 222, 241, 255), (238, 57, 205, 255)),
     "text_color": (21, 24, 40, 255),
-    "highlight_color": (255, 255, 255, 255),
-    "highlight_fill": (160, 32, 121, 255),
-    "highlight_gradient": ((109, 43, 182, 255), (186, 28, 117, 255)),
+    "highlight_color": (186, 28, 117, 255),  # magenta punchline word, no fill
+    "highlight_fill": None,
+    "highlight_gradient": None,
     "handle_color": (248, 249, 255, 255),
     "handle_size": 33,
     "avatar_size": 84,
