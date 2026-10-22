@@ -2406,6 +2406,37 @@
       "narratorGender": "female",
       "words": 439,
       "duration": 95.83
+    },
+    {
+      "date": "2026-10-22_212348",
+      "title": "My Neighbor Used My Electricity 🔌🏡 #shorts",
+      "niche": "story",
+      "tags": [
+        "neighbors",
+        "utilities",
+        "drama",
+        "home",
+        "petty"
+      ],
+      "videoId": "HmYbBT58Eho",
+      "tiktokBufferPostId": "6ada815d9daa16478769cd9f",
+      "used_ids": [],
+      "narration": "My Neighbor Used My Electricity. I honestly thought something was seriously wrong with my HVAC unit when my monthly utility bill jumped by nearly forty percent back in November. I live alone in a smal",
+      "premise": "My Neighbor Used My Electricity. I honestly thought something was seriously wrong with my HVAC unit when my monthly utility bill jumped by nearly forty percent back in November. I live alone in a smal",
+      "key_words": [
+        "neighbor",
+        "electricity",
+        "bill",
+        "cord",
+        "electrician",
+        "house"
+      ],
+      "skeleton": "neighbor|money",
+      "topic": "AITA",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 461,
+      "duration": 110.36
     }
   ]
 }
