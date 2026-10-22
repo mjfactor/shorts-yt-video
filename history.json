@@ -2376,6 +2376,36 @@
       "narratorGender": "male",
       "words": 460,
       "duration": 98.17
+    },
+    {
+      "date": "2026-10-22_113132",
+      "title": "My baker neighbor stole my custom recipe 🥐🤫 #shorts",
+      "niche": "story",
+      "tags": [
+        "petty",
+        "baking",
+        "revenge",
+        "neighbor",
+        "sourdough"
+      ],
+      "videoId": "4A89MhVjSZk",
+      "tiktokBufferPostId": "6ad9f6beb3b4a1914c97461c",
+      "used_ids": [],
+      "narration": "My baker neighbor stole my custom recipe. I spent months perfecting my sourdough starter, keeping the exact hydration ratio and fermentation temperature a secret in my own kitchen. Sarah lived next do",
+      "premise": "My baker neighbor stole my custom recipe. I spent months perfecting my sourdough starter, keeping the exact hydration ratio and fermentation temperature a secret in my own kitchen. Sarah lived next do",
+      "key_words": [
+        "sourdough",
+        "bakery",
+        "flour",
+        "neighbor",
+        "recipe"
+      ],
+      "skeleton": "",
+      "topic": "petty-revenge",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female",
+      "words": 439,
+      "duration": 95.83
     }
   ]
 }
