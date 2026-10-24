@@ -6,6 +6,7 @@ no env policy is baked in (see from_env() for the optional loader).
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import random
@@ -51,6 +52,39 @@ def pcm_to_wav(pcm: bytes, sample_rate: int, out_path: str | Path) -> Path:
         w.setframerate(int(sample_rate))
         w.writeframes(pcm)
     return out
+
+
+# Gemini 3.8+ TTS models treat input text as a strict verbatim transcript
+# (a style prefix in the prompt is *spoken aloud*) and accept a
+# responseFormat pinning the output to raw PCM. The 3.1/2.5 preview models
+# reject both (400 INVALID_ARGUMENT on AUDIO_L16), so this predicate gates
+# the two request contracts in synthesize_speech().
+_TTS_VERBATIM_PREFIXES = ("gemini-3.8-",)
+
+
+def _uses_verbatim_tts(model: str) -> bool:
+    """True when `model` follows the 3.8+ verbatim-transcript TTS contract."""
+    return str(model).startswith(_TTS_VERBATIM_PREFIXES)
+
+
+def _strip_riff_header(data: bytes) -> tuple[bytes, int] | None:
+    """Return (frames, framerate) when `data` is a RIFF/WAVE PCM file.
+
+    Defensive only: 3.8 unary output defaults to audio/wav, so if the
+    responseFormat pin is ever ignored/removed server-side we degrade to
+    correct headerless audio instead of feeding a RIFF container into the
+    PCM cache / gapless-join path. Returns None for non-RIFF bytes (the
+    normal raw-PCM case) or anything `wave` cannot parse as PCM.
+    """
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return None
+    try:
+        with wave.open(io.BytesIO(data), "rb") as w:
+            if w.getnchannels() != 1 or w.getsampwidth() != 2:
+                return None
+            return w.readframes(w.getnframes()), w.getframerate()
+    except Exception:
+        return None
 
 
 class GeminiClient:
@@ -344,18 +378,40 @@ class GeminiClient:
 
     def synthesize_speech(self, text: str, *, voice: str, models: list[str],
                           style: str = "") -> tuple[bytes, int]:
-        """TTS one utterance via first working model. Returns (pcm, rate)."""
-        prompt = f"{style} Say the following text:\n\n{text}" if style else text
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "responseModalities": ["AUDIO"],
-                "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
-            },
-            "safetySettings": self.safety,
-        }
+        """TTS one utterance via first working model. Returns (pcm, rate).
+
+        Two request contracts, gated by _uses_verbatim_tts():
+        - 3.8+ (verbatim): `text` is spoken word-for-word, so a style
+          prefix would be read aloud. Style travels as a per-part
+          speech_metadata annotation (only when non-empty), and
+          generationConfig.responseFormat pins the output to headerless
+          24 kHz mono s16le PCM (AUDIO_L16) — the format the PCM cache /
+          pcm_to_wav / gapless-join path already consumes.
+        - Legacy 3.1/2.5 preview (unchanged): style is inlined into the
+          prompt ("{style} Say the following text:\\n\\n{text}"); no
+          speech_metadata, no responseFormat (3.1 400s on AUDIO_L16),
+          headerless PCM by default.
+        """
         last_err: Exception | None = None
         for model in models:
+            verbatim = _uses_verbatim_tts(model)
+            part: dict = {"text": text}
+            gen_cfg: dict = {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice}}},
+            }
+            if verbatim:
+                if style:
+                    part["speech_metadata"] = {"style": style}
+                gen_cfg["responseFormat"] = {
+                    "audio": {"mimeType": "AUDIO_L16", "sampleRate": 24000}}
+            elif style:
+                part["text"] = f"{style} Say the following text:\n\n{text}"
+            payload = {
+                "contents": [{"parts": [part]}],
+                "generationConfig": gen_cfg,
+                "safetySettings": self.safety,
+            }
             try:
                 url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                        f"{model}:generateContent")
@@ -373,7 +429,14 @@ class GeminiClient:
                     raise ValueError(f"TTS model {model} returned no audio")
                 rate_m = re.search(r"rate=(\d+)", inline.get("mimeType", ""))
                 rate = int(rate_m.group(1)) if rate_m else 24000
-                return base64.b64decode(inline["data"]), rate
+                audio = base64.b64decode(inline["data"])
+                # Defensive: if the server handed back a container WAV
+                # (3.8 unary defaults to audio/wav), strip the header so
+                # downstream always sees raw PCM.
+                unwrapped = _strip_riff_header(audio)
+                if unwrapped is not None:
+                    audio, rate = unwrapped
+                return audio, rate
             except Exception as e:
                 last_err = e
                 log(f"Gemini TTS model {model} unusable ({e}), trying next...")

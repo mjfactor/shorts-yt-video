@@ -736,7 +736,7 @@ def build_visuals(content: Content, narration: NarrationResult,
     vf_args, cwd = ass_cwd_args(ass_path, fontsdir=_fonts_dir.resolve())
     subs = vf_args[1]  # "ass=<rel>:fontsdir=<dir>" for filter_complex use
     mix_fc = _mix_filter(
-        total, getattr(cfg, "bgm_volume", 0.05),
+        total, getattr(cfg, "bgm_volume", 0.10),
         duck_threshold=getattr(cfg, "bgm_duck_threshold", 0.05),
         duck_ratio=getattr(cfg, "bgm_duck_ratio", 8.0),
         duck_attack_ms=getattr(cfg, "bgm_duck_attack_ms", 10),
