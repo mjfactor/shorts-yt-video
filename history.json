@@ -2997,6 +2997,37 @@
       "narratorGender": "male",
       "words": 456,
       "duration": 117.96
+    },
+    {
+      "date": "2026-11-06_132604",
+      "title": "My coworker sold my office chair 🪑💼 #shorts",
+      "niche": "story",
+      "tags": [
+        "workplace",
+        "drama",
+        "office",
+        "coworker",
+        "theft"
+      ],
+      "videoId": "E6xlrQADGV0",
+      "tiktokBufferPostId": "6aedd74a730edf821ad0f93a",
+      "used_ids": [],
+      "narration": "My coworker sold my custom office chair. I spent two months sourcing that vintage ergonomic piece because my back was killing me during our long shifts at the logistics firm. It was a rare mid-century",
+      "premise": "My coworker sold my custom office chair. I spent two months sourcing that vintage ergonomic piece because my back was killing me during our long shifts at the logistics firm. It was a rare mid-century",
+      "key_words": [
+        "coworker",
+        "chair",
+        "theft",
+        "logistics",
+        "leather",
+        "office"
+      ],
+      "skeleton": "",
+      "topic": "workplace",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 461,
+      "duration": 103.85
     }
   ]
 }
