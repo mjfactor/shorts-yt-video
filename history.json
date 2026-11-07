@@ -3090,6 +3090,38 @@
       "narratorGender": "male",
       "words": 461,
       "duration": 114.41
+    },
+    {
+      "date": "2026-11-07_211447",
+      "title": "My Father Bought My Apartment Building 🏢🔑 #shorts",
+      "niche": "story",
+      "tags": [
+        "family",
+        "apartment",
+        "moving",
+        "boundaries",
+        "drama"
+      ],
+      "videoId": "U4dxDNgXD3I",
+      "tiktokBufferPostId": "6aef9629562f2e6de97ffaf4",
+      "used_ids": [],
+      "narration": "My father bought my apartment building. I only found out because the longtime property manager called me on Monday morning to ask why my rent check had bounced. My account had plenty of money, but my ",
+      "premise": "My father bought my apartment building. I only found out because the longtime property manager called me on Monday morning to ask why my rent check had bounced. My account had plenty of money, but my ",
+      "key_words": [
+        "father",
+        "apartment",
+        "rent",
+        "lease",
+        "landlord",
+        "keys",
+        "boxes"
+      ],
+      "skeleton": "manager|money",
+      "topic": "family",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 500,
+      "duration": 110.11
     }
   ]
 }
