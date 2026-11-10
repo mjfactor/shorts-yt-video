@@ -1,23 +1,6 @@
 {
   "story": [
     {
-      "date": "2026-09-25_102444",
-      "title": "I Finally Said No to Weekend Work",
-      "niche": "story",
-      "tags": [
-        "shorts",
-        "storytime",
-        "workplace",
-        "revenge",
-        "stories"
-      ],
-      "narration": "I said no, then they moved my desk. My boss asked me to work Saturday for the third weekend in a row, so I finally said no. On Monday, nobody would talk to me. My chair was moved to the storage room, and my name was missing from the team lunch order. Then I found out my boss told everyone I was putting the whole project at risk. So I printed every late night email and every weekend text, and I brought them to the big meeting. I laid them on the table and said, if hard work matters here, the records speak for themselves. The room went silent, and my boss never asked me to work a weekend again. Comment if you would have done the same, and follow for the next story.",
-      "videoId": "ThF4_eDh4H0",
-      "tiktokBufferPostId": null,
-      "topic": "workplace",
-      "topic_source": "fallback"
-    },
-    {
       "date": "2026-09-25_111135",
       "title": "My Boss Tried To Fire Me For My Own Invention #shorts",
       "niche": "story",
@@ -3203,6 +3186,37 @@
       "narratorGender": "male",
       "words": 492,
       "duration": 109.9
+    },
+    {
+      "date": "2026-11-10_005827",
+      "title": "My Best Friend Auditioned For My Life 🎭 #shorts",
+      "niche": "story",
+      "tags": [
+        "friendship",
+        "trust",
+        "boundaries",
+        "betrayal",
+        "personal"
+      ],
+      "videoId": "lWBvckgNuyc",
+      "tiktokBufferPostId": "6af26de0e261c09acc8faaab",
+      "used_ids": [],
+      "narration": "My best friend auditioned for my life. I only figured it out last Tuesday when Sarah left her laptop open while I was grabbing us some tea. We have been inseparable since college, so I never questione",
+      "premise": "My best friend auditioned for my life. I only figured it out last Tuesday when Sarah left her laptop open while I was grabbing us some tea. We have been inseparable since college, so I never questione",
+      "key_words": [
+        "friendship",
+        "laptop",
+        "trust",
+        "script",
+        "choices",
+        "betrayal"
+      ],
+      "skeleton": "",
+      "topic": "friendship",
+      "topic_source": "genre-rotation",
+      "narratorGender": "female",
+      "words": 434,
+      "duration": 88.23
     }
   ]
 }
