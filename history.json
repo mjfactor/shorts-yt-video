@@ -1,23 +1,6 @@
 {
   "story": [
     {
-      "date": "2026-09-25_181106",
-      "title": "My neighbor stole my Wi-Fi for years 📶 #shorts",
-      "niche": "story",
-      "tags": [
-        "revenge",
-        "storytime",
-        "wifi",
-        "neighbor",
-        "petty"
-      ],
-      "narration": "My neighbor stole my Wi-Fi for years. I honestly had no idea why my connection was so slow until I checked my router logs one night. I mean, I pay for the fastest plan available, but it felt like I was using dial-up from the nineties. I finally logged into the admin panel and saw a device I did not recognize connected to my network. It was labeled with my neighbor Mark’s initials. I was furious, especially since he always complained about how expensive his own internet bills were. I decided to play the long game instead of just kicking him off. I didn't change the password immediately. Instead, I went into the router settings and throttled his specific device speed to practically nothing. It was just enough to load a text page, but not enough to stream a single video. Then, I set up a custom DNS redirect for his device. Every time he tried to search for anything, it would show a fake error message saying that his local service provider was experiencing a total outage in the area. I watched him through my window for weeks. He spent hours pacing around his porch, resetting his own modem, and calling his provider to scream at their customer service reps. He even bought a new expensive router, thinking his old one was broken, but he kept connecting it to my network by accident. The best part was when he finally came over to my house. He knocked on my door and asked if I was having any issues with my internet service. I looked him dead in the eye, sipped my coffee, and told him mine was working perfectly fine. He looked so defeated, standing there on my porch, completely convinced his entire neighborhood had a technical curse. I honestly felt a weird sense of satisfaction watching him struggle with his own greed. He ended up paying for a massive upgrade to a premium plan he thought would fix the issue, but he was still stuck on my throttled connection. The look on his face when he finally realized what was actually happening was worth every single cent of my monthly bill. It was the most satisfying petty revenge I have ever pulled off in my entire life.",
-      "videoId": "diGIIIZbHfA",
-      "tiktokBufferPostId": null,
-      "topic": "revenge",
-      "topic_source": "genre-rotation"
-    },
-    {
       "date": "2026-09-25_201451",
       "title": "My best friend stole my dream job 🐍 #shorts",
       "niche": "story",
@@ -3288,6 +3271,36 @@
       "narratorGender": "male",
       "words": 420,
       "duration": 106.25
+    },
+    {
+      "date": "2026-11-12_225839",
+      "title": "My friend edited my resume 📄❌ #shorts",
+      "niche": "story",
+      "tags": [
+        "friendship",
+        "career",
+        "workplace",
+        "mistake",
+        "boundaries"
+      ],
+      "videoId": "6z72YnALo64",
+      "tiktokBufferPostId": "6af646a3c1a0010a5be5113f",
+      "used_ids": [],
+      "narration": "My friend edited my resume. I only found out last Tuesday evening when I got an email confirmation from the logistics firm downtown thanking me for applying for the junior floor supervisor post. I had",
+      "premise": "My friend edited my resume. I only found out last Tuesday evening when I got an email confirmation from the logistics firm downtown thanking me for applying for the junior floor supervisor post. I had",
+      "key_words": [
+        "resume",
+        "friend",
+        "job",
+        "warehouse",
+        "analyst"
+      ],
+      "skeleton": "",
+      "topic": "friendship",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 418,
+      "duration": 104.64
     }
   ]
 }
