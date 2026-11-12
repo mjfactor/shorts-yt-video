@@ -1,23 +1,6 @@
 {
   "story": [
     {
-      "date": "2026-09-25_144449",
-      "title": "I Finally Said No to Weekend Work 😤",
-      "niche": "story",
-      "tags": [
-        "shorts",
-        "storytime",
-        "workplace",
-        "revenge",
-        "stories"
-      ],
-      "narration": "I said no, then they moved my desk. My boss asked me to work Saturday for the third weekend in a row, so I finally said no. On Monday, nobody would talk to me. My chair was moved to the storage room, and my name was missing from the team lunch order. Then I found out my boss told everyone I was putting the whole project at risk. So I printed every late night email and every weekend text, and I brought them to the big meeting. I laid them on the table and said, if hard work matters here, the records speak for themselves. The room went silent, and my boss never asked me to work a weekend again. Comment if you would have done the same, and follow for the next story.",
-      "videoId": "Fkj5iPuUllg",
-      "tiktokBufferPostId": "6ab68a0d9f4d813ea90eeb6e",
-      "topic": "workplace",
-      "topic_source": "fallback"
-    },
-    {
       "date": "2026-09-25_150639",
       "title": "My coworker tried to frame me for her data theft 💻 #shorts",
       "niche": "story",
@@ -3261,6 +3244,37 @@
       "narratorGender": "male",
       "words": 482,
       "duration": 116.55
+    },
+    {
+      "date": "2026-11-11_235057",
+      "title": "My Friend Kept My Spare Key 🔑🏠 #shorts",
+      "niche": "story",
+      "tags": [
+        "friendship",
+        "boundaries",
+        "apartment",
+        "trust",
+        "drama"
+      ],
+      "videoId": "4yUjOvGMbVg",
+      "tiktokBufferPostId": "6af501a8304f8985c4727c64",
+      "used_ids": [],
+      "narration": "My friend kept my spare key. I only found out because I came home early from my shift at the hardware store on a rainy Thursday afternoon to drop off my wet boots. Sam had asked if he could store a fe",
+      "premise": "My friend kept my spare key. I only found out because I came home early from my shift at the hardware store on a rainy Thursday afternoon to drop off my wet boots. Sam had asked if he could store a fe",
+      "key_words": [
+        "friend",
+        "key",
+        "kitchen",
+        "garage",
+        "soup",
+        "lock"
+      ],
+      "skeleton": "",
+      "topic": "friendship",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 503,
+      "duration": 113.86
     }
   ]
 }
