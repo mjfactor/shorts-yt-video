@@ -1,23 +1,6 @@
 {
   "story": [
     {
-      "date": "2026-09-25_150639",
-      "title": "My coworker tried to frame me for her data theft 💻 #shorts",
-      "niche": "story",
-      "tags": [
-        "office",
-        "drama",
-        "revenge",
-        "work",
-        "story"
-      ],
-      "narration": "My coworker tried to frame me for theft. Sarah was the golden girl of our marketing department until the quarterly reports started disappearing. I noticed small errors in the shared files every Tuesday morning. I thought it was a simple technical glitch at first. Then, my manager, Dave, pulled me into his office with a stern face. He showed me a printed email log that allegedly came from my personal work account. The email contained sensitive client lists sent to our biggest competitor. I was stunned and insisted I never sent that message. Sarah sat in the corner during the meeting, looking incredibly upset for me. She even offered to help me clear my name by checking the server logs. That was my first clue that something felt very wrong here. I realized Sarah was the only person who had access to my computer while I took my lunch break. I decided to set a trap using a dummy folder filled with fake data. I labeled it as the new project strategy for our secret summer campaign. I left my office unlocked for exactly ten minutes during the afternoon break yesterday. I watched the security camera footage from my phone while hiding in the break room. Sarah walked into my office and immediately started downloading the fake folder to a thumb drive. I saved the video file and sent it directly to Dave with a short note. She was caught red-handed with the evidence plugged right into her laptop. Sarah tried to claim she was just organizing files, but the timestamps proved otherwise. Dave called security to escort her out of the building within twenty minutes. She started crying, but nobody in the office felt sorry for her actions. I watched her pack her desk while the entire team looked on in silence. It turns out she had been selling our data for months to pay off her debts. Dave apologized to me in front of everyone and gave me a massive promotion on the spot. My desk is much quieter now without her constant drama and fake sympathy around. Justice was served quickly and she will never work in this industry again after that stunt.",
-      "videoId": "IVDBPfL8ZAM",
-      "tiktokBufferPostId": "6ab68f779f4d813ea90fb4df",
-      "topic": "AITA",
-      "topic_source": "genre-rotation"
-    },
-    {
       "date": "2026-09-25_181106",
       "title": "My neighbor stole my Wi-Fi for years 📶 #shorts",
       "niche": "story",
@@ -3275,6 +3258,36 @@
       "narratorGender": "male",
       "words": 503,
       "duration": 113.86
+    },
+    {
+      "date": "2026-11-12_141345",
+      "title": "My Friend Hid My Art Portfolio 🎨🗂️ #shorts",
+      "niche": "story",
+      "tags": [
+        "friendship",
+        "art",
+        "trust",
+        "secrets",
+        "boundaries"
+      ],
+      "videoId": "FKpOkHOHC3A",
+      "tiktokBufferPostId": "6af5cc0734d77ef87be3dd43",
+      "used_ids": [],
+      "narration": "My friend hid my art portfolio. I only found out last Tuesday evening when I went over to Leo's apartment to pick up my large canvas bag before my morning interview at the downtown design studio. Leo ",
+      "premise": "My friend hid my art portfolio. I only found out last Tuesday evening when I went over to Leo's apartment to pick up my large canvas bag before my morning interview at the downtown design studio. Leo ",
+      "key_words": [
+        "portfolio",
+        "art",
+        "friend",
+        "sketches",
+        "apartment"
+      ],
+      "skeleton": "",
+      "topic": "friendship",
+      "topic_source": "genre-rotation",
+      "narratorGender": "male",
+      "words": 420,
+      "duration": 106.25
     }
   ]
 }
