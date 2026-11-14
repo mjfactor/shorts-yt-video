@@ -26,6 +26,7 @@ class StoryPromptTests(unittest.TestCase):
         self.assertIn("keep the existing premise", prompt)
         self.assertIn("TONE & VOICE", prompt)
         self.assertIn("Zero filler words is fine", prompt)
+        self.assertIn("Every sentence must do at least one job", prompt)
         self.assertIn("GROUNDED & BELIEVABLE", prompt)
 
     def test_premise_and_voice_come_before_output_format(self):
@@ -126,6 +127,85 @@ class StoryPromptTests(unittest.TestCase):
                     prompt, _ = repair([], self.cfg, self.wps, raw, None)
                     self.assert_story_guidance(prompt)
                     self.assertFalse(prompt.startswith("CORRECTION"))
+
+
+class SceneDressingGateTests(unittest.TestCase):
+    """Enforces the prompt's 'no decorative weekdays/weather' rule.
+
+    The validator counterpart of the TONE & VOICE scene-dressing ban:
+    weather-on-weekday and indefinite-day framing are rejected (the retry
+    then gets the exact fragment to cut), while timing that carries the
+    plot — deadlines, event times, recurring schedules — stays legal.
+    """
+
+    CARD = "I found the invoice on my desk"
+    S1 = ("I printed my badge photo and the original hiring letter and "
+          "walked to the finance office.")
+    S2 = "She said the fee was real but the signature was not mine."
+    S3 = ("By Friday afternoon they had removed the charge and sent me "
+          "a written apology.")
+
+    def _draft(self, extra: str) -> dict:
+        narration = " ".join((
+            self.CARD + ".",
+            "The printout in my folder listed a supply fee I never signed "
+            "for, so I started reading every statement line by line.",
+            extra,
+            "I asked my manager about it and he told me to take it up with "
+            "corporate.",
+            "Corporate said the charge came from my department.",
+            self.S1,
+            "The clerk checked the system twice and frowned.",
+            self.S2,
+            "We reconcile the ledgers every Tuesday morning to catch "
+            "mistakes early.",
+            self.S3,
+        ))
+        return {
+            "title": "My Desk Held a Surprise \U0001F632",
+            "card_text": self.CARD,
+            "card_highlight_word": "invoice",
+            "hook": self.CARD,
+            "story_text": narration,
+            "narration": narration,
+            "genre": "workplace",
+            "narrator_gender": "female",
+            "key_words": ["invoice", "desk", "fee", "manager"],
+            "tags": ["story", "workplace"],
+            "description": ("An invoice nobody signed showed up on her desk. "
+                            "It did not stay there long."),
+            "ending_type": "payoff",
+            "pinned_comment": "Would you have fought the fee?",
+            "rehooks": [
+                {"at": "20-30s", "line": self.S1},
+                {"at": "50-60s", "line": self.S2},
+                {"at": "80-90s", "line": self.S3},
+            ],
+            "beats": [{"text": narration}],
+        }
+
+    def test_rejects_weather_on_weekday_scene_setting(self):
+        draft = self._draft(
+            "I checked the balance on a rainy Tuesday morning and saw "
+            "a negative sign.")
+        with self.assertRaisesRegex(ValueError, "decorative scene-setting"):
+            content.validate_extra(draft)
+
+    def test_rejects_indefinite_day_framing(self):
+        draft = self._draft(
+            "I came into work early on a Tuesday, holding my travel mug.")
+        with self.assertRaisesRegex(ValueError, "decorative scene-setting"):
+            content.validate_extra(draft)
+
+    def test_allows_structural_weekday_timing(self):
+        # Deadline ("By Friday afternoon"), event time ("on Thursday
+        # morning") and recurring schedule ("every Tuesday morning") all
+        # appear in this draft and must pass untouched.
+        draft = self._draft(
+            "The clerk called back on Thursday morning with the updated "
+            "ledger.")
+        extra = content.validate_extra(draft)
+        self.assertEqual(extra["ending_type"], "payoff")
 
 
 if __name__ == "__main__":

@@ -61,6 +61,23 @@ _CLICHE_RE = re.compile(
     r"|time (froze|stopped)( for (a|one|that) (moment|second|beat))?"
     r"|for (a|one) moment,? time (froze|stopped)",
     re.IGNORECASE)
+# Decorative scene-setting — the "minute detail" family that kept airing:
+# weather stacked on a weekday ("on a rainy Tuesday morning") and
+# indefinite-day framing ("in on a Tuesday, holding my travel mug",
+# "it was a Tuesday evening"). Timing that carries the plot is phrased
+# without the indefinite article ("due by Friday afternoon", "showed up
+# on Thursday morning", "every Tuesday morning"), so those stay legal —
+# calibrated against all 109 aired history entries: 13 trips, all
+# decorative, 0 false positives on the structural lines above. The TONE
+# section of the prompt bans decorative weekdays/weather; this gate
+# enforces it the same way _CLICHE_RE enforces the realism section.
+_WEEKDAY = r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+_TIMEOF_DAY = r"(?:morning|afternoon|evening|night)"
+_SCENE_DRESSING_RE = re.compile(
+    r"(?:rainy|snowy|sunny|cloudy|overcast|freezing|sweltering|muggy|"
+    r"stormy|dreary)\s+" + _WEEKDAY + r"\b"
+    r"|\b(?:on|it was)\s+a\s+" + _WEEKDAY + r"(?:\s+" + _TIMEOF_DAY + r")?\b",
+    re.IGNORECASE)
 
 MAX_SENTENCE_WORDS = 30
 
@@ -484,6 +501,11 @@ def validate_extra(data: dict, cfg: StoryConfig | None = None,
     if cliche:
         raise ValueError(f"cliche reaction line {cliche.group()!r} in story "
                          "— use concrete behavior instead")
+    dressing = _SCENE_DRESSING_RE.search(story)
+    if dressing:
+        raise ValueError(
+            f"decorative scene-setting {dressing.group()!r} in story "
+            "— cut the weather/day framing and state the event directly")
     long_sent = _check_sentences(story)
     if long_sent:
         raise ValueError(long_sent)
@@ -761,9 +783,15 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "fine. Avoid default openings such as 'I honestly thought' or 'I just "
         "wanted a normal day'. At most ONE discourse marker per sentence, "
         "never two together; 'I mean' must genuinely rephrase something.\n"
-        "- Use details because they affect a decision or explain why the "
-        "memory stuck. Skip decorative weekdays, weather, furniture, clothing, "
-        "and arrival routines. Do not rename everyday things in formal prose.\n"
+        "- Every sentence must do at least one job: advance what happens, "
+        "reveal stakes or character, or land a turn. Use a detail only when "
+        "it affects a decision or explains why the memory stuck. Cut minute "
+        "physical and sensory business — the commute, wiping wet boots, "
+        "pouring coffee, glancing at a clock, what people were wearing — and "
+        "cut decorative weather, weekdays, furniture, and arrival routines, "
+        "especially in the opening. If deleting a sentence would not change "
+        "what happens or what the narrator decides, delete it. Do not rename "
+        "everyday things in formal prose.\n"
         "- A short, ordinary remembered quote is welcome when it changes the "
         "situation. No speeches, perfect comebacks, or scripted dialogue "
         "exchanges. No 'little did I know', 'what happened next changed "
@@ -815,7 +843,9 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "not a vague teaser or the ending. hook must be that same opening "
         "sentence. card_highlight_word must be one word appearing in card_text. "
         "In the next two or three sentences, make the relationship and personal "
-        "stakes clear. Do not restart the story after the hook.\n"
+        "stakes clear by stating them directly — no scene-setting, physical "
+        "description, or arrival routine first. Do not restart the story "
+        "after the hook.\n"
         "Then follow cause and effect: what I tried, what that changed, what "
         "I learned, what I had to decide. Add meaningful turns around 20-30s, "
         "50-60s, and 80-90s: new information or a choice that changes the "
@@ -880,7 +910,8 @@ def build_prompt(history: list[dict], cfg: StoryConfig,
         "not add scene dressing or repeat feelings to fill the budget.\n\n"
         "FINAL CHECK: Does the topic itself make someone want to hear more? "
         "Could this narrator say these sentences aloud to a friend without "
-        "sounding like a trailer? Remove filler and stock reactions, check "
+        "sounding like a trailer? Remove filler, scene dressing, and stock "
+        "reactions, check "
         "continuity and plausible knowledge, then verify word count, the "
         "card opening, and all verbatim copies after any edits. Do not "
         "include this check, planning, markdown, notes, or extra keys. "
