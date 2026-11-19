@@ -129,6 +129,51 @@ class StoryPromptTests(unittest.TestCase):
                     self.assertFalse(prompt.startswith("CORRECTION"))
 
 
+class GenreRotationTests(unittest.TestCase):
+    """_pick_genre must rotate off the last AIRING topic, not len(history).
+
+    HISTORY_KEEP (core.py) hard-caps history at 110 entries, so the old
+    count-based pick (pool[len(same) % len(pool)]) froze at
+    110 % 17 == 8 == "friendship" from 2026-11-09 onward. These pin the
+    next-after-last semantics that replaces it.
+    """
+
+    def test_capped_all_friendship_history_picks_next_genre(self):
+        # The exact 2026-11-09 freeze: 110 entries, every topic
+        # "friendship". Count-based indexing returned "friendship" forever;
+        # next-after-last must return the following pool genre instead.
+        history = [{"niche": "story", "topic": "friendship"}
+                   for _ in range(110)]
+        self.assertEqual(content._pick_genre(history, StoryConfig()),
+                         "cheating")
+
+    def test_result_is_next_pool_genre_after_newest_topic(self):
+        # Continuity with the intended counter sequence: while history grew
+        # by 1 per run, next-after-last == pool[n % len(pool)]. Newest
+        # in-pool topic X must yield the genre right after X in
+        # DEFAULT_GENRES order (wrapping at the end).
+        cfg = StoryConfig()
+        pool = tuple(cfg.story_genres)  # default: DEFAULT_GENRES
+        for i, topic in enumerate(pool):
+            history = [{"niche": "story", "topic": topic}]
+            with self.subTest(topic=topic):
+                self.assertEqual(
+                    content._pick_genre(history, cfg),
+                    pool[(i + 1) % len(pool)])
+
+    def test_empty_history_returns_pool_genre_without_raising(self):
+        self.assertIn(content._pick_genre([], StoryConfig()),
+                      tuple(StoryConfig().story_genres))
+
+    def test_single_genre_pool_still_returns_that_genre(self):
+        cfg = StoryConfig(story_genres=("family",))
+        # Even a 110-entry friendship history cannot escape a 1-genre pool.
+        history = [{"niche": "story", "topic": "friendship"}
+                   for _ in range(110)]
+        self.assertEqual(content._pick_genre(history, cfg), "family")
+        self.assertEqual(content._pick_genre([], cfg), "family")
+
+
 class SceneDressingGateTests(unittest.TestCase):
     """Enforces the prompt's 'no decorative weekdays/weather' rule.
 

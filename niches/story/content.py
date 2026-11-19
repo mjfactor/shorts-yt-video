@@ -126,15 +126,32 @@ def _genres(cfg: StoryConfig) -> tuple[str, ...]:
 
 
 def _pick_genre(history: list[dict], cfg: StoryConfig) -> str:
-    """Deterministic rotation over same-niche count; never repeats last genre."""
+    """Rotate to the pool genre immediately after the last AIRING topic.
+
+    Why not index by len(history): HISTORY_KEEP (core.py) hard-caps
+    history at 110 entries on both load and save, so once history.json
+    hit 110 entries (2026-11-09) the old ``pool[len(same) % len(pool)]``
+    froze at ``110 % 17 == 8`` == "friendship" and every run since has
+    picked friendship forever (21 consecutive friendship entries). The
+    "never repeat last" guard read ``entry["genre"]``, a key history
+    never stores, so it never fired either.
+
+    Walks same-niche entries newest -> oldest for the first ``topic``
+    (falling back to ``genre``) that casefold-matches a pool genre —
+    that is the last aired lane — then returns the pool genre right
+    after it: the intended counter sequence, immune to the history cap
+    and never repeating the last genre. When no in-pool topic is found
+    (empty history, or every topic stale e.g. ancient "scary" entries),
+    falls back to the old count-based pick.
+    """
     pool = _genres(cfg)
     same = [h for h in (history or []) if h.get("niche", "") == MODE]
-    n = len(same)
-    genre = pool[n % len(pool)]
-    last = str(same[-1].get("genre", "")).casefold() if same else ""
-    if genre.casefold() == last and len(pool) > 1:
-        genre = pool[(n + 1) % len(pool)]
-    return genre
+    pos = {g.casefold(): i for i, g in enumerate(pool)}
+    for h in reversed(same):
+        topic = str(h.get("topic") or h.get("genre") or "").casefold()
+        if topic in pos:
+            return pool[(pos[topic] + 1) % len(pool)]
+    return pool[len(same) % len(pool)]
 
 
 def _gender_bucket(now: datetime | None = None) -> int:
@@ -1091,12 +1108,13 @@ def _to_content(meta: dict, slots: dict, wps: float | None,
                 history: list[dict] | None = None) -> Content:
     """Validated meta + slots â†’ stage Content (all story fields in extras).
 
-    history is used to populate one extra for build_visuals:
-      - video_number: len(same-niche history) â†’ BG clip rotation
+    video_number (build_visuals BG clip rotation) is the pure clock bucket
+    _gender_bucket() â†’ advances once per UTC half-day, never saturates.
+    It used to be len(same-niche history), which froze at the HISTORY_KEEP
+    cap (110) on 2026-11-09 and stuck every video on the same BG clip.
+    history is kept for signature compatibility only and is no longer read.
     """
-    history = history or []
-    same_niche = [h for h in history if h.get("niche", "") == MODE]
-    video_number = len(same_niche)
+    video_number = _gender_bucket()
     return Content(
         title=meta["title"],
         narration_text=meta["narration"],
