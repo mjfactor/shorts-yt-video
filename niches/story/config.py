@@ -27,7 +27,8 @@ DEFAULT_GENRES = (
     "petty-revenge",
 )
 
-DEFAULT_TEXT_MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+DEFAULT_TEXT_MODELS = ("gemini-4-hydrogen", "gemini-3.5-flash-lite",
+                       "gemini-3.1-flash-lite",
                        "gemini-3.5-flash", "gemini-3.7-flash",
                        "gemini-3.8-flash")
 DEFAULT_TTS_MODELS = ("gemini-2.5-flash-preview-tts",
@@ -145,7 +146,7 @@ class StoryConfig(NicheConfig):
     # sentences at 0.05; the 8:1 duck still holds it under the voice.
     # 2026-10-31: nudged 0.10 → 0.14 — bed still ducked under voice, just
     # a touch more present in the gaps.
-    bgm_volume: float = 0.14
+    bgm_volume: float = 0.18
     # Sidechain duck: LINEAR amplitude of the narration above which the bed
     # is pushed down. 0.05 sits above typical speech RMS so the bed is pulled
     # down for the whole sentence, not just the loudest peaks.
@@ -319,7 +320,7 @@ class StoryConfig(NicheConfig):
             bgm_glob=env_str("BGM_GLOB", "bgm*.mp3", "STORY_") or "bgm*.mp3",
             bgm_dir=env_str("BGM_DIR", "assets/background-musics",
                             "STORY_") or "assets/background-musics",
-            bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.14, "STORY_")),
+            bgm_volume=max(0.0, env_float("BGM_VOLUME", 0.18, "STORY_")),
             bgm_duck_threshold=max(0.0, env_float("BGM_DUCK_THRESHOLD", 0.05,
                                                   "STORY_")),
             bgm_duck_ratio=max(0.0, env_float("BGM_DUCK_RATIO", 8.0,
